@@ -56,5 +56,3 @@ After the user selects an environment, the application executes a series of AWS 
 
 The application logs the output of each command and any errors that occur.
 ```
-
-This updated `README.md` includes the global installation command and updates the usage instructions to use the global command instead of `node connect.js`. It also removes the instructions to manually install the required Node.js modules, as they will be installed automatically when the application is installed with npm.
