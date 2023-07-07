@@ -5,14 +5,6 @@ import fs from 'fs'; // For reading files
 import os from 'os'; // For getting the user's home directory
 import path from 'path'; // For working with file paths
 
-// Read AWS config file
-// Import required modules
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
-const { spawn } = require('child_process');
-const inquirer = require('inquirer');
-
 // Get the path to the AWS config file
 const awsConfigPath = path.join(os.homedir(), '.aws', 'config');
 
