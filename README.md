@@ -1,6 +1,6 @@
 # AWS Environment Selector and Command Executor
 
-This Node.js application allows you to select an AWS environment and execute various AWS commands within that environment. The environments are read from your AWS configuration file, and the application uses the `aws-vault` tool to securely manage your AWS credentials.
+This Node.js application allows you to select an AWS environment and execute various AWS commands within that environment. The environments are read from your AWS configuration file, and the application uses the `aws-vault` tool to manage your AWS credentials securely.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ Before running this application, make sure you have the following installed:
 - `aws-vault` tool: You can install it following the instructions on the [official GitHub page](https://github.com/99designs/aws-vault).
 - AWS CLI: You can install it following the instructions on the [official AWS page](https://aws.amazon.com/cli/).
 
-Also, ensure that your AWS configuration file (`~/.aws/config`) is properly set up with the environments you want to use.
+Also, ensure that your AWS configuration file (`~/.aws/config`) is appropriately set up with the environments you want to use.
 
 ## Installation
 
@@ -48,11 +48,11 @@ The application first reads the AWS configuration file and extracts the environm
 
 After the user selects an environment, the application executes a series of AWS commands within that environment using `aws-vault`. These commands include:
 
-- Describing SSM parameters to get the name of the parameter containing the RDS password.
+- Describing SSM parameters to get the parameter's name containing the RDS password.
 - Getting the value of the RDS password parameter.
 - Describing EC2 instances to get the ID of the bastion instance.
 - Describing RDS DB clusters to get the endpoint of the RDS cluster.
 - Starting an AWS SSM session to forward a local port to the RDS cluster.
 
 The application logs the output of each command and any errors that occur.
-```
+
