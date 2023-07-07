@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 // Import necessary modules
 import { spawn } from 'child_process'; // For spawning child processes
 import inquirer from 'inquirer'; // For prompting the user for input
