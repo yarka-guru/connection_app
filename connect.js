@@ -16,123 +16,126 @@ const awsConfig = fs.readFileSync(awsConfigPath, 'utf-8');
 // Extract environments from AWS config file
 const ENVS = awsConfig
   .split('\n')
-    .filter(line => line.startsWith('[') && line.endsWith(']'))
-    .map(line => line.slice(1, -1))
-    .map(line => line.replace('profile ', ''));
+  .filter(line => line.startsWith('[') && line.endsWith(']'))
+  .map(line => line.slice(1, -1))
+  .map(line => line.replace('profile ', ''));
 
-  // Define a mapping of environment suffixes to port numbers
-  const envPortMapping = {
-    'dev': '5433',
-    'stage': '5434',
-    'pre-prod': '5435',
-    'prod': '5436',
-  };
+// Define a mapping of environment suffixes to port numbers
+const envPortMapping = {
+  'dev': '5433',
+  'stage': '5434',
+  'pre-prod': '5435',
+  'prod': '5436',
+};
 
-  // Prompt the user to select an environment
-  inquirer
-    .prompt([
-      {
-        type: 'list',
-        name: 'ENV',
-        message: 'Please select the environment:',
-        choices: ENVS,
-      },
-    ])
+// Define the table name
+const TABLE_NAME = 'emr';
 
-    .then((answers) => {
-      const ENV = answers.ENV; // Get the selected environment from the user's answers
-      console.log(`You selected: ${ENV}`);
-    
-      // Extract the environment suffix from the selected environment
-      const envSuffix = ENV.split('-').pop();
-    
-      // Get the corresponding port number for the environment
-      let portNumber = envPortMapping[envSuffix]; // Declare portNumber as a let variable
-    
-      // If no port number is found for the environment, default to 5432
-      if (!portNumber) {
-        console.error(`No port number found for environment: ${ENV}. Defaulting to 5432.`);
-        portNumber = '5432';
-      }
+// Prompt the user to select an environment
+inquirer
+  .prompt([
+    {
+      type: 'list',
+      name: 'ENV',
+      message: 'Please select the environment:',
+      choices: ENVS,
+    },
+  ])
 
-      // Set up the commands to run inside the aws-vault environment
-      const awsVaultExecCommand = ['aws-vault', 'exec', ENV, '--'];
-      const ssmDescribeCommand = 'aws ssm describe-parameters --region us-east-2 --query \'Parameters[?ends_with(Name, `/rds/rds-aurora-password`)].Name\' --output text | head -n 1';
+  .then((answers) => {
+    const ENV = answers.ENV; // Get the selected environment from the user's answers
+    console.log(`You selected: ${ENV}`);
 
-      // Run the commands inside aws-vault environment
-      const ssmDescribeProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmDescribeCommand}`]);
+    // Extract the environment suffix from the selected environment
+    const envSuffix = ENV.split('-').pop();
 
-      // Get the name of the parameter containing the RDS password
-      ssmDescribeProcess.stdout.on('data', (data) => {
-        const PARAM_NAME = data.toString().trim();
+    // Get the corresponding port number for the environment
+    let portNumber = envPortMapping[envSuffix]; // Declare portNumber as a let variable
 
-        // Get the RDS credentials
-        const ssmGetCommand = `aws ssm get-parameter --region us-east-2 --name '${PARAM_NAME}' --with-decryption --query Parameter.Value --output text`;
-        const ssmGetProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmGetCommand}`]);
+    // If no port number is found for the environment, default to 5432
+    if (!portNumber) {
+      console.error(`No port number found for environment: ${ENV}. Defaulting to 5432.`);
+      portNumber = '5432';
+    }
 
-        // Parse the JSON output of the ssm get-parameter command to get the RDS credentials
-        ssmGetProcess.stdout.on('data', (data) => {
-          const CREDENTIALS = JSON.parse(data.toString());
-          const USERNAME = CREDENTIALS.user; // Get the RDS username from the credentials
-          const PASSWORD = CREDENTIALS.password; // Get the RDS password from the credentials
+    // Set up the commands to run inside the aws-vault environment
+    const awsVaultExecCommand = ['aws-vault', 'exec', ENV, '--'];
+    const ssmDescribeCommand = 'aws ssm describe-parameters --region us-east-2 --query \'Parameters[?ends_with(Name, `/rds/rds-aurora-password`)].Name\' --output text | head -n 1';
 
-          // Display connection credentials and connection string
-          console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d emr`);
-          console.log(`Use the password: ${PASSWORD}`);
+    // Run the commands inside aws-vault environment
+    const ssmDescribeProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmDescribeCommand}`]);
 
-          // Get the ID of the bastion instance
-          const instanceIdCommand = `aws ec2 describe-instances --region us-east-2 --filters "Name=tag:Name,Values='*bastion*'" --query "Reservations[].Instances[].[InstanceId]" --output text`;
-          const instanceIdProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${instanceIdCommand}`]);
+    // Get the name of the parameter containing the RDS password
+    ssmDescribeProcess.stdout.on('data', (data) => {
+      const PARAM_NAME = data.toString().trim();
 
-          instanceIdProcess.stdout.on('data', (data) => {
-            const INSTANCE_ID = data.toString().trim();
+      // Get the RDS credentials
+      const ssmGetCommand = `aws ssm get-parameter --region us-east-2 --name '${PARAM_NAME}' --with-decryption --query Parameter.Value --output text`;
+      const ssmGetProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmGetCommand}`]);
 
-            if (!INSTANCE_ID) {
-              console.error('Failed to find the instance with tag Name=*bastion*.');
+      // Parse the JSON output of the ssm get-parameter command to get the RDS credentials
+      ssmGetProcess.stdout.on('data', (data) => {
+        const CREDENTIALS = JSON.parse(data.toString());
+        const USERNAME = CREDENTIALS.user; // Get the RDS username from the credentials
+        const PASSWORD = CREDENTIALS.password; // Get the RDS password from the credentials
+
+        // Display connection credentials and connection string
+        console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d ${TABLE_NAME}`);
+        console.log(`Use the password: ${PASSWORD}`);
+
+        // Get the ID of the bastion instance
+        const instanceIdCommand = `aws ec2 describe-instances --region us-east-2 --filters "Name=tag:Name,Values='*bastion*'" --query "Reservations[].Instances[].[InstanceId]" --output text`;
+        const instanceIdProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${instanceIdCommand}`]);
+
+        instanceIdProcess.stdout.on('data', (data) => {
+          const INSTANCE_ID = data.toString().trim();
+
+          if (!INSTANCE_ID) {
+            console.error('Failed to find the instance with tag Name=*bastion*.');
+            return;
+          }
+
+          // Get the endpoint of the RDS cluster
+          const rdsEndpointCommand = `aws rds describe-db-clusters --region us-east-2 --query "DBClusters[?contains(DBClusterIdentifier, 'rds-aurora')].Endpoint" --output text`;
+          const rdsEndpointProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${rdsEndpointCommand}`]);
+
+          rdsEndpointProcess.stdout.on('data', (data) => {
+            const RDS_ENDPOINT = data.toString().trim();
+
+            if (!RDS_ENDPOINT) {
+              console.error('Failed to find the RDS endpoint.');
               return;
             }
 
-            // Get the endpoint of the RDS cluster
-            const rdsEndpointCommand = `aws rds describe-db-clusters --region us-east-2 --query "DBClusters[?contains(DBClusterIdentifier, 'rds-aurora')].Endpoint" --output text`;
-            const rdsEndpointProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${rdsEndpointCommand}`]);
+            // Start a port forwarding session to the RDS cluster
+            const portForwardingCommand = `aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`;
+            const portForwardingProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${portForwardingCommand}`]);
 
-            rdsEndpointProcess.stdout.on('data', (data) => {
-              const RDS_ENDPOINT = data.toString().trim();
-
-              if (!RDS_ENDPOINT) {
-                console.error('Failed to find the RDS endpoint.');
-                return;
-              }
-
-              // Start a port forwarding session to the RDS cluster
-              const portForwardingCommand = `aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`;
-              const portForwardingProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${portForwardingCommand}`]);
-
-              portForwardingProcess.stdout.on('data', (data) => {
-                console.log(data.toString().trim());
-              });
-
-              portForwardingProcess.stderr.on('data', (data) => {
-                console.error(`Command execution error: ${data.toString()}`);
-              });
+            portForwardingProcess.stdout.on('data', (data) => {
+              console.log(data.toString().trim());
             });
 
-            rdsEndpointProcess.stderr.on('data', (data) => {
+            portForwardingProcess.stderr.on('data', (data) => {
               console.error(`Command execution error: ${data.toString()}`);
             });
           });
 
-          instanceIdProcess.stderr.on('data', (data) => {
+          rdsEndpointProcess.stderr.on('data', (data) => {
             console.error(`Command execution error: ${data.toString()}`);
           });
         });
 
-        ssmGetProcess.stderr.on('data', (data) => {
+        instanceIdProcess.stderr.on('data', (data) => {
           console.error(`Command execution error: ${data.toString()}`);
         });
       });
 
-      ssmDescribeProcess.stderr.on('data', (data) => {
+      ssmGetProcess.stderr.on('data', (data) => {
         console.error(`Command execution error: ${data.toString()}`);
       });
     });
+
+    ssmDescribeProcess.stderr.on('data', (data) => {
+      console.error(`Command execution error: ${data.toString()}`);
+    });
+  });
