@@ -14,12 +14,10 @@ Also, ensure that your AWS configuration file (`~/.aws/config`) is properly set 
 
 ## Installation
 
-1. Clone the repository or download the source code.
-2. Navigate to the project directory.
-3. Install the necessary Node.js dependencies by running:
+You can install this application globally using npm:
 
 ```bash
-npm install
+npm install -g rds_ssm_connect
 ```
 
 ## Usage
@@ -27,7 +25,7 @@ npm install
 1. Run the application. It will read your AWS configuration file and prompt you to select an environment.
 
 ```bash
-node connect.js
+rds_ssm_connect
 ```
 
 2. Select the environment you want to use. The application will then execute a series of AWS commands within that environment.
@@ -42,11 +40,7 @@ This application requires the following Node.js modules:
 - `os`: For getting the user's home directory.
 - `path`: For working with file paths.
 
-You can install these modules by running:
-
-```bash
-npm install child_process inquirer fs os path
-```
+These modules will be installed automatically when you install the application with npm.
 
 ## How It Works
 
@@ -61,3 +55,6 @@ After the user selects an environment, the application executes a series of AWS 
 - Starting an AWS SSM session to forward a local port to the RDS cluster.
 
 The application logs the output of each command and any errors that occur.
+```
+
+This updated `README.md` includes the global installation command and updates the usage instructions to use the global command instead of `node connect.js`. It also removes the instructions to manually install the required Node.js modules, as they will be installed automatically when the application is installed with npm.
