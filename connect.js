@@ -105,7 +105,7 @@ const ENVS = awsConfig
               }
 
               // Start a port forwarding session to the RDS cluster
-              const portForwardingCommand = `aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='${portNumber}',localPortNumber='${portNumber}'" --cli-connect-timeout 0`;
+              const portForwardingCommand = `aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`;
               const portForwardingProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${portForwardingCommand}`]);
 
               portForwardingProcess.stdout.on('data', (data) => {
