@@ -1,14 +1,12 @@
 {
   "name": "rds_ssm_connect",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.363.0",
     "@aws-sdk/client-rds": "^3.363.0",
     "@aws-sdk/client-ssm": "^3.363.0",
-    "aws-sdk": "^2.1411.0",
-    "inquirer": "^8.2.5",
-    "node-jq": "^2.3.5"
+    "inquirer": "^8.2.5"
   },
   "bin": {
     "rds_ssm_connect": "./connect.js"
