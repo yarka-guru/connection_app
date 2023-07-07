@@ -55,4 +55,3 @@ After the user selects an environment, the application executes a series of AWS 
 - Starting an AWS SSM session to forward a local port to the RDS cluster.
 
 The application logs the output of each command and any errors that occur.
-
