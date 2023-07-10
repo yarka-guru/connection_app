@@ -10,5 +10,10 @@
   },
   "bin": {
     "rds_ssm_connect": "./connect.js"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   }
+  
 }
