@@ -24,15 +24,14 @@ const ENVS = awsConfig
 const envPortMapping = {
   dev: '5433',
   stage: '5434',
-  'pre-prod': '5435',
   prod: '5436'
 }
 
 // Define the table name
-const TABLE_NAME = 'emr'
+const TABLE_NAME = 'oit'
 
 // Define the AWS region
-const REGION = 'us-east-2'
+const REGION = 'us-east-1'
 
 // Prompt the user to select an environment
 inquirer
@@ -63,7 +62,7 @@ inquirer
 
     // Set up the commands to run inside the aws-vault environment
     const awsVaultExecCommand = ['aws-vault', 'exec', ENV, '--']
-    const ssmDescribeCommand = `aws ssm describe-parameters --region ${REGION} --query "Parameters[?ends_with(Name, '/rds/rds-aurora-password')].Name" --output text | head -n 1`
+    const ssmDescribeCommand = `aws ssm describe-parameters --region ${REGION} --query "Parameters[?ends_with(Name, 'infra/rds/database')].Name" --output text | head -n 1`
 
     // Run the commands inside aws-vault environment
     const ssmDescribeProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmDescribeCommand}`])
@@ -79,8 +78,8 @@ inquirer
       // Parse the JSON output of the ssm get-parameter command to get the RDS credentials
       ssmGetProcess.stdout.on('data', (data) => {
         const CREDENTIALS = JSON.parse(data.toString())
-        const USERNAME = CREDENTIALS.user // Get the RDS username from the credentials
-        const PASSWORD = CREDENTIALS.password // Get the RDS password from the credentials
+        const USERNAME = CREDENTIALS.DB_USER // Get the RDS username from the credentials
+        const PASSWORD = CREDENTIALS.DB_PASSWORD // Get the RDS password from the credentials
 
         // Display connection credentials and connection string
         console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d ${TABLE_NAME}`)
@@ -99,7 +98,7 @@ inquirer
           }
 
           // Get the endpoint of the RDS cluster
-          const rdsEndpointCommand = `aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?contains(DBClusterIdentifier, 'rds-aurora')].Endpoint" --output text`
+          const rdsEndpointCommand = `aws rds describe-db-proxies --region ${REGION} --query "DBProxies[?contains(DBProxyName, 'database')].Endpoint" --output text`
           const rdsEndpointProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${rdsEndpointCommand}`])
 
           rdsEndpointProcess.stdout.on('data', (data) => {
