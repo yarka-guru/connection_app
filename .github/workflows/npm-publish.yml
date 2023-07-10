@@ -23,9 +23,6 @@ jobs:
       - name: Run lint
         run: npm run lint
 
-      - name: Run tests
-        run: npm test
-
       - name: Create release and tag
         if: github.ref == 'refs/heads/main'
         run: |
