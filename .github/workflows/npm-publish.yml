@@ -26,8 +26,6 @@ jobs:
       - name: Create release and tag
         if: github.ref == 'refs/heads/main'
         run: |
-          git config --local user.email "go.go.jar@gmail.com"
-          git config --local user.name "Yarka Guru"
           npm version patch -m "Upgrade to %s"
           git push
 
