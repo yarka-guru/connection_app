@@ -31,6 +31,9 @@ const envPortMapping = {
 // Define the table name
 const TABLE_NAME = 'emr';
 
+// Define the AWS region
+const REGION = 'us-east-2';
+
 // Prompt the user to select an environment
 inquirer
   .prompt([
@@ -60,7 +63,7 @@ inquirer
 
     // Set up the commands to run inside the aws-vault environment
     const awsVaultExecCommand = ['aws-vault', 'exec', ENV, '--'];
-    const ssmDescribeCommand = 'aws ssm describe-parameters --region us-east-2 --query \'Parameters[?ends_with(Name, `/rds/rds-aurora-password`)].Name\' --output text | head -n 1';
+    const ssmDescribeCommand = `aws ssm describe-parameters --region ${REGION} --query "Parameters[?ends_with(Name, '/rds/rds-aurora-password')].Name" --output text | head -n 1`;
 
     // Run the commands inside aws-vault environment
     const ssmDescribeProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmDescribeCommand}`]);
@@ -70,7 +73,7 @@ inquirer
       const PARAM_NAME = data.toString().trim();
 
       // Get the RDS credentials
-      const ssmGetCommand = `aws ssm get-parameter --region us-east-2 --name '${PARAM_NAME}' --with-decryption --query Parameter.Value --output text`;
+      const ssmGetCommand = `aws ssm get-parameter --region ${REGION} --name '${PARAM_NAME}' --with-decryption --query Parameter.Value --output text`;
       const ssmGetProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${ssmGetCommand}`]);
 
       // Parse the JSON output of the ssm get-parameter command to get the RDS credentials
@@ -84,7 +87,7 @@ inquirer
         console.log(`Use the password: ${PASSWORD}`);
 
         // Get the ID of the bastion instance
-        const instanceIdCommand = `aws ec2 describe-instances --region us-east-2 --filters "Name=tag:Name,Values='*bastion*'" --query "Reservations[].Instances[].[InstanceId]" --output text`;
+        const instanceIdCommand = `aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" --query "Reservations[].Instances[].[InstanceId]" --output text`;
         const instanceIdProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${instanceIdCommand}`]);
 
         instanceIdProcess.stdout.on('data', (data) => {
@@ -96,7 +99,7 @@ inquirer
           }
 
           // Get the endpoint of the RDS cluster
-          const rdsEndpointCommand = `aws rds describe-db-clusters --region us-east-2 --query "DBClusters[?contains(DBClusterIdentifier, 'rds-aurora')].Endpoint" --output text`;
+          const rdsEndpointCommand = `aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?contains(DBClusterIdentifier, 'rds-aurora')].Endpoint" --output text`;
           const rdsEndpointProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${rdsEndpointCommand}`]);
 
           rdsEndpointProcess.stdout.on('data', (data) => {
