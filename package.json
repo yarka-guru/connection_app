@@ -1,6 +1,6 @@
 {
   "name": "rds_oit_connect",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.363.0",

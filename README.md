@@ -17,7 +17,7 @@ Also, ensure that your AWS configuration file (`~/.aws/config`) is appropriately
 You can install this application globally using npm:
 
 ```bash
-npm install -g rds_ssm_connect
+npm install -g rds_oit_connect
 ```
 
 ## Usage
@@ -25,7 +25,7 @@ npm install -g rds_ssm_connect
 1. Run the application. It will read your AWS configuration file and prompt you to select an environment.
 
 ```bash
-rds_ssm_connect
+rds_oit_connect
 ```
 
 2. Select the environment you want to use. The application will then execute a series of AWS commands within that environment.
