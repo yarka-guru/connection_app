@@ -20,15 +20,40 @@ You can install this application globally using npm:
 npm install -g rds_oit_connect
 ```
 
-## Usage
-
-1. Run the application. It will read your AWS configuration file and prompt you to select an environment.
-
-```bash
-rds_oit_connect
-```
-
 2. Select the environment you want to use. The application will then execute a series of AWS commands within that environment.
+
+Given your provided code, here's how to connect to the database:
+
+## Connecting to the Database
+
+1. Invoke `rds_oit_connect` in your terminal:
+
+   ```bash
+   rds_oit_connect
+   ```
+
+   The application will read your AWS configuration file and prompt you to select an environment.
+
+2. Select the environment you want to connect to. The application will then execute a series of AWS commands within that environment. It will do the following:
+
+   - Extract the environments from the AWS configuration file
+   - Get the name of the parameter containing the RDS password
+   - Get the RDS credentials
+   - Display the connection credentials and the connection string
+   - Get the ID of the bastion instance
+   - Get the endpoint of the RDS cluster
+   - Start a port forwarding session to the RDS cluster
+
+3. After you've selected an environment and the AWS commands have been executed, you will receive the connection information. Here is an example of the output:
+
+   ```
+   Your connection string is: psql -h localhost -p <port> -U <username> -d oit
+   Use the password: <password>
+   ```
+
+4. Use the provided connection string and password to connect to your database via a database administration tool of your choice, such as pgAdmin, DBeaver, or the `psql` command-line interface.
+
+Please note: Make sure the chosen database administration tool is installed and configured on your local machine. The specific instructions for connecting to a database would vary based on the tool used.
 
 ## Requirements
 
