@@ -25,7 +25,10 @@ const envPortMapping = {
   dev: '5433',
   stage: '5434',
   'pre-prod': '5435',
-  prod: '5436'
+  prod: '5436',
+  dev2: '5437',
+  stage2: '5438',
+  sandbox: '5439'
 }
 
 // Define the table name
