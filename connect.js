@@ -6,6 +6,8 @@ import inquirer from 'inquirer' // For prompting the user for input
 import fs from 'fs' // For reading files
 import os from 'os' // For getting the user's home directory
 import path from 'path' // For working with file paths
+import { envPortMapping, REGION, TABLE_NAME } from './envPortMapping.js'
+import { } from './envPortMapping.js'
 
 // Get the path to the AWS config file
 const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
@@ -19,24 +21,6 @@ const ENVS = awsConfig
   .filter(line => line.startsWith('[') && line.endsWith(']'))
   .map(line => line.slice(1, -1))
   .map(line => line.replace('profile ', ''))
-
-// Define a mapping of environment suffixes to port numbers
-const envPortMapping = {
-  dev: '5433',
-  stage: '5434',
-  'pre-prod': '5435',
-  prod: '5436',
-  dev2: '5437',
-  stage2: '5438',
-  sandbox: '5439',
-  'perf-dev': '5440'
-}
-
-// Define the table name
-const TABLE_NAME = 'emr'
-
-// Define the AWS region
-const REGION = 'us-east-2'
 
 // Prompt the user to select an environment
 inquirer
