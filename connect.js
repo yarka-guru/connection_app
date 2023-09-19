@@ -7,7 +7,6 @@ import fs from 'fs' // For reading files
 import os from 'os' // For getting the user's home directory
 import path from 'path' // For working with file paths
 import { envPortMapping, REGION, TABLE_NAME } from './envPortMapping.js'
-import { } from './envPortMapping.js'
 
 // Get the path to the AWS config file
 const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
