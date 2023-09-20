@@ -37,18 +37,18 @@ inquirer
     console.log(`You selected: ${ENV}`)
 
     // Sort all environment suffixes by length, longest first
-    const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length);
+    const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length)
 
     // Find the first matching suffix in your envPortMapping object
-    let matchedSuffix = allEnvSuffixes.find((suffix) => ENV.endsWith(suffix));
+    const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix))
 
     // Get the port based on the matching suffix
-    let portNumber = envPortMapping[matchedSuffix];
+    const portNumber = envPortMapping[matchedSuffix]
 
     // If no port number is found for the environment, default to 5432
     if (!portNumber) {
-      console.error(`No port number found for environment: ${ENV}. Defaulting to 5432.`);
-      portNumber = '5432';
+      console.error(`No port number found for environment: ${ENV}. Defaulting to 5432.`)
+      portNumber = '5432'
     }
 
     // Set up the commands to run inside the aws-vault environment
