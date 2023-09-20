@@ -42,10 +42,9 @@ inquirer
     // Find the first matching suffix in your envPortMapping object
     const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix))
 
-    // Get the port based on the matching suffix
-    const portNumber = envPortMapping[matchedSuffix]
-
     // If no port number is found for the environment, default to 5432
+    let portNumber = envPortMapping[matchedSuffix]
+
     if (!portNumber) {
       console.error(`No port number found for environment: ${ENV}. Defaulting to 5432.`)
       portNumber = '5432'

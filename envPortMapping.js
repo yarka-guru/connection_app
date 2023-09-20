@@ -8,8 +8,10 @@ export const envPortMapping = {
   stage2: '5438',
   sandbox: '5439',
   'perf-dev': '5440'
-};// Define the table name
-export const TABLE_NAME = 'emr';
+}
+
+// Define the table name
+export const TABLE_NAME = 'emr'
+
 // Define the AWS region
 export const REGION = 'us-east-2'
-
