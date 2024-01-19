@@ -75,15 +75,15 @@ inquirer
         console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d ${TABLE_NAME}`)
         console.log(`Use the password: ${PASSWORD}`)
 
-        // Get the ID of the bastion instance
-        const instanceIdCommand = `aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" --query "Reservations[].Instances[].[InstanceId]" --output text`
+        // Get the ID of the bastion instance in running state
+        const instanceIdCommand = `aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId]" --output text`
         const instanceIdProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${instanceIdCommand}`])
 
         instanceIdProcess.stdout.on('data', (data) => {
           const INSTANCE_ID = data.toString().trim()
 
           if (!INSTANCE_ID) {
-            console.error('Failed to find the instance with tag Name=*bastion*.')
+            console.error('Failed to find a running instance with tag Name=*bastion*.')
             return
           }
 
