@@ -1,12 +1,12 @@
 {
   "name": "rds_ssm_connect",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-ec2": "^3.37.0",
-    "@aws-sdk/client-rds": "^3.37.0",
-    "@aws-sdk/client-ssm": "^3.37.0",
-    "inquirer": "^8.2.5"
+    "@aws-sdk/client-ec2": "^3.495.0",
+    "@aws-sdk/client-rds": "^3.495.0",
+    "@aws-sdk/client-ssm": "^3.495.0",
+    "inquirer": "^8.2.6"
   },
   "bin": {
     "rds_ssm_connect": "./connect.js"
@@ -16,10 +16,10 @@
     "lint:fix": "eslint . --fix"
   },
   "devDependencies": {
-    "eslint": "^8.44.0",
+    "eslint": "^8.56.0",
     "eslint-config-standard": "^17.1.0",
-    "eslint-plugin-import": "^2.26.0",
-    "eslint-plugin-n": "^16.0.1",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-n": "^16.6.2",
     "eslint-plugin-promise": "^6.1.1"
   }
 }
