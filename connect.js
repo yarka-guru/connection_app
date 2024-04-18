@@ -88,7 +88,7 @@ inquirer
           }
 
           // Get the endpoint of the RDS cluster
-          const rdsEndpointCommand = `aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?contains(DBClusterIdentifier, 'rds-aurora')].Endpoint" --output text`
+          const rdsEndpointCommand = `aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '-rds-aurora')].Endpoint" --output text`
           const rdsEndpointProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${rdsEndpointCommand}`])
 
           rdsEndpointProcess.stdout.on('data', (data) => {
