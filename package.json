@@ -1,6 +1,6 @@
 {
   "name": "rds_ssm_connect",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.495.0",
