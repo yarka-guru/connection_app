@@ -1,137 +1,126 @@
 #!/usr/bin/env node
 
-// Import necessary modules
-import { spawn } from 'child_process' // For spawning child processes
-import inquirer from 'inquirer' // For prompting the user for input
-import fs from 'fs' // For reading files
-import os from 'os' // For getting the user's home directory
-import path from 'path' // For working with file paths
+import inquirer from 'inquirer'
+import fs from 'fs/promises'
+import os from 'os'
+import path from 'path'
+import { exec } from 'child_process'
+import { promisify } from 'util'
 import { envPortMapping, REGION, TABLE_NAME } from './envPortMapping.js'
 
-// Get the path to the AWS config file
-const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
+const execAsync = promisify(exec)
 
-// Read the contents of the AWS config file
-const awsConfig = fs.readFileSync(awsConfigPath, 'utf-8')
+async function readAwsConfig () {
+  const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
+  try {
+    const awsConfig = await fs.readFile(awsConfigPath, 'utf-8')
+    return awsConfig
+      .split('\n')
+      .filter(line => line.startsWith('[') && line.endsWith(']'))
+      .map(line => line.slice(1, -1))
+      .map(line => line.replace('profile ', ''))
+  } catch (error) {
+    console.error('Error reading AWS config file:', error)
+    return []
+  }
+}
 
-// Extract environments from the AWS config file
-const ENVS = awsConfig
-  .split('\n')
-  .filter(line => line.startsWith('[') && line.endsWith(']'))
-  .map(line => line.slice(1, -1))
-  .map(line => line.replace('profile ', ''))
+async function runCommand (command) {
+  try {
+    const { stdout } = await execAsync(command)
+    return stdout.trim()
+  } catch (error) {
+    console.error(`Error executing command: ${command}`)
+    console.error(error)
+    return null
+  }
+}
 
-// Prompt the user to select an environment
-inquirer
-  .prompt([
-    {
-      type: 'list',
-      name: 'ENV',
-      message: 'Please select the environment:',
-      choices: ENVS
-    }
-  ])
-  .then((answers) => {
-    const ENV = answers.ENV // Get the selected environment from the user's answers
-    console.log(`You selected: ${ENV}`)
+async function main () {
+  try {
+    const ENVS = await readAwsConfig()
 
-    // Sort all environment suffixes by length, longest first
-    const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length)
-
-    // Find the first matching suffix in your envPortMapping object
-    const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix))
-
-    // If no port number is found for the environment, default to 5432
-    let portNumber = envPortMapping[matchedSuffix]
-
-    if (!portNumber) {
-      console.error(`No port number found for environment: ${ENV}. Defaulting to 5432.`)
-      portNumber = '5432'
+    if (ENVS.length === 0) {
+      console.error('No environments found in AWS config file.')
+      return
     }
 
-    // Set up the commands to run inside the aws-vault environment
-    const awsVaultExecCommand = ['aws-vault', 'exec', ENV, '--']
-    const secretsDescribeCommand = `aws secretsmanager list-secrets --region ${REGION} --query 'SecretList[?starts_with(Name, \`rds!cluster\`)].Name' --output text | head -n 1`
-
-    // Run the commands inside aws-vault environment
-    const secretsDescribeProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${secretsDescribeCommand}`])
-
-    // Get the name of the secret containing the RDS credentials
-    secretsDescribeProcess.stdout.on('data', (data) => {
-      const SECRET_NAME = data.toString().trim()
-
-      if (!SECRET_NAME) {
-        console.error('No secret found with name starting with rds!cluster.')
-        return
+    const answers = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'ENV',
+        message: 'Please select the environment:',
+        choices: ENVS
       }
+    ])
 
-      // Get the RDS credentials from Secrets Manager
-      const secretsGetCommand = `aws secretsmanager get-secret-value --region ${REGION} --secret-id '${SECRET_NAME}' --query SecretString --output text`
-      const secretsGetProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${secretsGetCommand}`])
+    const ENV = answers.ENV
+    const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length)
+    const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix))
+    const portNumber = envPortMapping[matchedSuffix] || '5432'
 
-      // Parse the JSON output of the secretsmanager get-secret-value command to get the RDS credentials
-      secretsGetProcess.stdout.on('data', (data) => {
-        const CREDENTIALS = JSON.parse(data.toString())
-        const USERNAME = CREDENTIALS.username // Get the RDS username from the credentials
-        const PASSWORD = CREDENTIALS.password // Get the RDS password from the credentials
+    const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${REGION} --query "SecretList[?starts_with(Name, 'rds!cluster')].Name | [0]" --output text`
+    const SECRET_NAME = await runCommand(secretsListCommand)
 
-        // Display connection credentials and connection string
-        console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d ${TABLE_NAME}`)
-        console.log(`Use the password: ${PASSWORD}`)
+    if (!SECRET_NAME) {
+      console.error('No secret found with name starting with rds!cluster.')
+      return
+    }
 
-        // Get the ID of the bastion instance in running state
-        const instanceIdCommand = `aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId]" --output text`
-        const instanceIdProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${instanceIdCommand}`])
+    const secretsGetCommand = `aws-vault exec ${ENV} -- aws secretsmanager get-secret-value --region ${REGION} --secret-id "${SECRET_NAME}" --query SecretString --output text`
+    const secretString = await runCommand(secretsGetCommand)
+    const CREDENTIALS = JSON.parse(secretString)
+    const USERNAME = CREDENTIALS.username
+    const PASSWORD = CREDENTIALS.password
 
-        instanceIdProcess.stdout.on('data', (data) => {
-          const INSTANCE_ID = data.toString().trim()
+    console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d ${TABLE_NAME}`)
+    console.log(`Use the password: ${PASSWORD}`)
 
-          if (!INSTANCE_ID) {
-            console.error('Failed to find a running instance with tag Name=*bastion*.')
-            return
-          }
+    const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
+    const INSTANCE_ID = await runCommand(instanceIdCommand)
 
-          // Get the endpoint of the RDS cluster
-          const rdsEndpointCommand = `aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '-rds-aurora')].Endpoint" --output text`
-          const rdsEndpointProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${rdsEndpointCommand}`])
+    if (!INSTANCE_ID) {
+      console.error('Failed to find a running instance with tag Name=*bastion*.')
+      return
+    }
 
-          rdsEndpointProcess.stdout.on('data', (data) => {
-            const RDS_ENDPOINT = data.toString().trim()
+    const rdsEndpointCommand = `aws-vault exec ${ENV} -- aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '-rds-aurora')].Endpoint | [0]" --output text`
+    const RDS_ENDPOINT = await runCommand(rdsEndpointCommand)
 
-            if (!RDS_ENDPOINT) {
-              console.error('Failed to find the RDS endpoint.')
-              return
-            }
+    if (!RDS_ENDPOINT) {
+      console.error('Failed to find the RDS endpoint.')
+      return
+    }
 
-            // Start a port forwarding session to the RDS cluster
-            const portForwardingCommand = `aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
-            const portForwardingProcess = spawn('sh', ['-c', `${awsVaultExecCommand.join(' ')} ${portForwardingCommand}`])
+    const portForwardingCommand = `aws-vault exec ${ENV} -- aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
 
-            portForwardingProcess.stdout.on('data', (data) => {
-              console.log(data.toString().trim())
-            })
+    console.log('Starting port forwarding session...')
+    const child = exec(portForwardingCommand)
 
-            portForwardingProcess.stderr.on('data', (data) => {
-              console.error(`Command execution error: ${data.toString()}`)
-            })
-          })
-
-          rdsEndpointProcess.stderr.on('data', (data) => {
-            console.error(`Command execution error: ${data.toString()}`)
-          })
-        })
-
-        instanceIdProcess.stderr.on('data', (data) => {
-          console.error(`Command execution error: ${data.toString()}`)
-        })
-      })
-
-      secretsGetProcess.stderr.on('data', (data) => {
-        console.error(`Command execution error: ${data.toString()}`)
-      })
+    child.stdout.on('data', (data) => {
+      console.log(data.toString())
     })
 
-    secretsDescribeProcess.stderr.on('data', (data) => {
-      console.error(`Command execution error: ${data.toString()}`)
+    child.stderr.on('data', (data) => {
+      console.error(data.toString())
     })
+
+    child.on('close', (code) => {
+      console.log(`Port forwarding session ended with code ${code}`)
+    })
+
+    console.log('Port forwarding session established. You can now connect to the database using the provided connection string.')
+    console.log('Press Ctrl+C to end the session.')
+  } catch (error) {
+    console.error(`Error: ${error.message}`)
+    throw error // Re-throw the error to be caught by the outer catch block
+  }
+}
+
+main().catch(error => {
+  console.error('Unhandled error in main function:', error)
+  console.error('Exiting due to unhandled error')
+  setImmediate(() => {
+    throw new Error('Forcing exit due to unhandled error')
   })
+})
