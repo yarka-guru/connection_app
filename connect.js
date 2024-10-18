@@ -73,9 +73,12 @@ async function main () {
     const USERNAME = CREDENTIALS.username
     const PASSWORD = CREDENTIALS.password
 
-    console.log(`Your connection string is: psql -h localhost -p ${portNumber} -U ${USERNAME} -d ${TABLE_NAME}`)
-    console.log(`Use the password: ${PASSWORD}`)
-
+    console.log(`Your connection details:
+      Host: localhost
+      Port: ${portNumber}
+      User: ${USERNAME}
+      Database: ${TABLE_NAME}
+      Password: ${PASSWORD}`)
     const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
     const INSTANCE_ID = await runCommand(instanceIdCommand)
 
@@ -109,7 +112,7 @@ async function main () {
       console.log(`Port forwarding session ended with code ${code}`)
     })
 
-    console.log('Port forwarding session established. You can now connect to the database using the provided connection string.')
+    console.log('Port forwarding session established. You can now connect to the database using the provided connection details.')
     console.log('Press Ctrl+C to end the session.')
   } catch (error) {
     console.error(`Error: ${error.message}`)
