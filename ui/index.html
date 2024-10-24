@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connection App</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Connect to AWS RDS</h1>
+    <form id="connection-form">
+        <label for="aws-environment">AWS Environment:</label>
+        <input type="text" id="aws-environment" name="aws-environment" required>
+
+        <label for="connection-details">Connection Details:</label>
+        <input type="text" id="connection-details" name="connection-details" required>
+
+        <button type="submit">Connect</button>
+    </form>
+    <script src="scripts.js"></script>
+</body>
+</html>
