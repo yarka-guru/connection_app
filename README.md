@@ -72,6 +72,34 @@ npm install -g rds_ssm_connect
 
    Ensure that the database administration tool is installed and configured on your local machine.
 
+## Running the UI
+
+1. **Open the HTML File**:
+
+   Navigate to the `ui` directory and open the `index.html` file in your web browser. This will load the UI for connecting to the AWS RDS.
+
+2. **Fill in the Form**:
+
+   Enter the AWS environment and connection details in the form provided.
+
+3. **Submit the Form**:
+
+   Click the "Connect" button to submit the form. The UI will send the form data to the backend and display the connection details received from the backend.
+
+## Connecting the UI to the Backend
+
+1. **Start the Backend Server**:
+
+   Ensure that the backend server is running and accessible. The backend server should be able to handle the form submission and provide the connection details.
+
+2. **Configure the Fetch API**:
+
+   In the `ui/scripts.js` file, update the fetch API URL to point to the backend server's endpoint for handling the form submission.
+
+3. **Test the Connection**:
+
+   Open the `index.html` file in your web browser, fill in the form, and submit it. Verify that the connection details are displayed correctly and that the backend server is providing the expected response.
+
 ## Requirements
 
 This application requires the following Node.js modules:
