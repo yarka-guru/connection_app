@@ -13,12 +13,12 @@ const execAsync = promisify(exec)
 async function readAwsConfig () {
   const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
   try {
-    const awsConfig = await fs.readFile(awsConfigPath, 'utf-8')
+    const awsConfig = await fs.readFile(awsConfigPath, { encoding: 'utf-8' })
     return awsConfig
-      .split('\n')
+      .split(/\r?\n/)
       .filter(line => line.startsWith('[') && line.endsWith(']'))
       .map(line => line.slice(1, -1))
-      .map(line => line.replace('profile ', ''))
+      .map(line => line.replace('profile ', '').trim())
   } catch (error) {
     console.error('Error reading AWS config file:', error)
     return []
@@ -50,8 +50,8 @@ async function main () {
         type: 'list',
         name: 'ENV',
         message: 'Please select the environment:',
-        choices: ENVS
-      }
+        choices: ENVS,
+      },
     ])
 
     const ENV = answers.ENV
@@ -79,6 +79,7 @@ async function main () {
       User: ${USERNAME}
       Database: ${TABLE_NAME}
       Password: ${PASSWORD}`)
+
     const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
     const INSTANCE_ID = await runCommand(instanceIdCommand)
 
@@ -101,7 +102,10 @@ async function main () {
     const child = exec(portForwardingCommand)
 
     child.stdout.on('data', (data) => {
-      console.log(data.toString())
+      const output = data.toString()
+      if (!output.includes('Starting session with SessionId:') && !output.includes('Port 5433 opened for sessionId')) {
+        console.log(output)
+      }
     })
 
     child.stderr.on('data', (data) => {
@@ -112,18 +116,17 @@ async function main () {
       console.log(`Port forwarding session ended with code ${code}`)
     })
 
-    console.log('Port forwarding session established. You can now connect to the database using the provided connection details.')
+    console.log('Port forwarding session established.')
     console.log('Press Ctrl+C to end the session.')
   } catch (error) {
     console.error(`Error: ${error.message}`)
-    throw error // Re-throw the error to be caught by the outer catch block
+    console.error('Exiting due to unhandled error')
+    setImmediate(() => {
+      throw new Error('Forcing exit due to unhandled error')
+    })
   }
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error('Unhandled error in main function:', error)
-  console.error('Exiting due to unhandled error')
-  setImmediate(() => {
-    throw new Error('Forcing exit due to unhandled error')
-  })
 })
