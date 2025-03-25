@@ -14,6 +14,11 @@ export const envPortMapping = {
   team3: '5444',
   team4: '5445',
   team5: '5446',
+  qa1: '5447',
+  qa2: '5448',
+  qa3: '5449',
+  qa4: '5450',
+  qa5: '5451'
 }
 
 // Define the table name
