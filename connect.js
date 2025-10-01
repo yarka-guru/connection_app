@@ -10,6 +10,34 @@ import { envPortMapping, REGION, TABLE_NAME } from './envPortMapping.js'
 
 const execAsync = promisify(exec)
 
+// Configuration constants
+const RETRY_CONFIG = {
+  BASTION_WAIT_MAX_RETRIES: 20,
+  BASTION_WAIT_RETRY_DELAY_MS: 15000,
+  PORT_FORWARDING_MAX_RETRIES: 2,
+  SSM_AGENT_READY_WAIT_MS: 10000
+}
+
+// Store active child processes for cleanup
+let activeChildProcesses = []
+
+// Handle graceful shutdown
+function setupProcessCleanup () {
+  const cleanup = () => {
+    console.log('\nCleaning up active connections...')
+    activeChildProcesses.forEach(child => {
+      if (child && !child.killed) {
+        child.kill('SIGTERM')
+      }
+    })
+    process.exit(0)
+  }
+
+  process.on('SIGINT', cleanup)
+  process.on('SIGTERM', cleanup)
+  process.on('exit', cleanup)
+}
+
 async function readAwsConfig () {
   const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
   try {
@@ -36,7 +64,171 @@ async function runCommand (command) {
   }
 }
 
+async function sleep (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function terminateBastionInstance (ENV, instanceId) {
+  console.log(`Terminating disconnected bastion instance: ${instanceId}`)
+  const terminateCommand = `aws-vault exec ${ENV} -- aws ec2 terminate-instances --region ${REGION} --instance-ids ${instanceId}`
+  await runCommand(terminateCommand)
+  console.log('Bastion instance terminated. ASG will spin up a new instance...')
+}
+
+async function waitForNewBastionInstance (ENV, oldInstanceId, maxRetries = RETRY_CONFIG.BASTION_WAIT_MAX_RETRIES, retryDelay = RETRY_CONFIG.BASTION_WAIT_RETRY_DELAY_MS) {
+  console.log('Waiting for new bastion instance to be ready...')
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`Checking for new bastion instance (attempt ${attempt}/${maxRetries})...`)
+
+    const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
+    const newInstanceId = await runCommand(instanceIdCommand)
+
+    if (newInstanceId && newInstanceId !== oldInstanceId && newInstanceId !== 'None') {
+      console.log(`New bastion instance found: ${newInstanceId}`)
+
+      // Verify SSM agent is ready
+      const isReady = await waitForSSMAgentReady(ENV, newInstanceId)
+      if (isReady) {
+        return newInstanceId
+      } else {
+        console.log('SSM agent not ready yet, will retry...')
+      }
+    }
+
+    if (attempt < maxRetries) {
+      await sleep(retryDelay)
+    }
+  }
+
+  return null
+}
+
+async function waitForSSMAgentReady (ENV, instanceId, maxRetries = 10, retryDelay = 3000) {
+  console.log('Verifying SSM agent status...')
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const ssmStatusCommand = `aws-vault exec ${ENV} -- aws ssm describe-instance-information --region ${REGION} --filters "Key=InstanceIds,Values=${instanceId}" --query "InstanceInformationList[0].PingStatus" --output text`
+    const status = await runCommand(ssmStatusCommand)
+
+    if (status === 'Online') {
+      console.log('SSM agent is online and ready.')
+      // Additional wait for agent to stabilize
+      await sleep(RETRY_CONFIG.SSM_AGENT_READY_WAIT_MS)
+      return true
+    }
+
+    console.log(`SSM agent status: ${status || 'Unknown'} (attempt ${attempt}/${maxRetries})`)
+
+    if (attempt < maxRetries) {
+      await sleep(retryDelay)
+    }
+  }
+
+  console.log('Warning: SSM agent did not report Online status, but proceeding anyway.')
+  return false
+}
+
+function monitorPortForwardingSession (child) {
+  const state = {
+    stderrOutput: '',
+    targetNotConnectedError: false,
+    sessionEstablished: false
+  }
+
+  child.stdout.on('data', (data) => {
+    const output = data.toString()
+
+    // Detect when session is actually established
+    if (output.includes('Starting session with SessionId:')) {
+      state.sessionEstablished = true
+      console.log('Port forwarding session established.')
+      console.log('Press Ctrl+C to end the session.')
+    }
+
+    if (!output.includes('Starting session with SessionId:') && !output.includes('Port 5433 opened for sessionId')) {
+      console.log(output)
+    }
+  })
+
+  child.stderr.on('data', (data) => {
+    const errorOutput = data.toString()
+    state.stderrOutput += errorOutput
+
+    // Check for TargetNotConnected error
+    if (errorOutput.includes('TargetNotConnected') || errorOutput.includes('is not connected')) {
+      state.targetNotConnectedError = true
+    }
+
+    console.error(errorOutput)
+  })
+
+  return state
+}
+
+async function handleTargetNotConnectedError (ENV, instanceId, rdsEndpoint, portNumber, retryCount, maxRetries) {
+  console.log(`\nDetected TargetNotConnected error. Attempting recovery (retry ${retryCount + 1}/${maxRetries})...`)
+
+  // Terminate the disconnected instance
+  await terminateBastionInstance(ENV, instanceId)
+
+  // Wait for new instance to be ready
+  const newInstanceId = await waitForNewBastionInstance(ENV, instanceId)
+
+  if (!newInstanceId) {
+    throw new Error('Failed to find new bastion instance after waiting.')
+  }
+
+  // Retry with new instance
+  console.log('Retrying port forwarding with new bastion instance...')
+  return await startPortForwarding(ENV, newInstanceId, rdsEndpoint, portNumber, retryCount + 1, maxRetries)
+}
+
+function executePortForwardingCommand (ENV, instanceId, rdsEndpoint, portNumber) {
+  const portForwardingCommand = `aws-vault exec ${ENV} -- aws ssm start-session --target ${instanceId} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${rdsEndpoint},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
+
+  console.log('Starting port forwarding session...')
+  const child = exec(portForwardingCommand)
+
+  // Register child process for cleanup
+  activeChildProcesses.push(child)
+
+  return child
+}
+
+async function startPortForwarding (ENV, instanceId, rdsEndpoint, portNumber, retryCount = 0, maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES) {
+  return new Promise((resolve, reject) => {
+    const child = executePortForwardingCommand(ENV, instanceId, rdsEndpoint, portNumber)
+    const sessionState = monitorPortForwardingSession(child)
+
+    child.on('close', async (code) => {
+      // Remove from active processes
+      activeChildProcesses = activeChildProcesses.filter(p => p !== child)
+
+      try {
+        // Handle TargetNotConnected error with retry
+        if (code === 254 && sessionState.targetNotConnectedError && retryCount < maxRetries) {
+          await handleTargetNotConnectedError(ENV, instanceId, rdsEndpoint, portNumber, retryCount, maxRetries)
+          resolve()
+        } else if (code !== 0) {
+          console.log(`Port forwarding session ended with code ${code}`)
+          reject(new Error(`Port forwarding failed with code ${code}`))
+        } else {
+          console.log(`Port forwarding session ended with code ${code}`)
+          resolve()
+        }
+      } catch (error) {
+        console.error('Error during recovery:', error)
+        reject(error)
+      }
+    })
+  })
+}
+
 async function main () {
+  // Setup process cleanup handlers
+  setupProcessCleanup()
+
   try {
     const ENVS = await readAwsConfig()
 
@@ -69,7 +261,23 @@ async function main () {
 
     const secretsGetCommand = `aws-vault exec ${ENV} -- aws secretsmanager get-secret-value --region ${REGION} --secret-id "${SECRET_NAME}" --query SecretString --output text`
     const secretString = await runCommand(secretsGetCommand)
-    const CREDENTIALS = JSON.parse(secretString)
+
+    if (!secretString) {
+      console.error('Failed to retrieve secret value from Secrets Manager.')
+      return
+    }
+
+    let CREDENTIALS
+    try {
+      CREDENTIALS = JSON.parse(secretString)
+      if (!CREDENTIALS.username || !CREDENTIALS.password) {
+        throw new Error('Missing username or password in credentials')
+      }
+    } catch (error) {
+      console.error('Failed to parse credentials from Secrets Manager:', error.message)
+      return
+    }
+
     const USERNAME = CREDENTIALS.username
     const PASSWORD = CREDENTIALS.password
 
@@ -83,7 +291,7 @@ async function main () {
     const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${REGION} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
     const INSTANCE_ID = await runCommand(instanceIdCommand)
 
-    if (!INSTANCE_ID) {
+    if (!INSTANCE_ID || INSTANCE_ID === 'None') {
       console.error('Failed to find a running instance with tag Name=*bastion*.')
       return
     }
@@ -91,33 +299,12 @@ async function main () {
     const rdsEndpointCommand = `aws-vault exec ${ENV} -- aws rds describe-db-clusters --region ${REGION} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '-rds-aurora')].Endpoint | [0]" --output text`
     const RDS_ENDPOINT = await runCommand(rdsEndpointCommand)
 
-    if (!RDS_ENDPOINT) {
+    if (!RDS_ENDPOINT || RDS_ENDPOINT === 'None') {
       console.error('Failed to find the RDS endpoint.')
       return
     }
 
-    const portForwardingCommand = `aws-vault exec ${ENV} -- aws ssm start-session --target ${INSTANCE_ID} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${RDS_ENDPOINT},portNumber='5432',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
-
-    console.log('Starting port forwarding session...')
-    const child = exec(portForwardingCommand)
-
-    child.stdout.on('data', (data) => {
-      const output = data.toString()
-      if (!output.includes('Starting session with SessionId:') && !output.includes('Port 5433 opened for sessionId')) {
-        console.log(output)
-      }
-    })
-
-    child.stderr.on('data', (data) => {
-      console.error(data.toString())
-    })
-
-    child.on('close', (code) => {
-      console.log(`Port forwarding session ended with code ${code}`)
-    })
-
-    console.log('Port forwarding session established.')
-    console.log('Press Ctrl+C to end the session.')
+    await startPortForwarding(ENV, INSTANCE_ID, RDS_ENDPOINT, portNumber)
   } catch (error) {
     console.error(`Error: ${error.message}`)
     console.error('Exiting due to unhandled error')
