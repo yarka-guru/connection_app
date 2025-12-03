@@ -239,7 +239,7 @@ async function main () {
 
     const answers = await inquirer.prompt([
       {
-        type: 'list',
+        type: 'select',
         name: 'ENV',
         message: 'Please select the environment:',
         choices: ENVS,
