@@ -1,108 +1,148 @@
-# AWS RDS SSM Connector
+# RDS SSM Connect
 
-This Node.js application allows you to select an AWS environment and execute various AWS commands within that environment to connect to an RDS database securely. The environments are read from your AWS configuration file, and the application retrieves credentials and other necessary information using AWS Secrets Manager and other AWS services.
+Secure database tunneling to AWS RDS through SSM port forwarding via bastion hosts. Available as a **desktop app** (Tauri) and a **CLI tool** (Node.js).
+
+## Features
+
+- **Multi-project support** — TLN (Aurora clusters, us-east-2) and Covered (RDS instances, us-west-1)
+- **Multiple simultaneous connections** with automatic port assignment
+- **Saved connections** — bookmark frequently used profiles with one-click connect
+- **Auto-reconnect** — handles `TargetNotConnected` errors by cycling bastion instances via ASG
+- **In-app updates** — checks GitHub releases, downloads and installs signed updates
+- **Prerequisites validation** — detects missing `aws-vault` and AWS CLI on launch
+- **Keyboard shortcuts** — `Cmd/Ctrl + ,` for settings
+- **Accessible** — ARIA labels, focus trapping, keyboard navigation, screen reader support
 
 ## Prerequisites
 
-Before running this application, make sure you have the following installed:
-
-- **Node.js**: You can download it from the [official website](https://nodejs.org/).
-- **`aws-vault` tool**: You can install it following the instructions on the [official GitHub page](https://github.com/99designs/aws-vault).
-- **AWS CLI**: You can install it following the instructions on the [official AWS page](https://aws.amazon.com/cli/).
-
-Additionally, ensure that your AWS configuration file (`~/.aws/config`) is appropriately set up with the environments you want to use.
+- [aws-vault](https://github.com/99designs/aws-vault) — AWS credential management
+- [AWS CLI](https://aws.amazon.com/cli/) — AWS API access
+- [Node.js](https://nodejs.org/) 22+ (CLI only)
+- AWS profiles configured in `~/.aws/config`
 
 ## Installation
 
-You can install this application globally using npm:
+### Desktop App
+
+Download the latest installer for your platform from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases):
+
+| Platform | Format |
+|----------|--------|
+| macOS (Apple Silicon + Intel) | `.dmg` |
+| Windows | `.msi` / `.exe` |
+| Linux | `.deb` / `.AppImage` |
+
+### CLI
 
 ```bash
 npm install -g rds_ssm_connect
 ```
 
-## Connecting to the Database
+## Usage
 
-1. **Invoke the Application**:
-   
-   Run the following command in your terminal:
+### Desktop App
 
-   ```bash
-   rds_ssm_connect
-   ```
+Launch the app, select a project and environment, then click **Connect**. Connection credentials are displayed inline with one-click copy buttons. Save connections for quick access later.
 
-   The application will read your AWS configuration file and prompt you to select an environment.
+### CLI
 
-2. **Select an Environment**:
+```bash
+rds_ssm_connect
+```
 
-   The application will list the environments found in your AWS configuration file. Select the desired environment for which you want to connect to the RDS instance.
+1. Select a project (TLN or Covered)
+2. Select an environment (AWS profile)
+3. The tool retrieves credentials from Secrets Manager, finds a bastion instance, and starts SSM port forwarding
+4. Use the displayed connection string with your database client (`psql`, pgAdmin, DBeaver, etc.)
 
-3. **Execution of AWS Commands**:
-
-   After selecting the environment, the application will:
-   
-   - Extract environments from the AWS configuration file.
-   - Use AWS Secrets Manager to list and retrieve the secret containing the RDS credentials.
-   - Display the connection credentials and connection string.
-   - Get the ID of the bastion instance.
-   - Get the endpoint of the RDS cluster.
-   - Provide a command to start a port forwarding session to the RDS cluster.
-
-4. **Receive Connection Information**:
-
-   After executing the necessary AWS commands, the application will provide the connection information, as shown below:
-
-   ```
-   Your connection string is: psql -h localhost -p <port> -U <username> -d <database>
-   Use the password: <password>
-   ```
-
-5. **Port Forwarding**:
-
-   Use the provided command to start port forwarding. This step is crucial as it sets up the local port to tunnel to the RDS cluster through the bastion host.
-
-   For example:
-
-   ```
-   aws ssm start-session --target <instance-id> --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=<rds-endpoint>,portNumber='5432',localPortNumber='<port>'" --cli-connect-timeout 0
-   ```
-
-6. **Connect to Your Database**:
-
-   Use the provided connection string and password to connect to your database via a database administration tool of your choice, such as pgAdmin, DBeaver, or the `psql` command-line interface.
-
-   Ensure that the database administration tool is installed and configured on your local machine.
-
-## Requirements
-
-This application requires the following Node.js modules:
-
-- `@aws-sdk/client-ec2`
-- `@aws-sdk/client-rds`
-- `@aws-sdk/client-secrets-manager`
-- `inquirer`
-
-These modules will be automatically installed when you install the application with npm.
+The tunnel stays open until you press `Ctrl+C`.
 
 ## How It Works
 
-1. **Reading AWS Configuration**:
+1. Reads AWS profiles from `~/.aws/config`
+2. Filters profiles based on the selected project
+3. Queries AWS Secrets Manager for RDS credentials (project-specific prefix)
+4. Finds a running bastion instance (tagged `Name=*bastion*`)
+5. Gets the RDS endpoint (cluster or instance depending on project)
+6. Starts an SSM port forwarding session with the correct local port
+7. Displays connection details (host, port, username, password, database)
 
-   The application first reads the AWS configuration file (`~/.aws/config`) and extracts the environments configured.
+### Error Recovery
 
-2. **User Prompt**:
+When a bastion instance appears running but SSM agent is disconnected (`TargetNotConnected`, exit code 254):
 
-   The user is prompted to select one of the configured environments using `inquirer`.
+1. Terminates the disconnected instance
+2. Waits for ASG to launch a replacement (up to 20 retries, 15s intervals)
+3. Verifies the SSM agent is online
+4. Retries port forwarding (up to 2 attempts)
 
-3. **AWS Commands Execution**:
+## Project Configuration
 
-   Upon selecting an environment, the application performs the following operations using the AWS SDK and `aws-vault`:
-   
-   - **Listing Secrets**: Uses AWS Secrets Manager to list secrets and identify the one containing the RDS credentials.
-   - **Retrieving Secret Value**: Fetches the secret value containing the RDS username and password.
-   - **Describing Instances**: Gets the ID of a bastion instance tagged with `Name=*bastion*`.
-   - **Describing RDS Clusters**: Retrieves the endpoint of the RDS cluster identified with `-rds-aurora`.
-   - **Port Forwarding Command**: Outputs a command to start an AWS SSM session for port forwarding.
+| | TLN (EMR) | Covered Healthcare |
+|---|---|---|
+| Region | us-east-2 | us-west-1 |
+| Database | emr | covered_db |
+| RDS type | Aurora cluster | RDS instance |
+| Secret prefix | `rds!cluster` | `rds!db` |
+| Port range | 5432–5452 | 5460–5461 |
 
-4. **Output**:
+Port assignments are based on environment suffix mappings defined in `envPortMapping.js`.
 
-   The application displays the connection string and password for the RDS database along with a command to start a port forwarding session to the RDS cluster, allowing secure access from the local machine.
+## Development
+
+### Setup
+
+```bash
+npm install
+```
+
+### Commands
+
+```bash
+npm test              # Run tests
+npm run dev:vite      # Vite dev server (frontend only)
+npm run dev:gui       # Tauri dev mode (full app)
+npm run build:vite    # Build frontend
+npm run build:gui     # Build Tauri desktop app
+```
+
+### Architecture
+
+```
+connect.js              CLI entry point (shebang, runs standalone)
+gui-adapter.js          IPC bridge — JSON stdin/stdout protocol for Tauri sidecar
+envPortMapping.js       Multi-project configuration (regions, ports, patterns)
+src-tauri/
+  src/lib.rs            Tauri commands (connect, disconnect, save, update, etc.)
+  tauri.conf.json       App config, plugins, window settings, bundling
+src/
+  App.svelte            Main app shell (Svelte 5 with runes)
+  lib/
+    utils.js            Shared utilities (clipboard, timeout, focus trap)
+    CopyButton.svelte   Reusable copy-to-clipboard with feedback
+    ConfirmDialog.svelte Reusable confirmation modal
+    ConnectionForm.svelte  Project/environment selector + connect button
+    SavedConnections.svelte  Bookmarked connections list
+    ActiveConnections.svelte  Live connection panels with credentials
+    SessionStatus.svelte    Connection status indicator
+    Settings.svelte       AWS profile management (CRUD + raw config editor)
+    PrerequisitesCheck.svelte  Missing dependency warnings
+    UpdateBanner.svelte   In-app update notification
+```
+
+### Tech Stack
+
+- **Frontend**: Svelte 5 (runes), Vite
+- **Desktop**: Tauri v2 (Rust)
+- **Backend**: Node.js sidecar bundled with esbuild + pkg
+- **AWS SDK**: v3 (EC2, RDS, SSM, Secrets Manager)
+- **Linter**: Biome
+
+## Publishing
+
+- **npm**: Published automatically via GitHub Actions when a release is created
+- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux x64, Windows x64) via `tauri-action` on git tags
+
+## License
+
+ISC
