@@ -6,7 +6,11 @@ import os from 'os'
 import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import { createRequire } from 'module'
 import { PROJECT_CONFIGS } from './envPortMapping.js'
+
+const require = createRequire(import.meta.url)
+const packageJson = require('./package.json')
 
 const execAsync = promisify(exec)
 
@@ -16,6 +20,44 @@ const RETRY_CONFIG = {
   BASTION_WAIT_RETRY_DELAY_MS: 15000,
   PORT_FORWARDING_MAX_RETRIES: 2,
   SSM_AGENT_READY_WAIT_MS: 10000
+}
+
+// Version check configuration
+const VERSION_CHECK_TIMEOUT_MS = 3000
+const PACKAGE_NAME = packageJson.name
+const CURRENT_VERSION = packageJson.version
+
+async function checkForUpdates () {
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), VERSION_CHECK_TIMEOUT_MS)
+
+    const response = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME}/latest`, {
+      signal: controller.signal
+    })
+    clearTimeout(timeoutId)
+
+    if (!response.ok) return
+
+    const data = await response.json()
+    const latestVersion = data.version
+
+    if (latestVersion && latestVersion !== CURRENT_VERSION) {
+      const [latestMajor, latestMinor, latestPatch] = latestVersion.split('.').map(Number)
+      const [currentMajor, currentMinor, currentPatch] = CURRENT_VERSION.split('.').map(Number)
+
+      const isNewer = latestMajor > currentMajor ||
+        (latestMajor === currentMajor && latestMinor > currentMinor) ||
+        (latestMajor === currentMajor && latestMinor === currentMinor && latestPatch > currentPatch)
+
+      if (isNewer) {
+        console.log(`\n  Update available: ${CURRENT_VERSION} → ${latestVersion}`)
+        console.log(`  Run: npm update -g ${PACKAGE_NAME}\n`)
+      }
+    }
+  } catch {
+    // Silently ignore version check failures
+  }
 }
 
 // Store active child processes for cleanup
@@ -278,6 +320,9 @@ function getProfilesForProject (allProfiles, projectConfig, allProjectConfigs) {
 async function main () {
   // Setup process cleanup handlers
   setupProcessCleanup()
+
+  // Check for updates (non-blocking)
+  await checkForUpdates()
 
   try {
     // Read all AWS profiles first
