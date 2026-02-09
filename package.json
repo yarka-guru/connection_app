@@ -41,7 +41,7 @@
     "dev:vite": "vite",
     "build:vite": "vite build",
     "dev:gui": "npm run pkg:sidecar:dev && tauri dev",
-    "build:gui": "npm run pkg:sidecar && tauri build",
+    "build:gui": "npm run pkg:sidecar && CI=true tauri build",
     "pkg:sidecar": "node scripts/pkg-sidecar.js",
     "pkg:sidecar:dev": "node scripts/pkg-sidecar-dev.js",
     "tauri": "tauri",
