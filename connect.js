@@ -44,6 +44,7 @@ async function readAwsConfig () {
     const awsConfig = await fs.readFile(awsConfigPath, { encoding: 'utf-8' })
     return awsConfig
       .split(/\r?\n/)
+      .map(line => line.trim())
       .filter(line => line.startsWith('[') && line.endsWith(']'))
       .map(line => line.slice(1, -1))
       .map(line => line.replace('profile ', '').trim())
