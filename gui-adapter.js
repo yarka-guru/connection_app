@@ -30,12 +30,12 @@ const activeConnections = new Map()
 
 // Send JSON response to stdout
 function sendResponse(id, type, data) {
-  const _response = JSON.stringify({ id, type, ...data })
+  process.stdout.write(JSON.stringify({ id, type, ...data }) + '\n')
 }
 
 // Send event to stdout
 function sendEvent(event, data) {
-  const _response = JSON.stringify({ type: 'event', event, ...data })
+  process.stdout.write(JSON.stringify({ type: 'event', event, ...data }) + '\n')
 }
 
 // Check if a port is available

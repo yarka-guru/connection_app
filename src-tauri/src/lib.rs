@@ -6,16 +6,26 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_store::StoreExt;
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::{oneshot, Mutex as TokioMutex};
 use uuid::Uuid;
 
+// Per-command response map: command ID -> oneshot sender
+type PendingResponses = Arc<TokioMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>;
+
 // State management - use tokio Mutex for async safety
-#[derive(Default)]
 struct SidecarState {
     child: Option<CommandChild>,
-    response_tx: Option<mpsc::Sender<serde_json::Value>>,
+    pending: PendingResponses,
 }
 
+impl Default for SidecarState {
+    fn default() -> Self {
+        Self {
+            child: None,
+            pending: Arc::new(TokioMutex::new(HashMap::new())),
+        }
+    }
+}
 
 // Command ID counter
 static COMMAND_ID: AtomicU64 = AtomicU64::new(1);
@@ -89,10 +99,6 @@ pub struct UpdateInfo {
     pub download_url: Option<String>,
 }
 
-// Global response receiver - shared across commands
-static RESPONSE_RX: std::sync::OnceLock<Arc<TokioMutex<mpsc::Receiver<serde_json::Value>>>> =
-    std::sync::OnceLock::new();
-
 // Active connections map - tracks all currently active connections
 static ACTIVE_CONNECTIONS: std::sync::OnceLock<Arc<TokioMutex<HashMap<String, ActiveConnection>>>> =
     std::sync::OnceLock::new();
@@ -115,8 +121,7 @@ async fn ensure_sidecar(
         return Ok(());
     }
 
-    let (tx, rx) = mpsc::channel::<serde_json::Value>(100);
-    let _ = RESPONSE_RX.set(Arc::new(TokioMutex::new(rx)));
+    let pending = state_guard.pending.clone();
 
     // Spawn sidecar using Tauri shell plugin
     // Pass through all environment variables to ensure aws-vault and AWS CLI are accessible
@@ -149,13 +154,19 @@ async fn ensure_sidecar(
         .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
     state_guard.child = Some(child);
-    state_guard.response_tx = Some(tx.clone());
 
     // Drop the lock before spawning async task
     drop(state_guard);
 
-    // Spawn task to read stdout and forward events
+    // Clone state Arc for the reader task to clear child on termination
+    let state_ref: *const TokioMutex<SidecarState> = state as *const _;
+    // SAFETY: The TokioMutex<SidecarState> is managed by Tauri and lives for the app lifetime.
+    // The spawned task only accesses it on termination before returning.
+    let state_ptr = state_ref as usize;
+
+    // Spawn task to read stdout, route responses, and forward events
     let app_handle_clone = app_handle.clone();
+    let pending_clone = pending.clone();
     tokio::spawn(async move {
         use tauri_plugin_shell::process::CommandEvent;
 
@@ -165,9 +176,14 @@ async fn ensure_sidecar(
                     let line_str = String::from_utf8_lossy(&line);
                     for json_str in line_str.lines() {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
-                            if json.get("id").is_some() {
-                                let _ = tx.send(json.clone()).await;
+                            // Route responses to the matching per-command oneshot
+                            if let Some(id) = json.get("id").and_then(|v| v.as_u64()) {
+                                let mut map = pending_clone.lock().await;
+                                if let Some(tx) = map.remove(&id) {
+                                    let _ = tx.send(json.clone());
+                                }
                             }
+                            // Forward all messages (responses + events) to the frontend
                             let _ = app_handle_clone.emit("sidecar-event", json);
                         }
                     }
@@ -177,6 +193,22 @@ async fn ensure_sidecar(
                 }
                 CommandEvent::Terminated(status) => {
                     eprintln!("Sidecar terminated with status: {:?}", status);
+
+                    // Clear sidecar child so ensure_sidecar can restart it
+                    // SAFETY: state lives for the app lifetime (Tauri managed state)
+                    let state = unsafe { &*(state_ptr as *const TokioMutex<SidecarState>) };
+                    let mut guard = state.lock().await;
+                    guard.child = None;
+
+                    // Fail all pending commands
+                    let mut map = pending_clone.lock().await;
+                    for (_id, tx) in map.drain() {
+                        let _ = tx.send(serde_json::json!({
+                            "type": "error",
+                            "message": "Sidecar terminated unexpectedly"
+                        }));
+                    }
+
                     break;
                 }
                 _ => {}
@@ -213,43 +245,51 @@ async fn send_command_and_wait(
         }
     }
 
-    // Send command
+    // Create a oneshot channel for this command's response
+    let (resp_tx, resp_rx) = oneshot::channel::<serde_json::Value>();
+
+    // Register the sender in the pending map
+    let pending = {
+        let guard = state.lock().await;
+        guard.pending.clone()
+    };
+    {
+        let mut map = pending.lock().await;
+        map.insert(id, resp_tx);
+    }
+
+    // Send command to sidecar stdin
     {
         let mut state_guard = state.lock().await;
         if let Some(ref mut child) = state_guard.child {
             let command_str = serde_json::to_string(&command).map_err(|e| e.to_string())?;
             child
                 .write(format!("{}\n", command_str).as_bytes())
-                .map_err(|e| format!("Failed to write to sidecar: {}", e))?;
+                .map_err(|e| {
+                    // Clean up pending entry on write failure
+                    let pending = state_guard.pending.clone();
+                    tokio::spawn(async move {
+                        pending.lock().await.remove(&id);
+                    });
+                    format!("Failed to write to sidecar: {}", e)
+                })?;
         } else {
+            pending.lock().await.remove(&id);
             return Err("Sidecar not running".to_string());
         }
     }
 
-    // Wait for response with matching ID
-    let rx = RESPONSE_RX
-        .get()
-        .ok_or_else(|| "Response channel not initialized".to_string())?;
-
+    // Await the oneshot with timeout
     let timeout = tokio::time::Duration::from_millis(timeout_ms);
-    let start = tokio::time::Instant::now();
-
-    let mut rx_guard = rx.lock().await;
-    while start.elapsed() < timeout {
-        match tokio::time::timeout(tokio::time::Duration::from_millis(100), rx_guard.recv()).await {
-            Ok(Some(response)) => {
-                if response.get("id") == Some(&serde_json::json!(id)) {
-                    return Ok(response);
-                }
-            }
-            Ok(None) => {
-                return Err("Sidecar channel closed".to_string());
-            }
-            Err(_) => continue,
+    match tokio::time::timeout(timeout, resp_rx).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err("Response channel dropped (sidecar may have crashed)".to_string()),
+        Err(_) => {
+            // Timeout — clean up the pending entry
+            pending.lock().await.remove(&id);
+            Err("Timeout waiting for sidecar response".to_string())
         }
     }
-
-    Err("Timeout waiting for sidecar response".to_string())
 }
 
 // ========================
@@ -294,7 +334,7 @@ async fn save_connection(
         existing.last_used_at = Some(chrono_now());
         let saved = existing.clone();
 
-        store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).unwrap());
+        store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).map_err(|e| format!("Serialization error: {}", e))?);
         store.save().map_err(|e| format!("Failed to save store: {}", e))?;
 
         return Ok(saved);
@@ -310,7 +350,7 @@ async fn save_connection(
 
     connections.push(new_connection.clone());
 
-    store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).unwrap());
+    store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).map_err(|e| format!("Serialization error: {}", e))?);
     store.save().map_err(|e| format!("Failed to save store: {}", e))?;
 
     Ok(new_connection)
@@ -329,7 +369,7 @@ async fn delete_saved_connection(app_handle: AppHandle, id: String) -> Result<()
 
     connections.retain(|c| c.id != id);
 
-    store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).unwrap());
+    store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).map_err(|e| format!("Serialization error: {}", e))?);
     store.save().map_err(|e| format!("Failed to save store: {}", e))?;
 
     Ok(())
@@ -350,7 +390,7 @@ async fn update_saved_connection_last_used(app_handle: AppHandle, id: String) ->
         conn.last_used_at = Some(chrono_now());
     }
 
-    store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).unwrap());
+    store.set(SAVED_CONNECTIONS_KEY, serde_json::to_value(&connections).map_err(|e| format!("Serialization error: {}", e))?);
     store.save().map_err(|e| format!("Failed to save store: {}", e))?;
 
     Ok(())
@@ -361,9 +401,9 @@ fn chrono_now() -> String {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    // Return ISO 8601 timestamp
+    // Return Unix epoch in milliseconds (for JS compatibility)
     let secs = duration.as_secs();
-    format!("{}", secs * 1000) // milliseconds for JS compatibility
+    format!("{}", secs * 1000)
 }
 
 // ========================
@@ -701,131 +741,151 @@ pub struct PrerequisitesResult {
 
 #[tauri::command]
 async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
-    use std::process::Command;
+    // Run all blocking I/O on a dedicated thread to avoid starving the Tokio runtime
+    tokio::task::spawn_blocking(move || {
+        use std::process::Command;
 
-    // Common paths where tools might be installed
-    let search_paths = [
-        "/usr/local/bin",
-        "/opt/homebrew/bin",
-        "/usr/bin",
-        "/bin",
-        &format!("{}/.local/bin", std::env::var("HOME").unwrap_or_default()),
-    ];
+        // Common paths where tools might be installed
+        let home = std::env::var("HOME").unwrap_or_default();
+        let local_bin = format!("{}/.local/bin", home);
+        let search_paths: Vec<&str> = vec![
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/usr/bin",
+            "/bin",
+            &local_bin,
+        ];
 
-    fn find_command(name: &str, search_paths: &[&str]) -> Option<std::path::PathBuf> {
-        // First try PATH
-        if let Ok(output) = std::process::Command::new("which").arg(name).output()
-            && output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Some(std::path::PathBuf::from(path));
+        fn find_command(name: &str, search_paths: &[&str]) -> Option<std::path::PathBuf> {
+            // First try PATH
+            if let Ok(output) = std::process::Command::new("which").arg(name).output()
+                && output.status.success() {
+                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !path.is_empty() {
+                        return Some(std::path::PathBuf::from(path));
+                    }
+                }
+            // Then search common paths
+            for dir in search_paths {
+                let path = std::path::Path::new(dir).join(name);
+                if path.exists() {
+                    return Some(path);
                 }
             }
-        // Then search common paths
-        for dir in search_paths {
-            let path = std::path::Path::new(dir).join(name);
-            if path.exists() {
-                return Some(path);
+            None
+        }
+
+        // OS-agnostic install command helper
+        fn install_command_for(macos_cmd: &str, _linux_hint: &str) -> Option<String> {
+            if cfg!(target_os = "macos") {
+                Some(macos_cmd.to_string())
+            } else if cfg!(target_os = "linux") {
+                Some(_linux_hint.to_string())
+            } else if cfg!(target_os = "windows") {
+                None // Windows users should follow the install URL
+            } else {
+                None
             }
         }
-        None
-    }
 
-    let mut prerequisites = Vec::new();
+        let mut prerequisites = Vec::new();
 
-    // Check aws-vault
-    let aws_vault = match find_command("aws-vault", &search_paths) {
-        Some(path) => match Command::new(&path).arg("--version").output() {
-            Ok(output) if output.status.success() => PrerequisiteStatus {
-                name: "aws-vault".to_string(),
-                installed: true,
-                version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-                install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-                install_command: Some("brew install aws-vault".to_string()),
+        // Check aws-vault
+        let aws_vault = match find_command("aws-vault", &search_paths) {
+            Some(path) => match Command::new(&path).arg("--version").output() {
+                Ok(output) if output.status.success() => PrerequisiteStatus {
+                    name: "aws-vault".to_string(),
+                    installed: true,
+                    version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+                    install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
+                    install_command: install_command_for("brew install aws-vault", "See install URL for Linux packages"),
+                },
+                _ => PrerequisiteStatus {
+                    name: "aws-vault".to_string(),
+                    installed: false,
+                    version: None,
+                    install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
+                    install_command: install_command_for("brew install aws-vault", "See install URL for Linux packages"),
+                },
             },
-            _ => PrerequisiteStatus {
+            None => PrerequisiteStatus {
                 name: "aws-vault".to_string(),
                 installed: false,
                 version: None,
                 install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-                install_command: Some("brew install aws-vault".to_string()),
+                install_command: install_command_for("brew install aws-vault", "See install URL for Linux packages"),
             },
-        },
-        None => PrerequisiteStatus {
-            name: "aws-vault".to_string(),
-            installed: false,
-            version: None,
-            install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-            install_command: Some("brew install aws-vault".to_string()),
-        },
-    };
-    prerequisites.push(aws_vault);
+        };
+        prerequisites.push(aws_vault);
 
-    // Check AWS CLI
-    let aws_cli = match find_command("aws", &search_paths) {
-        Some(path) => match Command::new(&path).arg("--version").output() {
-            Ok(output) if output.status.success() => {
-                let version_str = String::from_utf8_lossy(&output.stdout);
-                PrerequisiteStatus {
-                    name: "AWS CLI".to_string(),
-                    installed: true,
-                    version: Some(version_str.split_whitespace().take(1).collect()),
-                    install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
-                    install_command: Some("brew install awscli".to_string()),
+        // Check AWS CLI
+        let aws_cli = match find_command("aws", &search_paths) {
+            Some(path) => match Command::new(&path).arg("--version").output() {
+                Ok(output) if output.status.success() => {
+                    let version_str = String::from_utf8_lossy(&output.stdout);
+                    PrerequisiteStatus {
+                        name: "AWS CLI".to_string(),
+                        installed: true,
+                        version: Some(version_str.split_whitespace().take(1).collect()),
+                        install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
+                        install_command: install_command_for("brew install awscli", "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install"),
+                    }
                 }
-            }
-            _ => PrerequisiteStatus {
+                _ => PrerequisiteStatus {
+                    name: "AWS CLI".to_string(),
+                    installed: false,
+                    version: None,
+                    install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
+                    install_command: install_command_for("brew install awscli", "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install"),
+                },
+            },
+            None => PrerequisiteStatus {
                 name: "AWS CLI".to_string(),
                 installed: false,
                 version: None,
                 install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
-                install_command: Some("brew install awscli".to_string()),
+                install_command: install_command_for("brew install awscli", "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install"),
             },
-        },
-        None => PrerequisiteStatus {
-            name: "AWS CLI".to_string(),
-            installed: false,
-            version: None,
-            install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
-            install_command: Some("brew install awscli".to_string()),
-        },
-    };
-    prerequisites.push(aws_cli);
+        };
+        prerequisites.push(aws_cli);
 
-    // Check Session Manager Plugin
-    let ssm_plugin = match find_command("session-manager-plugin", &search_paths) {
-        Some(path) => match Command::new(&path).arg("--version").output() {
-            Ok(output) if output.status.success() => PrerequisiteStatus {
-                name: "Session Manager Plugin".to_string(),
-                installed: true,
-                version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-                install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
-                install_command: None,
+        // Check Session Manager Plugin
+        let ssm_plugin = match find_command("session-manager-plugin", &search_paths) {
+            Some(path) => match Command::new(&path).arg("--version").output() {
+                Ok(output) if output.status.success() => PrerequisiteStatus {
+                    name: "Session Manager Plugin".to_string(),
+                    installed: true,
+                    version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+                    install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                    install_command: None,
+                },
+                _ => PrerequisiteStatus {
+                    name: "Session Manager Plugin".to_string(),
+                    installed: false,
+                    version: None,
+                    install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                    install_command: None,
+                },
             },
-            _ => PrerequisiteStatus {
+            None => PrerequisiteStatus {
                 name: "Session Manager Plugin".to_string(),
                 installed: false,
                 version: None,
                 install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
                 install_command: None,
             },
-        },
-        None => PrerequisiteStatus {
-            name: "Session Manager Plugin".to_string(),
-            installed: false,
-            version: None,
-            install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
-            install_command: None,
-        },
-    };
-    prerequisites.push(ssm_plugin);
+        };
+        prerequisites.push(ssm_plugin);
 
-    let all_installed = prerequisites.iter().all(|p| p.installed);
+        let all_installed = prerequisites.iter().all(|p| p.installed);
 
-    Ok(PrerequisitesResult {
-        all_installed,
-        prerequisites,
+        Ok(PrerequisitesResult {
+            all_installed,
+            prerequisites,
+        })
     })
+    .await
+    .map_err(|e| format!("Prerequisites check task failed: {}", e))?
 }
 
 // ========================
@@ -863,11 +923,12 @@ fn get_aws_config_path() -> std::path::PathBuf {
 async fn read_aws_config() -> Result<Vec<AwsProfile>, String> {
     let config_path = get_aws_config_path();
 
-    if !config_path.exists() {
+    if !tokio::fs::try_exists(&config_path).await.unwrap_or(false) {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&config_path)
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
         .map_err(|e| format!("Failed to read AWS config: {}", e))?;
 
     let mut profiles = Vec::new();
@@ -913,23 +974,27 @@ async fn read_aws_config() -> Result<Vec<AwsProfile>, String> {
                 section.to_string()
             };
             current_profile = Some(profile_name);
-        } else if current_profile.is_some() && !trimmed.is_empty() && !trimmed.starts_with('#') {
+        } else if current_profile.is_some() && !trimmed.is_empty() {
+            // Include comment lines (# and ;) in raw_content to preserve them on save
             current_content.push_str(line);
             current_content.push('\n');
 
-            if let Some((key, value)) = trimmed.split_once('=') {
-                let key = key.trim();
-                let value = value.trim();
-                match key {
-                    "region" => current_region = Some(value.to_string()),
-                    "source_profile" => current_source_profile = Some(value.to_string()),
-                    "role_arn" => current_role_arn = Some(value.to_string()),
-                    "mfa_serial" => current_mfa_serial = Some(value.to_string()),
-                    "sso_start_url" => current_sso_start_url = Some(value.to_string()),
-                    "sso_region" => current_sso_region = Some(value.to_string()),
-                    "sso_account_id" => current_sso_account_id = Some(value.to_string()),
-                    "sso_role_name" => current_sso_role_name = Some(value.to_string()),
-                    _ => {}
+            // Only parse key=value lines (skip comments)
+            if !trimmed.starts_with('#') && !trimmed.starts_with(';') {
+                if let Some((key, value)) = trimmed.split_once('=') {
+                    let key = key.trim();
+                    let value = value.trim();
+                    match key {
+                        "region" => current_region = Some(value.to_string()),
+                        "source_profile" => current_source_profile = Some(value.to_string()),
+                        "role_arn" => current_role_arn = Some(value.to_string()),
+                        "mfa_serial" => current_mfa_serial = Some(value.to_string()),
+                        "sso_start_url" => current_sso_start_url = Some(value.to_string()),
+                        "sso_region" => current_sso_region = Some(value.to_string()),
+                        "sso_account_id" => current_sso_account_id = Some(value.to_string()),
+                        "sso_role_name" => current_sso_role_name = Some(value.to_string()),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -954,19 +1019,31 @@ async fn read_aws_config() -> Result<Vec<AwsProfile>, String> {
     Ok(profiles)
 }
 
+/// Match a section name against a profile name, handling both
+/// `[profile name]` and bare `[name]` formats.
+fn section_matches_profile(section: &str, profile_name: &str) -> bool {
+    if profile_name == "default" {
+        section == "default"
+    } else {
+        section == format!("profile {}", profile_name) || section == profile_name
+    }
+}
+
 #[tauri::command]
 async fn save_aws_profile(profile: AwsProfile) -> Result<(), String> {
     let config_path = get_aws_config_path();
 
     // Ensure .aws directory exists
     if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
+        tokio::fs::create_dir_all(parent)
+            .await
             .map_err(|e| format!("Failed to create .aws directory: {}", e))?;
     }
 
     // Read existing config
-    let existing_content = if config_path.exists() {
-        std::fs::read_to_string(&config_path)
+    let existing_content = if tokio::fs::try_exists(&config_path).await.unwrap_or(false) {
+        tokio::fs::read_to_string(&config_path)
+            .await
             .map_err(|e| format!("Failed to read AWS config: {}", e))?
     } else {
         String::new()
@@ -991,10 +1068,7 @@ async fn save_aws_profile(profile: AwsProfile) -> Result<(), String> {
             }
 
             let section = &trimmed[1..trimmed.len()-1];
-            let is_target = (section == "default" && profile.name == "default") ||
-                           (section == format!("profile {}", profile.name));
-
-            if is_target {
+            if section_matches_profile(section, &profile.name) {
                 in_target_profile = true;
                 found = true;
                 new_content.push_str(&profile_header);
@@ -1022,7 +1096,8 @@ async fn save_aws_profile(profile: AwsProfile) -> Result<(), String> {
         new_content.push('\n');
     }
 
-    std::fs::write(&config_path, new_content.trim_end())
+    tokio::fs::write(&config_path, new_content.trim_end())
+        .await
         .map_err(|e| format!("Failed to write AWS config: {}", e))?;
 
     Ok(())
@@ -1032,11 +1107,12 @@ async fn save_aws_profile(profile: AwsProfile) -> Result<(), String> {
 async fn delete_aws_profile(profile_name: String) -> Result<(), String> {
     let config_path = get_aws_config_path();
 
-    if !config_path.exists() {
+    if !tokio::fs::try_exists(&config_path).await.unwrap_or(false) {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&config_path)
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
         .map_err(|e| format!("Failed to read AWS config: {}", e))?;
 
     let mut new_content = String::new();
@@ -1047,12 +1123,9 @@ async fn delete_aws_profile(profile_name: String) -> Result<(), String> {
 
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             let section = &trimmed[1..trimmed.len()-1];
-            let is_target = (section == "default" && profile_name == "default") ||
-                           (section == format!("profile {}", profile_name));
+            in_target_profile = section_matches_profile(section, &profile_name);
 
-            in_target_profile = is_target;
-
-            if !is_target {
+            if !in_target_profile {
                 new_content.push_str(line);
                 new_content.push('\n');
             }
@@ -1062,7 +1135,8 @@ async fn delete_aws_profile(profile_name: String) -> Result<(), String> {
         }
     }
 
-    std::fs::write(&config_path, new_content.trim_end())
+    tokio::fs::write(&config_path, new_content.trim_end())
+        .await
         .map_err(|e| format!("Failed to write AWS config: {}", e))?;
 
     Ok(())
@@ -1072,11 +1146,12 @@ async fn delete_aws_profile(profile_name: String) -> Result<(), String> {
 async fn get_raw_aws_config() -> Result<String, String> {
     let config_path = get_aws_config_path();
 
-    if !config_path.exists() {
+    if !tokio::fs::try_exists(&config_path).await.unwrap_or(false) {
         return Ok(String::new());
     }
 
-    std::fs::read_to_string(&config_path)
+    tokio::fs::read_to_string(&config_path)
+        .await
         .map_err(|e| format!("Failed to read AWS config: {}", e))
 }
 
@@ -1086,11 +1161,13 @@ async fn save_raw_aws_config(content: String) -> Result<(), String> {
 
     // Ensure .aws directory exists
     if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
+        tokio::fs::create_dir_all(parent)
+            .await
             .map_err(|e| format!("Failed to create .aws directory: {}", e))?;
     }
 
-    std::fs::write(&config_path, content)
+    tokio::fs::write(&config_path, content)
+        .await
         .map_err(|e| format!("Failed to write AWS config: {}", e))
 }
 
