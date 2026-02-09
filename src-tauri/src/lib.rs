@@ -710,18 +710,56 @@ pub struct PrerequisitesResult {
 async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
     use std::process::Command;
 
+    // Common paths where tools might be installed
+    let search_paths = [
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/bin",
+        &format!("{}/.local/bin", std::env::var("HOME").unwrap_or_default()),
+    ];
+
+    fn find_command(name: &str, search_paths: &[&str]) -> Option<std::path::PathBuf> {
+        // First try PATH
+        if let Ok(output) = std::process::Command::new("which").arg(name).output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Some(std::path::PathBuf::from(path));
+                }
+            }
+        }
+        // Then search common paths
+        for dir in search_paths {
+            let path = std::path::Path::new(dir).join(name);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     let mut prerequisites = Vec::new();
 
     // Check aws-vault
-    let aws_vault = match Command::new("aws-vault").arg("--version").output() {
-        Ok(output) if output.status.success() => PrerequisiteStatus {
-            name: "aws-vault".to_string(),
-            installed: true,
-            version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-            install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-            install_command: Some("brew install aws-vault".to_string()),
+    let aws_vault = match find_command("aws-vault", &search_paths) {
+        Some(path) => match Command::new(&path).arg("--version").output() {
+            Ok(output) if output.status.success() => PrerequisiteStatus {
+                name: "aws-vault".to_string(),
+                installed: true,
+                version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+                install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
+                install_command: Some("brew install aws-vault".to_string()),
+            },
+            _ => PrerequisiteStatus {
+                name: "aws-vault".to_string(),
+                installed: false,
+                version: None,
+                install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
+                install_command: Some("brew install aws-vault".to_string()),
+            },
         },
-        _ => PrerequisiteStatus {
+        None => PrerequisiteStatus {
             name: "aws-vault".to_string(),
             installed: false,
             version: None,
@@ -732,18 +770,27 @@ async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
     prerequisites.push(aws_vault);
 
     // Check AWS CLI
-    let aws_cli = match Command::new("aws").arg("--version").output() {
-        Ok(output) if output.status.success() => {
-            let version_str = String::from_utf8_lossy(&output.stdout);
-            PrerequisiteStatus {
+    let aws_cli = match find_command("aws", &search_paths) {
+        Some(path) => match Command::new(&path).arg("--version").output() {
+            Ok(output) if output.status.success() => {
+                let version_str = String::from_utf8_lossy(&output.stdout);
+                PrerequisiteStatus {
+                    name: "AWS CLI".to_string(),
+                    installed: true,
+                    version: Some(version_str.split_whitespace().take(1).collect()),
+                    install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
+                    install_command: Some("brew install awscli".to_string()),
+                }
+            }
+            _ => PrerequisiteStatus {
                 name: "AWS CLI".to_string(),
-                installed: true,
-                version: Some(version_str.split_whitespace().take(1).collect()),
+                installed: false,
+                version: None,
                 install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
                 install_command: Some("brew install awscli".to_string()),
-            }
-        }
-        _ => PrerequisiteStatus {
+            },
+        },
+        None => PrerequisiteStatus {
             name: "AWS CLI".to_string(),
             installed: false,
             version: None,
@@ -754,15 +801,24 @@ async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
     prerequisites.push(aws_cli);
 
     // Check Session Manager Plugin
-    let ssm_plugin = match Command::new("session-manager-plugin").arg("--version").output() {
-        Ok(output) if output.status.success() => PrerequisiteStatus {
-            name: "Session Manager Plugin".to_string(),
-            installed: true,
-            version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-            install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
-            install_command: None,
+    let ssm_plugin = match find_command("session-manager-plugin", &search_paths) {
+        Some(path) => match Command::new(&path).arg("--version").output() {
+            Ok(output) if output.status.success() => PrerequisiteStatus {
+                name: "Session Manager Plugin".to_string(),
+                installed: true,
+                version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+                install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                install_command: None,
+            },
+            _ => PrerequisiteStatus {
+                name: "Session Manager Plugin".to_string(),
+                installed: false,
+                version: None,
+                install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                install_command: None,
+            },
         },
-        _ => PrerequisiteStatus {
+        None => PrerequisiteStatus {
             name: "Session Manager Plugin".to_string(),
             installed: false,
             version: None,
