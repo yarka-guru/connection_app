@@ -16,20 +16,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Establishes SSM port forwarding session
 
 ### Configuration
-- `envPortMapping.js` - Environment-to-port mapping configuration
-  - Maps environment suffixes (dev, stage, prod, team1-5, qa1-5, etc.) to local port numbers (5433-5452)
-  - Defines default database name: `emr`
-  - Defines AWS region: `us-east-2`
-  - **Critical**: When adding new environments, update this mapping to assign unique ports
+- `envPortMapping.js` - Multi-project configuration
+  - `PROJECT_CONFIGS` - Object containing per-project settings:
+    - `tln`: TLN/EMR project (us-east-2, Aurora clusters, `rds!cluster` secrets)
+    - `covered`: Covered Healthcare project (us-west-1, RDS instances, `rds!db` secrets)
+  - Each project defines: region, database, secretPrefix, rdsType, rdsPattern, profileFilter, envPortMapping
+  - Legacy exports maintained for backward compatibility
 
 ### Core Flow
 1. Read AWS profiles from `~/.aws/config`
-2. Prompt user to select environment (AWS profile)
-3. Query Secrets Manager for RDS credentials (secrets starting with `rds!cluster`)
-4. Find running bastion instance (tagged with `Name=*bastion*`)
-5. Get RDS Aurora cluster endpoint (cluster IDs ending with `-rds-aurora`)
-6. Start SSM port forwarding session
-7. Display connection details for database client
+2. Prompt user to select project (TLN or Covered)
+3. Filter and prompt for environment (AWS profile) based on project
+4. Query Secrets Manager for RDS credentials (project-specific prefix)
+5. Find running bastion instance (tagged with `Name=*bastion*`)
+6. Get RDS endpoint (cluster or instance based on project config)
+7. Start SSM port forwarding session with correct remote port
+8. Display connection details for database client
 
 ## Development Commands
 
@@ -71,17 +73,27 @@ Package is published to npm via GitHub Actions workflow (`.github/workflows/npm-
 
 ## AWS Resource Naming Conventions
 
-The application relies on specific AWS resource naming patterns:
+The application relies on specific AWS resource naming patterns (per project):
+
+**TLN Project:**
 - **Secrets**: Must start with `rds!cluster`
 - **Bastion instances**: Must be tagged with `Name=*bastion*` and in `running` state
 - **RDS clusters**: DBClusterIdentifier must end with `-rds-aurora` and be in `available` state
+- **Region**: us-east-2
+
+**Covered Project:**
+- **Secrets**: Must start with `rds!db`
+- **Bastion instances**: Must be tagged with `Name=*bastion*` and in `running` state
+- **RDS instances**: DBInstanceIdentifier must contain `covered-db` and be in `available` state
+- **Region**: us-west-1
+- **AWS Profiles**: Must start with `covered` (e.g., `covered`, `covered-staging`)
 
 ## Important Notes
 
-- Port assignment is based on longest-matching environment suffix (e.g., `my-team-dev` matches `dev` → port 5433)
+- Port assignment is based on project-specific port mappings
 - The tool keeps the SSM session running until Ctrl+C is pressed
-- Default port is 5432 if no environment suffix matches
-- All AWS operations use the `us-east-2` region by default
+- Each project has its own default port if no environment suffix matches
+- AWS region is determined by the selected project
 
 ## Error Handling & Recovery
 
