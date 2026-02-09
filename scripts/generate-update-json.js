@@ -10,9 +10,9 @@
  * Example: node scripts/generate-update-json.js 1.7.0 https://github.com/yarka-guru/connection_app/releases/download/v1.7.0
  */
 
-import fs from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -20,13 +20,16 @@ const version = process.argv[2]
 const releaseUrl = process.argv[3]
 
 if (!version || !releaseUrl) {
-  console.log('Usage: node scripts/generate-update-json.js <version> <release-url>')
-  console.log('Example: node scripts/generate-update-json.js 1.7.0 https://github.com/yarka-guru/connection_app/releases/download/v1.7.0')
   process.exit(1)
 }
 
 // Read the current tauri.conf.json to get the product name
-const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, '../src-tauri/tauri.conf.json'), 'utf-8'))
+const tauriConf = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, '../src-tauri/tauri.conf.json'),
+    'utf-8',
+  ),
+)
 const productName = tauriConf.productName.replace(/\s+/g, '_')
 
 const updateManifest = {
@@ -36,26 +39,22 @@ const updateManifest = {
   platforms: {
     'darwin-aarch64': {
       url: `${releaseUrl}/${productName}_${version}_aarch64.app.tar.gz`,
-      signature: ''
+      signature: '',
     },
     'darwin-x86_64': {
       url: `${releaseUrl}/${productName}_${version}_x64.app.tar.gz`,
-      signature: ''
+      signature: '',
     },
     'linux-x86_64': {
       url: `${releaseUrl}/${productName}_${version}_amd64.AppImage.tar.gz`,
-      signature: ''
+      signature: '',
     },
     'windows-x86_64': {
       url: `${releaseUrl}/${productName}_${version}_x64-setup.nsis.zip`,
-      signature: ''
-    }
-  }
+      signature: '',
+    },
+  },
 }
 
 const outputPath = path.join(__dirname, '../latest.json')
 fs.writeFileSync(outputPath, JSON.stringify(updateManifest, null, 2))
-
-console.log(`Generated ${outputPath}`)
-console.log(JSON.stringify(updateManifest, null, 2))
-console.log('\nUpload this file to your GitHub release as "latest.json"')

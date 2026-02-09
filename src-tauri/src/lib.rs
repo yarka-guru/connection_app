@@ -10,19 +10,12 @@ use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 
 // State management - use tokio Mutex for async safety
+#[derive(Default)]
 struct SidecarState {
     child: Option<CommandChild>,
     response_tx: Option<mpsc::Sender<serde_json::Value>>,
 }
 
-impl Default for SidecarState {
-    fn default() -> Self {
-        Self {
-            child: None,
-            response_tx: None,
-        }
-    }
-}
 
 // Command ID counter
 static COMMAND_ID: AtomicU64 = AtomicU64::new(1);
@@ -652,7 +645,7 @@ async fn install_update(app_handle: AppHandle) -> Result<(), String> {
 
     // Download and install the update
     let mut downloaded = 0;
-    let _ = update
+    update
         .download_and_install(
             |chunk_length, content_length| {
                 downloaded += chunk_length;
@@ -721,14 +714,13 @@ async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
 
     fn find_command(name: &str, search_paths: &[&str]) -> Option<std::path::PathBuf> {
         // First try PATH
-        if let Ok(output) = std::process::Command::new("which").arg(name).output() {
-            if output.status.success() {
+        if let Ok(output) = std::process::Command::new("which").arg(name).output()
+            && output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {
                     return Some(std::path::PathBuf::from(path));
                 }
             }
-        }
         // Then search common paths
         for dir in search_paths {
             let path = std::path::Path::new(dir).join(name);
@@ -913,8 +905,8 @@ async fn read_aws_config() -> Result<Vec<AwsProfile>, String> {
 
             // Parse new profile name
             let section = &trimmed[1..trimmed.len()-1];
-            let profile_name = if section.starts_with("profile ") {
-                section[8..].to_string()
+            let profile_name = if let Some(stripped) = section.strip_prefix("profile ") {
+                stripped.to_string()
             } else if section == "default" {
                 "default".to_string()
             } else {

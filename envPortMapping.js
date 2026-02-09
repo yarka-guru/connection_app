@@ -28,9 +28,9 @@ export const PROJECT_CONFIGS = {
       qa3: '5449',
       qa4: '5450',
       qa5: '5451',
-      hotfix: '5452'
+      hotfix: '5452',
     },
-    defaultPort: '5432'
+    defaultPort: '5432',
   },
   covered: {
     name: 'Covered (Healthcare)',
@@ -41,11 +41,11 @@ export const PROJECT_CONFIGS = {
     rdsPattern: 'covered-db', // DBInstanceIdentifier contains this
     profileFilter: 'covered', // Only show profiles starting with 'covered'
     envPortMapping: {
-      'covered': '5460',
-      'covered-staging': '5461'
+      covered: '5460',
+      'covered-staging': '5461',
     },
-    defaultPort: '5460'
-  }
+    defaultPort: '5460',
+  },
 }
 
 // Legacy exports for backward compatibility

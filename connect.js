@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import fs from 'fs/promises'
-import os from 'os'
-import path from 'path'
-import { exec } from 'child_process'
-import { promisify } from 'util'
-import { EventEmitter } from 'events'
+import { exec } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
 import { PROJECT_CONFIGS } from './envPortMapping.js'
 
 // Package info for version checking
@@ -21,7 +21,7 @@ const RETRY_CONFIG = {
   BASTION_WAIT_MAX_RETRIES: 20,
   BASTION_WAIT_RETRY_DELAY_MS: 15000,
   PORT_FORWARDING_MAX_RETRIES: 2,
-  SSM_AGENT_READY_WAIT_MS: 10000
+  SSM_AGENT_READY_WAIT_MS: 10000,
 }
 
 // Version check configuration
@@ -29,14 +29,20 @@ const VERSION_CHECK_TIMEOUT_MS = 3000
 const PACKAGE_NAME = packageJson.name
 const CURRENT_VERSION = packageJson.version
 
-async function checkForUpdates () {
+async function checkForUpdates() {
   try {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), VERSION_CHECK_TIMEOUT_MS)
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      VERSION_CHECK_TIMEOUT_MS,
+    )
 
-    const response = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME}/latest`, {
-      signal: controller.signal
-    })
+    const response = await fetch(
+      `https://registry.npmjs.org/${PACKAGE_NAME}/latest`,
+      {
+        signal: controller.signal,
+      },
+    )
     clearTimeout(timeoutId)
 
     if (!response.ok) return
@@ -45,16 +51,20 @@ async function checkForUpdates () {
     const latestVersion = data.version
 
     if (latestVersion && latestVersion !== CURRENT_VERSION) {
-      const [latestMajor, latestMinor, latestPatch] = latestVersion.split('.').map(Number)
-      const [currentMajor, currentMinor, currentPatch] = CURRENT_VERSION.split('.').map(Number)
+      const [latestMajor, latestMinor, latestPatch] = latestVersion
+        .split('.')
+        .map(Number)
+      const [currentMajor, currentMinor, currentPatch] =
+        CURRENT_VERSION.split('.').map(Number)
 
-      const isNewer = latestMajor > currentMajor ||
+      const isNewer =
+        latestMajor > currentMajor ||
         (latestMajor === currentMajor && latestMinor > currentMinor) ||
-        (latestMajor === currentMajor && latestMinor === currentMinor && latestPatch > currentPatch)
+        (latestMajor === currentMajor &&
+          latestMinor === currentMinor &&
+          latestPatch > currentPatch)
 
       if (isNewer) {
-        console.log(`\n  Update available: ${CURRENT_VERSION} → ${latestVersion}`)
-        console.log(`  Run: npm update -g ${PACKAGE_NAME}\n`)
       }
     }
   } catch {
@@ -66,10 +76,9 @@ async function checkForUpdates () {
 let activeChildProcesses = []
 
 // Handle graceful shutdown
-function setupProcessCleanup () {
+function setupProcessCleanup() {
   const cleanup = () => {
-    console.log('\nCleaning up active connections...')
-    activeChildProcesses.forEach(child => {
+    activeChildProcesses.forEach((child) => {
       if (child && !child.killed) {
         child.kill('SIGTERM')
       }
@@ -82,62 +91,60 @@ function setupProcessCleanup () {
   process.on('exit', cleanup)
 }
 
-async function readAwsConfig () {
+async function readAwsConfig() {
   const awsConfigPath = path.join(os.homedir(), '.aws', 'config')
   try {
     const awsConfig = await fs.readFile(awsConfigPath, { encoding: 'utf-8' })
     return awsConfig
       .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(line => line.startsWith('[') && line.endsWith(']'))
-      .map(line => line.slice(1, -1))
-      .map(line => line.replace('profile ', '').trim())
-  } catch (error) {
-    console.error('Error reading AWS config file:', error)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('[') && line.endsWith(']'))
+      .map((line) => line.slice(1, -1))
+      .map((line) => line.replace('profile ', '').trim())
+  } catch (_error) {
     return []
   }
 }
 
-async function runCommand (command) {
+async function runCommand(command) {
   try {
     const { stdout } = await execAsync(command)
     return stdout.trim()
-  } catch (error) {
-    console.error(`Error executing command: ${command}`)
-    console.error(error)
+  } catch (_error) {
     return null
   }
 }
 
-async function sleep (ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function terminateBastionInstance (ENV, instanceId, region) {
-  console.log(`Terminating disconnected bastion instance: ${instanceId}`)
+async function terminateBastionInstance(ENV, instanceId, region) {
   const terminateCommand = `aws-vault exec ${ENV} -- aws ec2 terminate-instances --region ${region} --instance-ids ${instanceId}`
   await runCommand(terminateCommand)
-  console.log('Bastion instance terminated. ASG will spin up a new instance...')
 }
 
-async function waitForNewBastionInstance (ENV, oldInstanceId, region, maxRetries = RETRY_CONFIG.BASTION_WAIT_MAX_RETRIES, retryDelay = RETRY_CONFIG.BASTION_WAIT_RETRY_DELAY_MS) {
-  console.log('Waiting for new bastion instance to be ready...')
-
+async function waitForNewBastionInstance(
+  ENV,
+  oldInstanceId,
+  region,
+  maxRetries = RETRY_CONFIG.BASTION_WAIT_MAX_RETRIES,
+  retryDelay = RETRY_CONFIG.BASTION_WAIT_RETRY_DELAY_MS,
+) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`Checking for new bastion instance (attempt ${attempt}/${maxRetries})...`)
-
     const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
     const newInstanceId = await runCommand(instanceIdCommand)
 
-    if (newInstanceId && newInstanceId !== oldInstanceId && newInstanceId !== 'None') {
-      console.log(`New bastion instance found: ${newInstanceId}`)
-
+    if (
+      newInstanceId &&
+      newInstanceId !== oldInstanceId &&
+      newInstanceId !== 'None'
+    ) {
       // Verify SSM agent is ready
       const isReady = await waitForSSMAgentReady(ENV, newInstanceId, region)
       if (isReady) {
         return newInstanceId
       } else {
-        console.log('SSM agent not ready yet, will retry...')
       }
     }
 
@@ -149,36 +156,35 @@ async function waitForNewBastionInstance (ENV, oldInstanceId, region, maxRetries
   return null
 }
 
-async function waitForSSMAgentReady (ENV, instanceId, region, maxRetries = 10, retryDelay = 3000) {
-  console.log('Verifying SSM agent status...')
-
+async function waitForSSMAgentReady(
+  ENV,
+  instanceId,
+  region,
+  maxRetries = 10,
+  retryDelay = 3000,
+) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const ssmStatusCommand = `aws-vault exec ${ENV} -- aws ssm describe-instance-information --region ${region} --filters "Key=InstanceIds,Values=${instanceId}" --query "InstanceInformationList[0].PingStatus" --output text`
     const status = await runCommand(ssmStatusCommand)
 
     if (status === 'Online') {
-      console.log('SSM agent is online and ready.')
       // Additional wait for agent to stabilize
       await sleep(RETRY_CONFIG.SSM_AGENT_READY_WAIT_MS)
       return true
     }
 
-    console.log(`SSM agent status: ${status || 'Unknown'} (attempt ${attempt}/${maxRetries})`)
-
     if (attempt < maxRetries) {
       await sleep(retryDelay)
     }
   }
-
-  console.log('Warning: SSM agent did not report Online status, but proceeding anyway.')
   return false
 }
 
-function monitorPortForwardingSession (child) {
+function monitorPortForwardingSession(child) {
   const state = {
     stderrOutput: '',
     targetNotConnectedError: false,
-    sessionEstablished: false
+    sessionEstablished: false,
   }
 
   child.stdout.on('data', (data) => {
@@ -187,12 +193,12 @@ function monitorPortForwardingSession (child) {
     // Detect when session is actually established
     if (output.includes('Starting session with SessionId:')) {
       state.sessionEstablished = true
-      console.log('Port forwarding session established.')
-      console.log('Press Ctrl+C to end the session.')
     }
 
-    if (!output.includes('Starting session with SessionId:') && !output.includes('Port 5433 opened for sessionId')) {
-      console.log(output)
+    if (
+      !output.includes('Starting session with SessionId:') &&
+      !output.includes('Port 5433 opened for sessionId')
+    ) {
     }
   })
 
@@ -201,19 +207,27 @@ function monitorPortForwardingSession (child) {
     state.stderrOutput += errorOutput
 
     // Check for TargetNotConnected error
-    if (errorOutput.includes('TargetNotConnected') || errorOutput.includes('is not connected')) {
+    if (
+      errorOutput.includes('TargetNotConnected') ||
+      errorOutput.includes('is not connected')
+    ) {
       state.targetNotConnectedError = true
     }
-
-    console.error(errorOutput)
   })
 
   return state
 }
 
-async function handleTargetNotConnectedError (ENV, instanceId, rdsEndpoint, portNumber, remotePort, region, retryCount, maxRetries) {
-  console.log(`\nDetected TargetNotConnected error. Attempting recovery (retry ${retryCount + 1}/${maxRetries})...`)
-
+async function handleTargetNotConnectedError(
+  ENV,
+  instanceId,
+  rdsEndpoint,
+  portNumber,
+  remotePort,
+  region,
+  retryCount,
+  maxRetries,
+) {
   // Terminate the disconnected instance
   await terminateBastionInstance(ENV, instanceId, region)
 
@@ -223,16 +237,27 @@ async function handleTargetNotConnectedError (ENV, instanceId, rdsEndpoint, port
   if (!newInstanceId) {
     throw new Error('Failed to find new bastion instance after waiting.')
   }
-
-  // Retry with new instance
-  console.log('Retrying port forwarding with new bastion instance...')
-  return await startPortForwardingWithConfig(ENV, newInstanceId, rdsEndpoint, portNumber, remotePort, region, retryCount + 1, maxRetries)
+  return await startPortForwardingWithConfig(
+    ENV,
+    newInstanceId,
+    rdsEndpoint,
+    portNumber,
+    remotePort,
+    region,
+    retryCount + 1,
+    maxRetries,
+  )
 }
 
-function executePortForwardingCommand (ENV, instanceId, rdsEndpoint, portNumber, remotePort, region) {
+function executePortForwardingCommand(
+  ENV,
+  instanceId,
+  rdsEndpoint,
+  portNumber,
+  remotePort,
+  region,
+) {
   const portForwardingCommand = `aws-vault exec ${ENV} -- aws ssm start-session --region ${region} --target ${instanceId} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${rdsEndpoint},portNumber='${remotePort}',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
-
-  console.log('Starting port forwarding session...')
   const child = exec(portForwardingCommand)
 
   // Register child process for cleanup
@@ -241,29 +266,55 @@ function executePortForwardingCommand (ENV, instanceId, rdsEndpoint, portNumber,
   return child
 }
 
-async function startPortForwardingWithConfig (ENV, instanceId, rdsEndpoint, portNumber, remotePort, region, retryCount = 0, maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES) {
+async function startPortForwardingWithConfig(
+  ENV,
+  instanceId,
+  rdsEndpoint,
+  portNumber,
+  remotePort,
+  region,
+  retryCount = 0,
+  maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
+) {
   return new Promise((resolve, reject) => {
-    const child = executePortForwardingCommand(ENV, instanceId, rdsEndpoint, portNumber, remotePort, region)
+    const child = executePortForwardingCommand(
+      ENV,
+      instanceId,
+      rdsEndpoint,
+      portNumber,
+      remotePort,
+      region,
+    )
     const sessionState = monitorPortForwardingSession(child)
 
     child.on('close', async (code) => {
       // Remove from active processes
-      activeChildProcesses = activeChildProcesses.filter(p => p !== child)
+      activeChildProcesses = activeChildProcesses.filter((p) => p !== child)
 
       try {
         // Handle TargetNotConnected error with retry
-        if (code === 254 && sessionState.targetNotConnectedError && retryCount < maxRetries) {
-          await handleTargetNotConnectedError(ENV, instanceId, rdsEndpoint, portNumber, remotePort, region, retryCount, maxRetries)
+        if (
+          code === 254 &&
+          sessionState.targetNotConnectedError &&
+          retryCount < maxRetries
+        ) {
+          await handleTargetNotConnectedError(
+            ENV,
+            instanceId,
+            rdsEndpoint,
+            portNumber,
+            remotePort,
+            region,
+            retryCount,
+            maxRetries,
+          )
           resolve()
         } else if (code !== 0) {
-          console.log(`Port forwarding session ended with code ${code}`)
           reject(new Error(`Port forwarding failed with code ${code}`))
         } else {
-          console.log(`Port forwarding session ended with code ${code}`)
           resolve()
         }
       } catch (error) {
-        console.error('Error during recovery:', error)
         reject(error)
       }
     })
@@ -271,11 +322,27 @@ async function startPortForwardingWithConfig (ENV, instanceId, rdsEndpoint, port
 }
 
 // Legacy function for backward compatibility
-async function startPortForwarding (ENV, instanceId, rdsEndpoint, portNumber, retryCount = 0, maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES) {
-  return startPortForwardingWithConfig(ENV, instanceId, rdsEndpoint, portNumber, '5432', 'us-east-2', retryCount, maxRetries)
+async function _startPortForwarding(
+  ENV,
+  instanceId,
+  rdsEndpoint,
+  portNumber,
+  retryCount = 0,
+  maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
+) {
+  return startPortForwardingWithConfig(
+    ENV,
+    instanceId,
+    rdsEndpoint,
+    portNumber,
+    '5432',
+    'us-east-2',
+    retryCount,
+    maxRetries,
+  )
 }
 
-async function getRdsEndpoint (ENV, projectConfig) {
+async function getRdsEndpoint(ENV, projectConfig) {
   const { region, rdsType, rdsPattern } = projectConfig
 
   if (rdsType === 'cluster') {
@@ -289,54 +356,59 @@ async function getRdsEndpoint (ENV, projectConfig) {
   }
 }
 
-async function getRdsPort (ENV, projectConfig) {
+async function getRdsPort(ENV, projectConfig) {
   const { region, rdsType, rdsPattern } = projectConfig
 
   if (rdsType === 'cluster') {
     const portCommand = `aws-vault exec ${ENV} -- aws rds describe-db-clusters --region ${region} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '${rdsPattern}')].Port | [0]" --output text`
-    return await runCommand(portCommand) || '5432'
+    return (await runCommand(portCommand)) || '5432'
   } else {
     const portCommand = `aws-vault exec ${ENV} -- aws rds describe-db-instances --region ${region} --query "DBInstances[?DBInstanceStatus=='available' && contains(DBInstanceIdentifier, '${rdsPattern}')].Endpoint.Port | [0]" --output text`
-    return await runCommand(portCommand) || '5432'
+    return (await runCommand(portCommand)) || '5432'
   }
 }
 
-function getProfilesForProject (allProfiles, projectConfig, allProjectConfigs) {
+function getProfilesForProject(allProfiles, projectConfig, allProjectConfigs) {
   const { profileFilter } = projectConfig
 
   if (profileFilter) {
     // Project has explicit filter - return profiles starting with filter
-    return allProfiles.filter(env => env.startsWith(profileFilter))
+    return allProfiles.filter((env) => env.startsWith(profileFilter))
   } else {
     // No filter (legacy project like TLN) - return profiles that don't match any other project's filter
     const otherFilters = Object.values(allProjectConfigs)
-      .filter(config => config.profileFilter)
-      .map(config => config.profileFilter)
+      .filter((config) => config.profileFilter)
+      .map((config) => config.profileFilter)
 
-    return allProfiles.filter(env =>
-      !otherFilters.some(filter => env.startsWith(filter))
+    return allProfiles.filter(
+      (env) => !otherFilters.some((filter) => env.startsWith(filter)),
     )
   }
 }
 
 // Get local port number based on environment suffix
-function getLocalPort (ENV, projectConfig) {
+function getLocalPort(ENV, projectConfig) {
   const { envPortMapping, defaultPort } = projectConfig
-  const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length)
-  const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix)) ||
-                        allEnvSuffixes.find(suffix => ENV === suffix)
+  const allEnvSuffixes = Object.keys(envPortMapping).sort(
+    (a, b) => b.length - a.length,
+  )
+  const matchedSuffix =
+    allEnvSuffixes.find((suffix) => ENV.endsWith(suffix)) ||
+    allEnvSuffixes.find((suffix) => ENV === suffix)
   return envPortMapping[matchedSuffix] || defaultPort
 }
 
 // Get RDS credentials from Secrets Manager
-async function getConnectionCredentials (ENV, projectConfig) {
+async function getConnectionCredentials(ENV, projectConfig) {
   const { region, secretPrefix, database } = projectConfig
 
   const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?starts_with(Name, '${secretPrefix}')].Name | [0]" --output text`
   const SECRET_NAME = await runCommand(secretsListCommand)
 
   if (!SECRET_NAME || SECRET_NAME === 'None') {
-    throw new Error(`No secret found with name starting with '${secretPrefix}'.`)
+    throw new Error(
+      `No secret found with name starting with '${secretPrefix}'.`,
+    )
   }
 
   const secretsGetCommand = `aws-vault exec ${ENV} -- aws secretsmanager get-secret-value --region ${region} --secret-id "${SECRET_NAME}" --query SecretString --output text`
@@ -353,31 +425,35 @@ async function getConnectionCredentials (ENV, projectConfig) {
       throw new Error('Missing username or password in credentials')
     }
   } catch (error) {
-    throw new Error(`Failed to parse credentials from Secrets Manager: ${error.message}`)
+    throw new Error(
+      `Failed to parse credentials from Secrets Manager: ${error.message}`,
+    )
   }
 
   return {
     username: credentials.username,
     password: credentials.password,
     database,
-    secretName: SECRET_NAME
+    secretName: SECRET_NAME,
   }
 }
 
 // Find running bastion instance
-async function findBastionInstance (ENV, region) {
+async function findBastionInstance(ENV, region) {
   const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
   const instanceId = await runCommand(instanceIdCommand)
 
   if (!instanceId || instanceId === 'None') {
-    throw new Error('Failed to find a running instance with tag Name=*bastion*.')
+    throw new Error(
+      'Failed to find a running instance with tag Name=*bastion*.',
+    )
   }
 
   return instanceId
 }
 
 // Get available projects based on AWS profiles
-async function getAvailableProjects () {
+async function getAvailableProjects() {
   const allProfiles = await readAwsConfig()
 
   if (allProfiles.length === 0) {
@@ -385,18 +461,22 @@ async function getAvailableProjects () {
   }
 
   return Object.entries(PROJECT_CONFIGS)
-    .filter(([key, config]) => {
-      const matchingProfiles = getProfilesForProject(allProfiles, config, PROJECT_CONFIGS)
+    .filter(([_key, config]) => {
+      const matchingProfiles = getProfilesForProject(
+        allProfiles,
+        config,
+        PROJECT_CONFIGS,
+      )
       return matchingProfiles.length > 0
     })
     .map(([key, config]) => ({
       key,
-      name: config.name
+      name: config.name,
     }))
 }
 
 // Get profiles for a specific project
-async function getProfilesForProjectKey (projectKey) {
+async function getProfilesForProjectKey(projectKey) {
   const allProfiles = await readAwsConfig()
   const projectConfig = PROJECT_CONFIGS[projectKey]
 
@@ -408,7 +488,7 @@ async function getProfilesForProjectKey (projectKey) {
 }
 
 // Connect to RDS through bastion - returns connection info and control object
-async function connect (projectKey, profile, options = {}) {
+async function connect(projectKey, profile, options = {}) {
   const projectConfig = PROJECT_CONFIGS[projectKey]
   if (!projectConfig) {
     throw new Error(`Unknown project: ${projectKey}`)
@@ -449,7 +529,7 @@ async function connect (projectKey, profile, options = {}) {
     password: credentials.password,
     database,
     rdsEndpoint,
-    instanceId
+    instanceId,
   }
 
   emit('credentials', connectionInfo)
@@ -464,7 +544,7 @@ async function connect (projectKey, profile, options = {}) {
     rdsPort,
     region,
     0,
-    RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES
+    RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
   )
 
   // Return connection control object
@@ -472,18 +552,18 @@ async function connect (projectKey, profile, options = {}) {
     connectionInfo,
     disconnect: () => {
       // Kill all active child processes
-      activeChildProcesses.forEach(child => {
+      activeChildProcesses.forEach((child) => {
         if (child && !child.killed) {
           child.kill('SIGTERM')
         }
       })
       activeChildProcesses = []
     },
-    waitForClose: () => portForwardingPromise
+    waitForClose: () => portForwardingPromise,
   }
 }
 
-async function main () {
+async function main() {
   // Dynamic import of inquirer (CLI only, not needed for GUI adapter)
   const inquirer = await import('inquirer')
 
@@ -498,23 +578,25 @@ async function main () {
     const allProfiles = await readAwsConfig()
 
     if (allProfiles.length === 0) {
-      console.error('No environments found in AWS config file.')
       return
     }
 
     // Step 1: Filter projects based on available profiles
     const projectChoices = Object.entries(PROJECT_CONFIGS)
-      .filter(([key, config]) => {
-        const matchingProfiles = getProfilesForProject(allProfiles, config, PROJECT_CONFIGS)
+      .filter(([_key, config]) => {
+        const matchingProfiles = getProfilesForProject(
+          allProfiles,
+          config,
+          PROJECT_CONFIGS,
+        )
         return matchingProfiles.length > 0
       })
       .map(([key, config]) => ({
         name: config.name,
-        value: key
+        value: key,
       }))
 
     if (projectChoices.length === 0) {
-      console.error('No projects available for the configured AWS profiles.')
       return
     }
 
@@ -522,7 +604,6 @@ async function main () {
     let projectKey
     if (projectChoices.length === 1) {
       projectKey = projectChoices[0].value
-      console.log(`Auto-selected project: ${projectChoices[0].name}`)
     } else {
       const projectAnswer = await inquirer.default.prompt([
         {
@@ -536,13 +617,16 @@ async function main () {
     }
 
     const projectConfig = PROJECT_CONFIGS[projectKey]
-    const { region, database, secretPrefix, envPortMapping, defaultPort } = projectConfig
+    const { region, secretPrefix, envPortMapping, defaultPort } = projectConfig
 
     // Step 2: Get profiles for selected project
-    let ENVS = getProfilesForProject(allProfiles, projectConfig, PROJECT_CONFIGS)
+    const ENVS = getProfilesForProject(
+      allProfiles,
+      projectConfig,
+      PROJECT_CONFIGS,
+    )
 
     if (ENVS.length === 0) {
-      console.error('No AWS profiles found for this project.')
       return
     }
 
@@ -558,9 +642,12 @@ async function main () {
     const ENV = envAnswer.ENV
 
     // Determine local port number
-    const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length)
-    const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix)) ||
-                          allEnvSuffixes.find(suffix => ENV === suffix)
+    const allEnvSuffixes = Object.keys(envPortMapping).sort(
+      (a, b) => b.length - a.length,
+    )
+    const matchedSuffix =
+      allEnvSuffixes.find((suffix) => ENV.endsWith(suffix)) ||
+      allEnvSuffixes.find((suffix) => ENV === suffix)
     const portNumber = envPortMapping[matchedSuffix] || defaultPort
 
     // Get RDS credentials from Secrets Manager
@@ -568,7 +655,6 @@ async function main () {
     const SECRET_NAME = await runCommand(secretsListCommand)
 
     if (!SECRET_NAME || SECRET_NAME === 'None') {
-      console.error(`No secret found with name starting with '${secretPrefix}'.`)
       return
     }
 
@@ -576,7 +662,6 @@ async function main () {
     const secretString = await runCommand(secretsGetCommand)
 
     if (!secretString) {
-      console.error('Failed to retrieve secret value from Secrets Manager.')
       return
     }
 
@@ -586,27 +671,18 @@ async function main () {
       if (!CREDENTIALS.username || !CREDENTIALS.password) {
         throw new Error('Missing username or password in credentials')
       }
-    } catch (error) {
-      console.error('Failed to parse credentials from Secrets Manager:', error.message)
+    } catch (_error) {
       return
     }
 
-    const USERNAME = CREDENTIALS.username
-    const PASSWORD = CREDENTIALS.password
-
-    console.log(`\nYour connection details:
-      Host: localhost
-      Port: ${portNumber}
-      User: ${USERNAME}
-      Database: ${database}
-      Password: ${PASSWORD}\n`)
+    const _USERNAME = CREDENTIALS.username
+    const _PASSWORD = CREDENTIALS.password
 
     // Find bastion instance
     const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
     const INSTANCE_ID = await runCommand(instanceIdCommand)
 
     if (!INSTANCE_ID || INSTANCE_ID === 'None') {
-      console.error('Failed to find a running instance with tag Name=*bastion*.')
       return
     }
 
@@ -614,17 +690,21 @@ async function main () {
     const RDS_ENDPOINT = await getRdsEndpoint(ENV, projectConfig)
 
     if (!RDS_ENDPOINT || RDS_ENDPOINT === 'None') {
-      console.error('Failed to find the RDS endpoint.')
       return
     }
 
     // Get RDS port (remote port)
     const rdsPort = await getRdsPort(ENV, projectConfig)
 
-    await startPortForwardingWithConfig(ENV, INSTANCE_ID, RDS_ENDPOINT, portNumber, rdsPort, region)
-  } catch (error) {
-    console.error(`Error: ${error.message}`)
-    console.error('Exiting due to unhandled error')
+    await startPortForwardingWithConfig(
+      ENV,
+      INSTANCE_ID,
+      RDS_ENDPOINT,
+      portNumber,
+      rdsPort,
+      region,
+    )
+  } catch (_error) {
     setImmediate(() => {
       throw new Error('Forcing exit due to unhandled error')
     })
@@ -632,15 +712,13 @@ async function main () {
 }
 
 // Only run main() when executed directly (not when imported as a module)
-const isMainModule = process.argv[1] && (
-  process.argv[1].endsWith('connect.js') ||
-  process.argv[1].endsWith('rds_ssm_connect')
-)
+const isMainModule =
+  process.argv[1] &&
+  (process.argv[1].endsWith('connect.js') ||
+    process.argv[1].endsWith('rds_ssm_connect'))
 
 if (isMainModule) {
-  main().catch((error) => {
-    console.error('Unhandled error in main function:', error)
-  })
+  main().catch((_error) => {})
 }
 
 // Exports for GUI adapter
@@ -657,5 +735,5 @@ export {
   connect,
   ipcEmitter,
   PROJECT_CONFIGS,
-  RETRY_CONFIG
+  RETRY_CONFIG,
 }

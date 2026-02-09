@@ -5,8 +5,8 @@
  * Creates PNG icons with a database connection symbol.
  */
 
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import { createCanvas } from 'canvas'
 
 const iconsDir = 'src-tauri/icons'
@@ -33,7 +33,13 @@ function createIcon(size) {
   gradient.addColorStop(1, '#0f3460')
   ctx.fillStyle = gradient
   ctx.beginPath()
-  ctx.roundRect(size * 0.08, size * 0.08, size * 0.84, size * 0.84, radius * 0.8)
+  ctx.roundRect(
+    size * 0.08,
+    size * 0.08,
+    size * 0.84,
+    size * 0.84,
+    radius * 0.8,
+  )
   ctx.fill()
 
   // Database cylinder
@@ -46,7 +52,15 @@ function createIcon(size) {
   // Database body
   ctx.fillStyle = '#e94560'
   ctx.beginPath()
-  ctx.ellipse(dbX + dbWidth / 2, dbY, dbWidth / 2, ellipseHeight, 0, 0, Math.PI * 2)
+  ctx.ellipse(
+    dbX + dbWidth / 2,
+    dbY,
+    dbWidth / 2,
+    ellipseHeight,
+    0,
+    0,
+    Math.PI * 2,
+  )
   ctx.fill()
 
   ctx.fillStyle = '#c73e54'
@@ -54,18 +68,42 @@ function createIcon(size) {
 
   ctx.fillStyle = '#e94560'
   ctx.beginPath()
-  ctx.ellipse(dbX + dbWidth / 2, dbY + dbHeight, dbWidth / 2, ellipseHeight, 0, 0, Math.PI)
+  ctx.ellipse(
+    dbX + dbWidth / 2,
+    dbY + dbHeight,
+    dbWidth / 2,
+    ellipseHeight,
+    0,
+    0,
+    Math.PI,
+  )
   ctx.fill()
 
   // Middle ellipse line
   ctx.strokeStyle = '#a03347'
   ctx.lineWidth = size * 0.015
   ctx.beginPath()
-  ctx.ellipse(dbX + dbWidth / 2, dbY + dbHeight * 0.35, dbWidth / 2, ellipseHeight * 0.8, 0, 0, Math.PI)
+  ctx.ellipse(
+    dbX + dbWidth / 2,
+    dbY + dbHeight * 0.35,
+    dbWidth / 2,
+    ellipseHeight * 0.8,
+    0,
+    0,
+    Math.PI,
+  )
   ctx.stroke()
 
   ctx.beginPath()
-  ctx.ellipse(dbX + dbWidth / 2, dbY + dbHeight * 0.65, dbWidth / 2, ellipseHeight * 0.8, 0, 0, Math.PI)
+  ctx.ellipse(
+    dbX + dbWidth / 2,
+    dbY + dbHeight * 0.65,
+    dbWidth / 2,
+    ellipseHeight * 0.8,
+    0,
+    0,
+    Math.PI,
+  )
   ctx.stroke()
 
   // Connection arrow/lightning bolt
@@ -98,13 +136,12 @@ try {
   const sizes = {
     '32x32.png': 32,
     '128x128.png': 128,
-    '128x128@2x.png': 256
+    '128x128@2x.png': 256,
   }
 
   for (const [filename, size] of Object.entries(sizes)) {
     const buffer = createIcon(size)
     fs.writeFileSync(path.join(iconsDir, filename), buffer)
-    console.log(`Created ${filename}`)
   }
 
   // For .icns and .ico, we need the 256px version as base
@@ -113,8 +150,14 @@ try {
 
   // Create ICNS (just use PNG for now - macOS accepts PNG in icns)
   const icnsHeader = Buffer.from([
-    0x69, 0x63, 0x6e, 0x73, // 'icns' magic
-    0x00, 0x00, 0x00, 0x00, // Total size (will be filled in)
+    0x69,
+    0x63,
+    0x6e,
+    0x73, // 'icns' magic
+    0x00,
+    0x00,
+    0x00,
+    0x00, // Total size (will be filled in)
   ])
 
   const ic08Type = Buffer.from([0x69, 0x63, 0x30, 0x38]) // 'ic08' (256x256 PNG)
@@ -126,11 +169,10 @@ try {
 
   const icnsFile = Buffer.concat([icnsHeader, ic08Type, ic08Size, icon256])
   fs.writeFileSync(path.join(iconsDir, 'icon.icns'), icnsFile)
-  console.log('Created icon.icns')
 
   // Create a simple ICO file
   const icon32 = createIcon(32)
-  const icon16 = createIcon(16)
+  const _icon16 = createIcon(16)
 
   // ICO header
   const icoHeader = Buffer.alloc(6)
@@ -151,37 +193,25 @@ try {
 
   const icoFile = Buffer.concat([icoHeader, dirEntry, icon32])
   fs.writeFileSync(path.join(iconsDir, 'icon.ico'), icoFile)
-  console.log('Created icon.ico')
-
-  console.log('\nIcons generated successfully!')
-
-} catch (err) {
-  console.error('Canvas not available, creating placeholder icons...')
-  console.error('Install canvas with: npm install canvas')
-
+} catch (_err) {
   // Create minimal placeholder PNGs
   const minimalPng = Buffer.from([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-    0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
-    0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
-    0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
-    0x42, 0x60, 0x82
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+    0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
   ])
 
   const pngFiles = ['32x32.png', '128x128.png', '128x128@2x.png']
   for (const file of pngFiles) {
     fs.writeFileSync(path.join(iconsDir, file), minimalPng)
-    console.log(`Created placeholder ${file}`)
   }
 
   // Create minimal .icns and .ico
   const icnsHeader = Buffer.from([
-    0x69, 0x63, 0x6e, 0x73,
-    0x00, 0x00, 0x00, 0x00,
+    0x69, 0x63, 0x6e, 0x73, 0x00, 0x00, 0x00, 0x00,
   ])
   const icp4Type = Buffer.from([0x69, 0x63, 0x70, 0x34])
   const icp4Size = Buffer.alloc(4)
@@ -190,7 +220,6 @@ try {
   icnsHeader.writeUInt32BE(totalSize, 4)
   const icnsFile = Buffer.concat([icnsHeader, icp4Type, icp4Size, minimalPng])
   fs.writeFileSync(path.join(iconsDir, 'icon.icns'), icnsFile)
-  console.log('Created placeholder icon.icns')
 
   const icoHeader = Buffer.alloc(22)
   icoHeader.writeUInt16LE(0, 0)
@@ -202,5 +231,4 @@ try {
   icoHeader.writeUInt32LE(22, 18)
   const icoFile = Buffer.concat([icoHeader, minimalPng])
   fs.writeFileSync(path.join(iconsDir, 'icon.ico'), icoFile)
-  console.log('Created placeholder icon.ico')
 }

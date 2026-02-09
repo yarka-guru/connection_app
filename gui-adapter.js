@@ -14,34 +14,32 @@
  * - disconnect-all: Disconnect all active sessions
  */
 
-import readline from 'readline'
-import net from 'net'
-import { randomUUID } from 'crypto'
+import { randomUUID } from 'node:crypto'
+import net from 'node:net'
+import readline from 'node:readline'
 import {
-  getAvailableProjects,
-  getProfilesForProjectKey,
   connect,
+  getAvailableProjects,
   getLocalPort,
-  PROJECT_CONFIGS
+  getProfilesForProjectKey,
+  PROJECT_CONFIGS,
 } from './connect.js'
 
 // Active connections Map - connectionId -> connection control object
 const activeConnections = new Map()
 
 // Send JSON response to stdout
-function sendResponse (id, type, data) {
-  const response = JSON.stringify({ id, type, ...data })
-  console.log(response)
+function sendResponse(id, type, data) {
+  const _response = JSON.stringify({ id, type, ...data })
 }
 
 // Send event to stdout
-function sendEvent (event, data) {
-  const response = JSON.stringify({ type: 'event', event, ...data })
-  console.log(response)
+function sendEvent(event, data) {
+  const _response = JSON.stringify({ type: 'event', event, ...data })
 }
 
 // Check if a port is available
-async function isPortAvailable (port) {
+async function isPortAvailable(port) {
   return new Promise((resolve) => {
     const server = net.createServer()
     server.once('error', () => resolve(false))
@@ -54,8 +52,8 @@ async function isPortAvailable (port) {
 }
 
 // Find next available port starting from basePort
-async function findAvailablePort (basePort, usedPorts = []) {
-  const usedSet = new Set(usedPorts.map(p => parseInt(p, 10)))
+async function findAvailablePort(basePort, usedPorts = []) {
+  const usedSet = new Set(usedPorts.map((p) => parseInt(p, 10)))
 
   for (let port = basePort; port < basePort + 100; port++) {
     if (usedSet.has(port)) continue
@@ -67,7 +65,7 @@ async function findAvailablePort (basePort, usedPorts = []) {
 }
 
 // Handle incoming commands
-async function handleCommand (command) {
+async function handleCommand(command) {
   const { id, action, ...params } = command
 
   try {
@@ -92,7 +90,9 @@ async function handleCommand (command) {
       case 'connect': {
         const { projectKey, profile, localPort, usedPorts = [] } = params
         if (!projectKey || !profile) {
-          sendResponse(id, 'error', { message: 'projectKey and profile are required' })
+          sendResponse(id, 'error', {
+            message: 'projectKey and profile are required',
+          })
           break
         }
 
@@ -102,7 +102,9 @@ async function handleCommand (command) {
         // Determine port to use
         const projectConfig = PROJECT_CONFIGS[projectKey]
         if (!projectConfig) {
-          sendResponse(id, 'error', { message: `Unknown project: ${projectKey}` })
+          sendResponse(id, 'error', {
+            message: `Unknown project: ${projectKey}`,
+          })
           break
         }
 
@@ -110,8 +112,13 @@ async function handleCommand (command) {
         if (localPort) {
           // Use specified port if available
           const portNum = parseInt(localPort, 10)
-          if (usedPorts.includes(localPort) || !(await isPortAvailable(portNum))) {
-            sendResponse(id, 'error', { message: `Port ${localPort} is not available` })
+          if (
+            usedPorts.includes(localPort) ||
+            !(await isPortAvailable(portNum))
+          ) {
+            sendResponse(id, 'error', {
+              message: `Port ${localPort} is not available`,
+            })
             break
           }
           portToUse = localPort
@@ -121,7 +128,9 @@ async function handleCommand (command) {
           // Combine usedPorts from params with currently active connections
           const allUsedPorts = [
             ...usedPorts,
-            ...Array.from(activeConnections.values()).map(c => c.connectionInfo?.port)
+            ...Array.from(activeConnections.values()).map(
+              (c) => c.connectionInfo?.port,
+            ),
           ].filter(Boolean)
           portToUse = await findAvailablePort(basePort, allUsedPorts)
         }
@@ -131,7 +140,7 @@ async function handleCommand (command) {
           localPort: portToUse,
           onEvent: (event, data) => {
             sendEvent(event, { ...data, connectionId })
-          }
+          },
         })
 
         // Store in active connections
@@ -139,11 +148,12 @@ async function handleCommand (command) {
 
         sendResponse(id, 'success', {
           connectionId,
-          connectionInfo: connectionControl.connectionInfo
+          connectionInfo: connectionControl.connectionInfo,
         })
 
         // Set up connection close handler
-        connectionControl.waitForClose()
+        connectionControl
+          .waitForClose()
           .then(() => {
             sendEvent('disconnected', { connectionId, reason: 'session_ended' })
             activeConnections.delete(connectionId)
@@ -166,23 +176,29 @@ async function handleCommand (command) {
           if (connection) {
             connection.disconnect()
             activeConnections.delete(connectionId)
-            sendResponse(id, 'success', { message: `Disconnected ${connectionId}` })
+            sendResponse(id, 'success', {
+              message: `Disconnected ${connectionId}`,
+            })
           } else {
-            sendResponse(id, 'success', { message: `Connection ${connectionId} not found` })
+            sendResponse(id, 'success', {
+              message: `Connection ${connectionId} not found`,
+            })
           }
         } else {
           // Disconnect all connections (legacy behavior)
-          for (const [connId, connection] of activeConnections) {
+          for (const [_connId, connection] of activeConnections) {
             connection.disconnect()
           }
           activeConnections.clear()
-          sendResponse(id, 'success', { message: 'Disconnected all connections' })
+          sendResponse(id, 'success', {
+            message: 'Disconnected all connections',
+          })
         }
         break
       }
 
       case 'disconnect-all': {
-        for (const [connId, connection] of activeConnections) {
+        for (const [_connId, connection] of activeConnections) {
           connection.disconnect()
         }
         activeConnections.clear()
@@ -191,13 +207,15 @@ async function handleCommand (command) {
       }
 
       case 'status': {
-        const connections = Array.from(activeConnections.entries()).map(([connId, conn]) => ({
-          connectionId: connId,
-          connectionInfo: conn.connectionInfo
-        }))
+        const connections = Array.from(activeConnections.entries()).map(
+          ([connId, conn]) => ({
+            connectionId: connId,
+            connectionInfo: conn.connectionInfo,
+          }),
+        )
         sendResponse(id, 'success', {
           connectionCount: activeConnections.size,
-          connections
+          connections,
         })
         break
       }
@@ -216,9 +234,9 @@ async function handleCommand (command) {
 }
 
 // Handle process signals for cleanup
-function setupCleanup () {
+function setupCleanup() {
   const cleanup = () => {
-    for (const [connId, connection] of activeConnections) {
+    for (const [_connId, connection] of activeConnections) {
       connection.disconnect()
     }
     activeConnections.clear()
@@ -231,7 +249,7 @@ function setupCleanup () {
 }
 
 // Main entry point
-async function main () {
+async function main() {
   setupCleanup()
 
   // Signal that adapter is ready
@@ -241,7 +259,7 @@ async function main () {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    terminal: false
+    terminal: false,
   })
 
   rl.on('line', async (line) => {
@@ -249,12 +267,14 @@ async function main () {
       const command = JSON.parse(line)
       await handleCommand(command)
     } catch (error) {
-      sendEvent('error', { message: `Failed to parse command: ${error.message}` })
+      sendEvent('error', {
+        message: `Failed to parse command: ${error.message}`,
+      })
     }
   })
 
   rl.on('close', () => {
-    for (const [connId, connection] of activeConnections) {
+    for (const [_connId, connection] of activeConnections) {
       connection.disconnect()
     }
     activeConnections.clear()
