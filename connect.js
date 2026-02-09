@@ -256,45 +256,79 @@ async function getRdsPort (ENV, projectConfig) {
   }
 }
 
+function getProfilesForProject (allProfiles, projectConfig, allProjectConfigs) {
+  const { profileFilter } = projectConfig
+
+  if (profileFilter) {
+    // Project has explicit filter - return profiles starting with filter
+    return allProfiles.filter(env => env.startsWith(profileFilter))
+  } else {
+    // No filter (legacy project like TLN) - return profiles that don't match any other project's filter
+    const otherFilters = Object.values(allProjectConfigs)
+      .filter(config => config.profileFilter)
+      .map(config => config.profileFilter)
+
+    return allProfiles.filter(env =>
+      !otherFilters.some(filter => env.startsWith(filter))
+    )
+  }
+}
+
 async function main () {
   // Setup process cleanup handlers
   setupProcessCleanup()
 
   try {
-    // Step 1: Select project
-    const projectChoices = Object.entries(PROJECT_CONFIGS).map(([key, config]) => ({
-      name: config.name,
-      value: key
-    }))
+    // Read all AWS profiles first
+    const allProfiles = await readAwsConfig()
 
-    const projectAnswer = await inquirer.prompt([
-      {
-        type: 'select',
-        name: 'project',
-        message: 'Please select the project:',
-        choices: projectChoices,
-      },
-    ])
-
-    const projectKey = projectAnswer.project
-    const projectConfig = PROJECT_CONFIGS[projectKey]
-    const { region, database, secretPrefix, envPortMapping, defaultPort, profileFilter } = projectConfig
-
-    // Step 2: Select environment (AWS profile)
-    let ENVS = await readAwsConfig()
-
-    if (ENVS.length === 0) {
+    if (allProfiles.length === 0) {
       console.error('No environments found in AWS config file.')
       return
     }
 
-    // Filter profiles if project has a filter
-    if (profileFilter) {
-      ENVS = ENVS.filter(env => env.startsWith(profileFilter))
-      if (ENVS.length === 0) {
-        console.error(`No AWS profiles found starting with '${profileFilter}'.`)
-        return
-      }
+    // Step 1: Filter projects based on available profiles
+    const projectChoices = Object.entries(PROJECT_CONFIGS)
+      .filter(([key, config]) => {
+        const matchingProfiles = getProfilesForProject(allProfiles, config, PROJECT_CONFIGS)
+        return matchingProfiles.length > 0
+      })
+      .map(([key, config]) => ({
+        name: config.name,
+        value: key
+      }))
+
+    if (projectChoices.length === 0) {
+      console.error('No projects available for the configured AWS profiles.')
+      return
+    }
+
+    // Skip project selection if only one project available
+    let projectKey
+    if (projectChoices.length === 1) {
+      projectKey = projectChoices[0].value
+      console.log(`Auto-selected project: ${projectChoices[0].name}`)
+    } else {
+      const projectAnswer = await inquirer.prompt([
+        {
+          type: 'select',
+          name: 'project',
+          message: 'Please select the project:',
+          choices: projectChoices,
+        },
+      ])
+      projectKey = projectAnswer.project
+    }
+
+    const projectConfig = PROJECT_CONFIGS[projectKey]
+    const { region, database, secretPrefix, envPortMapping, defaultPort } = projectConfig
+
+    // Step 2: Get profiles for selected project
+    let ENVS = getProfilesForProject(allProfiles, projectConfig, PROJECT_CONFIGS)
+
+    if (ENVS.length === 0) {
+      console.error('No AWS profiles found for this project.')
+      return
     }
 
     const envAnswer = await inquirer.prompt([
