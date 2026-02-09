@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RDS SSM Connect",
+  "version": "1.7.0",
+  "identifier": "com.rds-ssm-connect.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:vite",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build:vite",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "RDS SSM Connect",
+        "width": 650,
+        "height": 700,
+        "resizable": true,
+        "center": true,
+        "minWidth": 500,
+        "minHeight": 500
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/gui-adapter"
+    ]
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/yarka-guru/connection_app/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2MTFEQjk0MjUzRTgwQTEKUldTaGdENGxsTnNSSms1dTVvcWVKWUc2aFlOYVl5ODcvbVhiekVsVWxHbVlnRERSNjJsTHZPYkMK"
+    }
+  }
+}

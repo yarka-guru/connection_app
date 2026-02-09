@@ -132,3 +132,10 @@ dist
 .idea
 .vscode
 !/CLAUDE.md
+
+# Tauri
+src-tauri/target/
+src-tauri/binaries/
+
+# Vite build output
+dist/

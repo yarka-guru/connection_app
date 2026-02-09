@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 
-import inquirer from 'inquirer'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { createRequire } from 'module'
+import { EventEmitter } from 'events'
 import { PROJECT_CONFIGS } from './envPortMapping.js'
 
-const require = createRequire(import.meta.url)
-const packageJson = require('./package.json')
+// Package info for version checking
+const packageJson = { name: 'rds_ssm_connect', version: '1.6.2' }
 
 const execAsync = promisify(exec)
+
+// Event emitter for IPC communication
+const ipcEmitter = new EventEmitter()
 
 // Configuration constants
 const RETRY_CONFIG = {
@@ -317,7 +319,174 @@ function getProfilesForProject (allProfiles, projectConfig, allProjectConfigs) {
   }
 }
 
+// Get local port number based on environment suffix
+function getLocalPort (ENV, projectConfig) {
+  const { envPortMapping, defaultPort } = projectConfig
+  const allEnvSuffixes = Object.keys(envPortMapping).sort((a, b) => b.length - a.length)
+  const matchedSuffix = allEnvSuffixes.find(suffix => ENV.endsWith(suffix)) ||
+                        allEnvSuffixes.find(suffix => ENV === suffix)
+  return envPortMapping[matchedSuffix] || defaultPort
+}
+
+// Get RDS credentials from Secrets Manager
+async function getConnectionCredentials (ENV, projectConfig) {
+  const { region, secretPrefix, database } = projectConfig
+
+  const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?starts_with(Name, '${secretPrefix}')].Name | [0]" --output text`
+  const SECRET_NAME = await runCommand(secretsListCommand)
+
+  if (!SECRET_NAME || SECRET_NAME === 'None') {
+    throw new Error(`No secret found with name starting with '${secretPrefix}'.`)
+  }
+
+  const secretsGetCommand = `aws-vault exec ${ENV} -- aws secretsmanager get-secret-value --region ${region} --secret-id "${SECRET_NAME}" --query SecretString --output text`
+  const secretString = await runCommand(secretsGetCommand)
+
+  if (!secretString) {
+    throw new Error('Failed to retrieve secret value from Secrets Manager.')
+  }
+
+  let credentials
+  try {
+    credentials = JSON.parse(secretString)
+    if (!credentials.username || !credentials.password) {
+      throw new Error('Missing username or password in credentials')
+    }
+  } catch (error) {
+    throw new Error(`Failed to parse credentials from Secrets Manager: ${error.message}`)
+  }
+
+  return {
+    username: credentials.username,
+    password: credentials.password,
+    database,
+    secretName: SECRET_NAME
+  }
+}
+
+// Find running bastion instance
+async function findBastionInstance (ENV, region) {
+  const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
+  const instanceId = await runCommand(instanceIdCommand)
+
+  if (!instanceId || instanceId === 'None') {
+    throw new Error('Failed to find a running instance with tag Name=*bastion*.')
+  }
+
+  return instanceId
+}
+
+// Get available projects based on AWS profiles
+async function getAvailableProjects () {
+  const allProfiles = await readAwsConfig()
+
+  if (allProfiles.length === 0) {
+    return []
+  }
+
+  return Object.entries(PROJECT_CONFIGS)
+    .filter(([key, config]) => {
+      const matchingProfiles = getProfilesForProject(allProfiles, config, PROJECT_CONFIGS)
+      return matchingProfiles.length > 0
+    })
+    .map(([key, config]) => ({
+      key,
+      name: config.name
+    }))
+}
+
+// Get profiles for a specific project
+async function getProfilesForProjectKey (projectKey) {
+  const allProfiles = await readAwsConfig()
+  const projectConfig = PROJECT_CONFIGS[projectKey]
+
+  if (!projectConfig) {
+    throw new Error(`Unknown project: ${projectKey}`)
+  }
+
+  return getProfilesForProject(allProfiles, projectConfig, PROJECT_CONFIGS)
+}
+
+// Connect to RDS through bastion - returns connection info and control object
+async function connect (projectKey, profile, options = {}) {
+  const projectConfig = PROJECT_CONFIGS[projectKey]
+  if (!projectConfig) {
+    throw new Error(`Unknown project: ${projectKey}`)
+  }
+
+  const { region, database } = projectConfig
+  // Use provided localPort or fall back to computed port from profile
+  const localPort = options.localPort || getLocalPort(profile, projectConfig)
+
+  // Emit status updates
+  const emit = (event, data) => {
+    ipcEmitter.emit(event, data)
+    if (options.onEvent) {
+      options.onEvent(event, data)
+    }
+  }
+
+  emit('status', { message: 'Getting credentials...' })
+  const credentials = await getConnectionCredentials(profile, projectConfig)
+
+  emit('status', { message: 'Finding bastion instance...' })
+  const instanceId = await findBastionInstance(profile, region)
+
+  emit('status', { message: 'Getting RDS endpoint...' })
+  const rdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+
+  if (!rdsEndpoint || rdsEndpoint === 'None') {
+    throw new Error('Failed to find the RDS endpoint.')
+  }
+
+  emit('status', { message: 'Getting RDS port...' })
+  const rdsPort = await getRdsPort(profile, projectConfig)
+
+  const connectionInfo = {
+    host: 'localhost',
+    port: localPort,
+    username: credentials.username,
+    password: credentials.password,
+    database,
+    rdsEndpoint,
+    instanceId
+  }
+
+  emit('credentials', connectionInfo)
+  emit('status', { message: 'Starting port forwarding...' })
+
+  // Start port forwarding
+  const portForwardingPromise = startPortForwardingWithConfig(
+    profile,
+    instanceId,
+    rdsEndpoint,
+    localPort,
+    rdsPort,
+    region,
+    0,
+    RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES
+  )
+
+  // Return connection control object
+  return {
+    connectionInfo,
+    disconnect: () => {
+      // Kill all active child processes
+      activeChildProcesses.forEach(child => {
+        if (child && !child.killed) {
+          child.kill('SIGTERM')
+        }
+      })
+      activeChildProcesses = []
+    },
+    waitForClose: () => portForwardingPromise
+  }
+}
+
 async function main () {
+  // Dynamic import of inquirer (CLI only, not needed for GUI adapter)
+  const inquirer = await import('inquirer')
+
   // Setup process cleanup handlers
   setupProcessCleanup()
 
@@ -355,7 +524,7 @@ async function main () {
       projectKey = projectChoices[0].value
       console.log(`Auto-selected project: ${projectChoices[0].name}`)
     } else {
-      const projectAnswer = await inquirer.prompt([
+      const projectAnswer = await inquirer.default.prompt([
         {
           type: 'select',
           name: 'project',
@@ -377,7 +546,7 @@ async function main () {
       return
     }
 
-    const envAnswer = await inquirer.prompt([
+    const envAnswer = await inquirer.default.prompt([
       {
         type: 'select',
         name: 'ENV',
@@ -462,6 +631,31 @@ async function main () {
   }
 }
 
-main().catch((error) => {
-  console.error('Unhandled error in main function:', error)
-})
+// Only run main() when executed directly (not when imported as a module)
+const isMainModule = process.argv[1] && (
+  process.argv[1].endsWith('connect.js') ||
+  process.argv[1].endsWith('rds_ssm_connect')
+)
+
+if (isMainModule) {
+  main().catch((error) => {
+    console.error('Unhandled error in main function:', error)
+  })
+}
+
+// Exports for GUI adapter
+export {
+  readAwsConfig,
+  getProfilesForProject,
+  getAvailableProjects,
+  getProfilesForProjectKey,
+  getConnectionCredentials,
+  findBastionInstance,
+  getRdsEndpoint,
+  getRdsPort,
+  getLocalPort,
+  connect,
+  ipcEmitter,
+  PROJECT_CONFIGS,
+  RETRY_CONFIG
+}

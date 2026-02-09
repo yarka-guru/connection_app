@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capabilities for RDS SSM Connect","local":true,"windows":["main"],"permissions":["core:default","shell:allow-spawn","shell:allow-execute","shell:allow-open","store:default","opener:default","updater:default",{"identifier":"shell:allow-execute","allow":[{"args":true,"name":"binaries/gui-adapter","sidecar":true}]}]}}

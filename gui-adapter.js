@@ -1,0 +1,268 @@
+#!/usr/bin/env node
+
+/**
+ * GUI Adapter - JSON IPC bridge for Tauri sidecar
+ *
+ * Reads JSON commands from stdin, dispatches to connect.js functions,
+ * and writes JSON responses/events to stdout.
+ *
+ * Commands:
+ * - list-projects: Get available projects
+ * - list-profiles: Get profiles for a project
+ * - connect: Connect to RDS through bastion (supports multiple simultaneous connections)
+ * - disconnect: Disconnect a specific or all sessions
+ * - disconnect-all: Disconnect all active sessions
+ */
+
+import readline from 'readline'
+import net from 'net'
+import { randomUUID } from 'crypto'
+import {
+  getAvailableProjects,
+  getProfilesForProjectKey,
+  connect,
+  getLocalPort,
+  PROJECT_CONFIGS
+} from './connect.js'
+
+// Active connections Map - connectionId -> connection control object
+const activeConnections = new Map()
+
+// Send JSON response to stdout
+function sendResponse (id, type, data) {
+  const response = JSON.stringify({ id, type, ...data })
+  console.log(response)
+}
+
+// Send event to stdout
+function sendEvent (event, data) {
+  const response = JSON.stringify({ type: 'event', event, ...data })
+  console.log(response)
+}
+
+// Check if a port is available
+async function isPortAvailable (port) {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', () => resolve(false))
+    server.once('listening', () => {
+      server.close()
+      resolve(true)
+    })
+    server.listen(port, '127.0.0.1')
+  })
+}
+
+// Find next available port starting from basePort
+async function findAvailablePort (basePort, usedPorts = []) {
+  const usedSet = new Set(usedPorts.map(p => parseInt(p, 10)))
+
+  for (let port = basePort; port < basePort + 100; port++) {
+    if (usedSet.has(port)) continue
+    if (await isPortAvailable(port)) {
+      return port.toString()
+    }
+  }
+  throw new Error(`No available ports found starting from ${basePort}`)
+}
+
+// Handle incoming commands
+async function handleCommand (command) {
+  const { id, action, ...params } = command
+
+  try {
+    switch (action) {
+      case 'list-projects': {
+        const projects = await getAvailableProjects()
+        sendResponse(id, 'success', { projects })
+        break
+      }
+
+      case 'list-profiles': {
+        const { projectKey } = params
+        if (!projectKey) {
+          sendResponse(id, 'error', { message: 'projectKey is required' })
+          break
+        }
+        const profiles = await getProfilesForProjectKey(projectKey)
+        sendResponse(id, 'success', { profiles })
+        break
+      }
+
+      case 'connect': {
+        const { projectKey, profile, localPort, usedPorts = [] } = params
+        if (!projectKey || !profile) {
+          sendResponse(id, 'error', { message: 'projectKey and profile are required' })
+          break
+        }
+
+        // Generate unique connection ID
+        const connectionId = `conn_${randomUUID().slice(0, 8)}`
+
+        // Determine port to use
+        const projectConfig = PROJECT_CONFIGS[projectKey]
+        if (!projectConfig) {
+          sendResponse(id, 'error', { message: `Unknown project: ${projectKey}` })
+          break
+        }
+
+        let portToUse
+        if (localPort) {
+          // Use specified port if available
+          const portNum = parseInt(localPort, 10)
+          if (usedPorts.includes(localPort) || !(await isPortAvailable(portNum))) {
+            sendResponse(id, 'error', { message: `Port ${localPort} is not available` })
+            break
+          }
+          portToUse = localPort
+        } else {
+          // Find next available port based on project's base port
+          const basePort = parseInt(getLocalPort(profile, projectConfig), 10)
+          // Combine usedPorts from params with currently active connections
+          const allUsedPorts = [
+            ...usedPorts,
+            ...Array.from(activeConnections.values()).map(c => c.connectionInfo?.port)
+          ].filter(Boolean)
+          portToUse = await findAvailablePort(basePort, allUsedPorts)
+        }
+
+        // Start new connection with the determined port
+        const connectionControl = await connect(projectKey, profile, {
+          localPort: portToUse,
+          onEvent: (event, data) => {
+            sendEvent(event, { ...data, connectionId })
+          }
+        })
+
+        // Store in active connections
+        activeConnections.set(connectionId, connectionControl)
+
+        sendResponse(id, 'success', {
+          connectionId,
+          connectionInfo: connectionControl.connectionInfo
+        })
+
+        // Set up connection close handler
+        connectionControl.waitForClose()
+          .then(() => {
+            sendEvent('disconnected', { connectionId, reason: 'session_ended' })
+            activeConnections.delete(connectionId)
+          })
+          .catch((error) => {
+            sendEvent('error', { connectionId, message: error.message })
+            sendEvent('disconnected', { connectionId, reason: 'error' })
+            activeConnections.delete(connectionId)
+          })
+
+        break
+      }
+
+      case 'disconnect': {
+        const { connectionId } = params
+
+        if (connectionId) {
+          // Disconnect specific connection
+          const connection = activeConnections.get(connectionId)
+          if (connection) {
+            connection.disconnect()
+            activeConnections.delete(connectionId)
+            sendResponse(id, 'success', { message: `Disconnected ${connectionId}` })
+          } else {
+            sendResponse(id, 'success', { message: `Connection ${connectionId} not found` })
+          }
+        } else {
+          // Disconnect all connections (legacy behavior)
+          for (const [connId, connection] of activeConnections) {
+            connection.disconnect()
+          }
+          activeConnections.clear()
+          sendResponse(id, 'success', { message: 'Disconnected all connections' })
+        }
+        break
+      }
+
+      case 'disconnect-all': {
+        for (const [connId, connection] of activeConnections) {
+          connection.disconnect()
+        }
+        activeConnections.clear()
+        sendResponse(id, 'success', { message: 'Disconnected all connections' })
+        break
+      }
+
+      case 'status': {
+        const connections = Array.from(activeConnections.entries()).map(([connId, conn]) => ({
+          connectionId: connId,
+          connectionInfo: conn.connectionInfo
+        }))
+        sendResponse(id, 'success', {
+          connectionCount: activeConnections.size,
+          connections
+        })
+        break
+      }
+
+      case 'ping': {
+        sendResponse(id, 'success', { message: 'pong' })
+        break
+      }
+
+      default:
+        sendResponse(id, 'error', { message: `Unknown action: ${action}` })
+    }
+  } catch (error) {
+    sendResponse(id, 'error', { message: error.message })
+  }
+}
+
+// Handle process signals for cleanup
+function setupCleanup () {
+  const cleanup = () => {
+    for (const [connId, connection] of activeConnections) {
+      connection.disconnect()
+    }
+    activeConnections.clear()
+    process.exit(0)
+  }
+
+  process.on('SIGINT', cleanup)
+  process.on('SIGTERM', cleanup)
+  process.on('exit', cleanup)
+}
+
+// Main entry point
+async function main () {
+  setupCleanup()
+
+  // Signal that adapter is ready
+  sendEvent('ready', { version: '2.0.0' })
+
+  // Set up readline for stdin
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+  })
+
+  rl.on('line', async (line) => {
+    try {
+      const command = JSON.parse(line)
+      await handleCommand(command)
+    } catch (error) {
+      sendEvent('error', { message: `Failed to parse command: ${error.message}` })
+    }
+  })
+
+  rl.on('close', () => {
+    for (const [connId, connection] of activeConnections) {
+      connection.disconnect()
+    }
+    activeConnections.clear()
+    process.exit(0)
+  })
+}
+
+main().catch((error) => {
+  sendEvent('error', { message: `Adapter error: ${error.message}` })
+  process.exit(1)
+})

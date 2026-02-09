@@ -1,0 +1,31 @@
+[package]
+name = "rds-ssm-connect"
+version = "1.7.0"
+description = "Secure RDS connections through AWS SSM"
+authors = ["Iaroslav Pyrogov"]
+edition = "2024"
+
+[lib]
+name = "rds_ssm_connect_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+shared_child = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", features = ["json"] }
+semver = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

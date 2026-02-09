@@ -35,7 +35,7 @@ export const PROJECT_CONFIGS = {
   covered: {
     name: 'Covered (Healthcare)',
     region: 'us-west-1',
-    database: 'covered',
+    database: 'covered_db',
     secretPrefix: 'rds!db',
     rdsType: 'instance', // Single RDS instance (not Aurora)
     rdsPattern: 'covered-db', // DBInstanceIdentifier contains this
