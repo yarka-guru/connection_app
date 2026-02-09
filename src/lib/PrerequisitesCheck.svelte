@@ -1,13 +1,18 @@
 <script>
-  let {
-    prerequisites = [],
-    onDismiss,
-    onOpenUrl
-  } = $props()
+import { trapFocus } from './utils.js'
+
+const { prerequisites = [], onDismiss, onOpenUrl } = $props()
+
+function _handleKeydown(e) {
+  if (e.key === 'Escape') {
+    onDismiss?.()
+  }
+}
 </script>
 
-<div class="prerequisites-modal">
-  <div class="modal-content">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="prerequisites-modal" role="dialog" aria-label="Missing prerequisites" tabindex="-1" onkeydown={handleKeydown}>
+  <div class="modal-content" use:trapFocus>
     <div class="modal-header">
       <div class="warning-icon">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -123,7 +128,7 @@
   .modal-header p {
     margin: 0;
     font-size: 0.875rem;
-    color: #71717a;
+    color: #9e9ea7;
   }
 
   .prerequisites-list {
@@ -231,7 +236,7 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 10px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-continue:hover {

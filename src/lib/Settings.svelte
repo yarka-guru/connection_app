@@ -1,133 +1,179 @@
 <script>
-  let {
-    onClose,
-    invoke
-  } = $props()
+import { onMount, onDestroy } from 'svelte'
+import { trapFocus, safeTimeout } from './utils.js'
 
-  let activeTab = $state('profiles')
-  let awsProfiles = $state([])
-  let rawConfig = $state('')
-  let loading = $state(true)
-  let saving = $state(false)
-  let error = $state('')
-  let success = $state('')
+const { onClose, invoke } = $props()
 
-  // Edit modal state
-  let editingProfile = $state(null)
-  let editName = $state('')
-  let editContent = $state('')
+const _activeTab = $state('profiles')
+let _awsProfiles = $state([])
+let rawConfig = $state('')
+let _loading = $state(true)
+let _saving = $state(false)
+let _error = $state('')
+let _success = $state('')
 
-  $effect(() => {
-    loadData()
-  })
+// Edit modal state
+let _editingProfile = $state(null)
+let editName = $state('')
+let editContent = $state('')
 
-  async function loadData() {
-    loading = true
-    error = ''
-    try {
-      const [profiles, config] = await Promise.all([
-        invoke('read_aws_config'),
-        invoke('get_raw_aws_config')
-      ])
-      awsProfiles = profiles
-      rawConfig = config
-    } catch (err) {
-      error = `Failed to load AWS config: ${err}`
-    } finally {
-      loading = false
-    }
+// Timeout cleanup
+let cancelSuccessTimeout = null
+
+onMount(() => {
+  loadData()
+})
+
+async function loadData() {
+  _loading = true
+  _error = ''
+  try {
+    const [profiles, config] = await Promise.all([
+      invoke('read_aws_config'),
+      invoke('get_raw_aws_config'),
+    ])
+    _awsProfiles = profiles
+    rawConfig = config
+  } catch (err) {
+    _error = `Failed to load AWS config: ${err}`
+  } finally {
+    _loading = false
+  }
+}
+
+function _openAddProfile() {
+  _editingProfile = { isNew: true }
+  editName = ''
+  editContent = 'region = us-east-1\n'
+}
+
+function _openEditProfile(profile) {
+  _editingProfile = profile
+  editName = profile.name
+  editContent = profile.rawContent
+}
+
+function closeEditModal() {
+  _editingProfile = null
+  editName = ''
+  editContent = ''
+}
+
+async function _saveProfile() {
+  if (!editName.trim()) {
+    _error = 'Profile name is required'
+    return
   }
 
-  function openAddProfile() {
-    editingProfile = { isNew: true }
-    editName = ''
-    editContent = 'region = us-east-1\n'
+  _saving = true
+  _error = ''
+  try {
+    await invoke('save_aws_profile', {
+      profile: {
+        name: editName.trim(),
+        rawContent: editContent,
+        region: null,
+        sourceProfile: null,
+        roleArn: null,
+        mfaSerial: null,
+        ssoStartUrl: null,
+        ssoRegion: null,
+        ssoAccountId: null,
+        ssoRoleName: null,
+      },
+    })
+    _success = 'Profile saved successfully'
+    cancelSuccessTimeout?.()
+    cancelSuccessTimeout = safeTimeout(() => {
+      _success = ''
+    }, 3000)
+    closeEditModal()
+    await loadData()
+  } catch (err) {
+    _error = `Failed to save profile: ${err}`
+  } finally {
+    _saving = false
   }
+}
 
-  function openEditProfile(profile) {
-    editingProfile = profile
-    editName = profile.name
-    editContent = profile.rawContent
+// Delete confirmation state
+let _deleteConfirmProfile = $state(null)
+
+function _requestDeleteProfile(profileName) {
+  _deleteConfirmProfile = profileName
+}
+
+function _cancelDeleteProfile() {
+  _deleteConfirmProfile = null
+}
+
+async function _confirmDeleteProfile() {
+  if (!_deleteConfirmProfile) return
+  const profileName = _deleteConfirmProfile
+  _deleteConfirmProfile = null
+
+  _saving = true
+  _error = ''
+  try {
+    await invoke('delete_aws_profile', { profileName })
+    _success = 'Profile deleted'
+    cancelSuccessTimeout?.()
+    cancelSuccessTimeout = safeTimeout(() => {
+      _success = ''
+    }, 3000)
+    await loadData()
+  } catch (err) {
+    _error = `Failed to delete profile: ${err}`
+  } finally {
+    _saving = false
   }
+}
 
-  function closeEditModal() {
-    editingProfile = null
-    editName = ''
-    editContent = ''
+async function _saveRawConfig() {
+  _saving = true
+  _error = ''
+  try {
+    await invoke('save_raw_aws_config', { content: rawConfig })
+    _success = 'Config saved successfully'
+    cancelSuccessTimeout?.()
+    cancelSuccessTimeout = safeTimeout(() => {
+      _success = ''
+    }, 3000)
+    await loadData()
+  } catch (err) {
+    _error = `Failed to save config: ${err}`
+  } finally {
+    _saving = false
   }
+}
 
-  async function saveProfile() {
-    if (!editName.trim()) {
-      error = 'Profile name is required'
-      return
-    }
-
-    saving = true
-    error = ''
-    try {
-      await invoke('save_aws_profile', {
-        profile: {
-          name: editName.trim(),
-          rawContent: editContent,
-          region: null,
-          sourceProfile: null,
-          roleArn: null,
-          mfaSerial: null,
-          ssoStartUrl: null,
-          ssoRegion: null,
-          ssoAccountId: null,
-          ssoRoleName: null
-        }
-      })
-      success = 'Profile saved successfully'
-      setTimeout(() => { success = '' }, 3000)
+function _handleOverlayKeydown(e) {
+  if (e.key === 'Escape') {
+    if (_editingProfile) {
       closeEditModal()
-      await loadData()
-    } catch (err) {
-      error = `Failed to save profile: ${err}`
-    } finally {
-      saving = false
+    } else {
+      onClose()
     }
   }
+}
 
-  async function deleteProfile(profileName) {
-    if (!confirm(`Delete profile "${profileName}"?`)) return
-
-    saving = true
-    error = ''
-    try {
-      await invoke('delete_aws_profile', { profileName })
-      success = 'Profile deleted'
-      setTimeout(() => { success = '' }, 3000)
-      await loadData()
-    } catch (err) {
-      error = `Failed to delete profile: ${err}`
-    } finally {
-      saving = false
-    }
+function _handleEditOverlayKeydown(e) {
+  if (e.key === 'Escape') {
+    closeEditModal()
   }
+}
 
-  async function saveRawConfig() {
-    saving = true
-    error = ''
-    try {
-      await invoke('save_raw_aws_config', { content: rawConfig })
-      success = 'Config saved successfully'
-      setTimeout(() => { success = '' }, 3000)
-      await loadData()
-    } catch (err) {
-      error = `Failed to save config: ${err}`
-    } finally {
-      saving = false
-    }
-  }
+onDestroy(() => {
+  cancelSuccessTimeout?.()
+})
 </script>
 
-<div class="settings-modal">
-  <div class="modal-content">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="settings-modal" role="dialog" aria-label="Settings" tabindex="-1" onkeydown={handleOverlayKeydown}>
+  <div class="modal-content" use:trapFocus>
     <div class="modal-header">
       <h2>Settings</h2>
-      <button class="close-btn" onclick={onClose}>
+      <button class="close-btn" onclick={onClose} aria-label="Close settings">
         <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
           <path d="M5 5l10 10M15 5l-10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </svg>
@@ -185,32 +231,42 @@
                   <div class="profile-header">
                     <span class="profile-name">{profile.name}</span>
                     <div class="profile-actions">
-                      <button class="btn-icon" onclick={() => openEditProfile(profile)} title="Edit">
+                      <button class="btn-icon" onclick={() => openEditProfile(profile)} aria-label="Edit {profile.name}">
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                           <path d="M10.5 1.5l2 2-8 8H2.5v-2l8-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                       </button>
-                      <button class="btn-icon delete" onclick={() => deleteProfile(profile.name)} title="Delete">
+                      <button class="btn-icon delete" onclick={() => requestDeleteProfile(profile.name)} aria-label="Delete {profile.name}">
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                           <path d="M2 4h10M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M11 4v8a1 1 0 01-1 1H4a1 1 0 01-1-1V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                       </button>
                     </div>
                   </div>
-                  <div class="profile-details">
-                    {#if profile.region}
-                      <span class="detail">Region: {profile.region}</span>
-                    {/if}
-                    {#if profile.sourceProfile}
-                      <span class="detail">Source: {profile.sourceProfile}</span>
-                    {/if}
-                    {#if profile.roleArn}
-                      <span class="detail">Role: {profile.roleArn.split('/').pop()}</span>
-                    {/if}
-                    {#if profile.ssoStartUrl}
-                      <span class="detail">SSO</span>
-                    {/if}
-                  </div>
+                  {#if deleteConfirmProfile === profile.name}
+                    <div class="inline-confirm">
+                      <span>Delete "{profile.name}"?</span>
+                      <div class="inline-confirm-actions">
+                        <button class="btn-inline-confirm" onclick={confirmDeleteProfile}>Delete</button>
+                        <button class="btn-inline-cancel" onclick={cancelDeleteProfile}>Cancel</button>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="profile-details">
+                      {#if profile.region}
+                        <span class="detail">Region: {profile.region}</span>
+                      {/if}
+                      {#if profile.sourceProfile}
+                        <span class="detail">Source: {profile.sourceProfile}</span>
+                      {/if}
+                      {#if profile.roleArn}
+                        <span class="detail">Role: {profile.roleArn.split('/').pop()}</span>
+                      {/if}
+                      {#if profile.ssoStartUrl}
+                        <span class="detail">SSO</span>
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -236,8 +292,10 @@
 
   <!-- Edit Profile Modal -->
   {#if editingProfile}
-    <div class="edit-modal-overlay" onclick={closeEditModal}>
-      <div class="edit-modal" onclick={(e) => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="edit-modal-overlay" onclick={closeEditModal} onkeydown={handleEditOverlayKeydown}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="edit-modal" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProfile.isNew ? 'Add profile' : 'Edit profile'}>
         <h3>{editingProfile.isNew ? 'Add Profile' : 'Edit Profile'}</h3>
 
         <div class="form-group">
@@ -324,7 +382,7 @@
     cursor: pointer;
     padding: 4px;
     border-radius: 6px;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .close-btn:hover {
@@ -351,7 +409,7 @@
     border: none;
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .tab:hover {
@@ -393,7 +451,7 @@
     align-items: center;
     justify-content: center;
     height: 200px;
-    color: #71717a;
+    color: #9e9ea7;
   }
 
   .profiles-header {
@@ -405,7 +463,7 @@
 
   .profiles-path {
     font-size: 0.75rem;
-    color: #52525b;
+    color: #8b8b95;
     font-family: ui-monospace, monospace;
   }
 
@@ -421,7 +479,7 @@
     border: 1px solid rgba(99, 102, 241, 0.2);
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s;
   }
 
   .btn-add:hover {
@@ -431,7 +489,7 @@
   .empty-state {
     text-align: center;
     padding: 40px 20px;
-    color: #71717a;
+    color: #9e9ea7;
   }
 
   .empty-state p {
@@ -440,7 +498,7 @@
 
   .empty-state .hint {
     font-size: 0.875rem;
-    color: #52525b;
+    color: #8b8b95;
   }
 
   .profiles-list {
@@ -480,7 +538,7 @@
     color: #71717a;
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-icon:hover {
@@ -493,6 +551,56 @@
     color: #f87171;
   }
 
+  .inline-confirm {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 0 0;
+  }
+
+  .inline-confirm span {
+    font-size: 0.8rem;
+    color: #f87171;
+  }
+
+  .inline-confirm-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .btn-inline-confirm {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: white;
+    background: #ef4444;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .btn-inline-confirm:hover {
+    background: #dc2626;
+  }
+
+  .btn-inline-cancel {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #9e9ea7;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .btn-inline-cancel:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
   .profile-details {
     display: flex;
     flex-wrap: wrap;
@@ -501,7 +609,7 @@
 
   .detail {
     font-size: 0.75rem;
-    color: #71717a;
+    color: #9e9ea7;
     background: rgba(255, 255, 255, 0.05);
     padding: 4px 8px;
     border-radius: 4px;
@@ -546,7 +654,7 @@
     border: none;
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: transform 0.2s, box-shadow 0.2s;
   }
 
   .btn-save:hover:not(:disabled) {
@@ -642,7 +750,7 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-cancel:hover {

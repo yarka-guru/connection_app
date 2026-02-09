@@ -1,18 +1,13 @@
 <script>
-  let {
-    updateInfo = null,
-    isUpdating = false,
-    onInstall,
-    onDismiss
-  } = $props()
+const { updateInfo = null, isUpdating = false, onInstall, onDismiss } = $props()
 
-  function handleInstall() {
-    onInstall?.()
-  }
+function handleInstall() {
+  onInstall?.()
+}
 
-  function handleDismiss() {
-    onDismiss?.()
-  }
+function handleDismiss() {
+  onDismiss?.()
+}
 </script>
 
 {#if updateInfo?.updateAvailable}
@@ -42,7 +37,7 @@
         <button class="btn-install" onclick={handleInstall}>
           Install & Restart
         </button>
-        <button class="btn-dismiss" onclick={handleDismiss} title="Dismiss">
+        <button class="btn-dismiss" onclick={handleDismiss} aria-label="Dismiss update notification">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
@@ -119,7 +114,7 @@
 
   .current-version {
     font-size: 0.7rem;
-    color: #71717a;
+    color: #9e9ea7;
   }
 
   .update-actions {
@@ -138,7 +133,7 @@
     border: none;
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: transform 0.2s, box-shadow 0.2s;
   }
 
   .btn-install:hover {
@@ -157,7 +152,7 @@
     color: #71717a;
     cursor: pointer;
     border-radius: 6px;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-dismiss:hover {

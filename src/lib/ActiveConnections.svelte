@@ -1,47 +1,39 @@
 <script>
-  let {
-    connections = [],
-    projects = [],
-    onDisconnect,
-    onDisconnectAll
-  } = $props()
+import CopyButton from './CopyButton.svelte'
+import { maskPassword } from './utils.js'
 
-  let expandedId = $state(null)
-  let copiedField = $state('')
+const {
+  connections = [],
+  projects = [],
+  onDisconnect,
+  onDisconnectAll,
+} = $props()
 
-  function getProjectName(projectKey) {
-    const project = projects.find(p => p.key === projectKey)
-    return project?.name || projectKey
+let expandedId = $state(null)
+
+function _getProjectName(projectKey) {
+  const project = projects.find((p) => p.key === projectKey)
+  return project?.name || projectKey
+}
+
+function _toggleExpand(id) {
+  expandedId = expandedId === id ? null : id
+}
+
+function _handleDisconnect(connection) {
+  onDisconnect?.(connection.id)
+}
+
+function _handleDisconnectAll() {
+  onDisconnectAll?.()
+}
+
+function _handleHeaderKeydown(e, connectionId) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    _toggleExpand(connectionId)
   }
-
-  function toggleExpand(id) {
-    expandedId = expandedId === id ? null : id
-  }
-
-  async function copyToClipboard(value, field) {
-    try {
-      await navigator.clipboard.writeText(value)
-      copiedField = field
-      setTimeout(() => {
-        copiedField = ''
-      }, 2000)
-    } catch (err) {
-      console.error('Failed to copy:', err)
-    }
-  }
-
-  function handleDisconnect(connection) {
-    onDisconnect?.(connection.id)
-  }
-
-  function handleDisconnectAll() {
-    onDisconnectAll?.()
-  }
-
-  function maskPassword(password) {
-    if (!password) return ''
-    return '*'.repeat(Math.min(password.length, 20))
-  }
+}
 </script>
 
 {#if connections.length > 0}
@@ -71,7 +63,7 @@
             role="button"
             tabindex="0"
             onclick={() => toggleExpand(connection.id)}
-            onkeydown={(e) => e.key === 'Enter' && toggleExpand(connection.id)}
+            onkeydown={(e) => handleHeaderKeydown(e, connection.id)}
           >
             <div class="connection-status">
               <span class="status-dot"></span>
@@ -88,7 +80,7 @@
             <div class="connection-actions">
               <button
                 class="btn-expand"
-                title={expandedId === connection.id ? 'Collapse' : 'Expand'}
+                aria-label={expandedId === connection.id ? 'Collapse credentials' : 'Show credentials'}
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" class:rotated={expandedId === connection.id}>
                   <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -97,7 +89,7 @@
               <button
                 class="btn-disconnect"
                 onclick={(e) => { e.stopPropagation(); handleDisconnect(connection); }}
-                title="Disconnect"
+                aria-label="Disconnect {connection.profile}"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                   <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -111,102 +103,27 @@
               <div class="detail-row">
                 <span class="detail-label">Host</span>
                 <code class="detail-value">{connection.connectionInfo.host}</code>
-                <button
-                  class="copy-btn"
-                  class:copied={copiedField === `host-${connection.id}`}
-                  onclick={() => copyToClipboard(connection.connectionInfo.host, `host-${connection.id}`)}
-                >
-                  {#if copiedField === `host-${connection.id}`}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {:else}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  {/if}
-                </button>
+                <CopyButton value={connection.connectionInfo.host} label="Copy host" />
               </div>
               <div class="detail-row">
                 <span class="detail-label">Port</span>
                 <code class="detail-value">{connection.connectionInfo.port}</code>
-                <button
-                  class="copy-btn"
-                  class:copied={copiedField === `port-${connection.id}`}
-                  onclick={() => copyToClipboard(connection.connectionInfo.port, `port-${connection.id}`)}
-                >
-                  {#if copiedField === `port-${connection.id}`}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {:else}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  {/if}
-                </button>
+                <CopyButton value={String(connection.connectionInfo.port)} label="Copy port" />
               </div>
               <div class="detail-row">
                 <span class="detail-label">User</span>
                 <code class="detail-value">{connection.connectionInfo.username}</code>
-                <button
-                  class="copy-btn"
-                  class:copied={copiedField === `user-${connection.id}`}
-                  onclick={() => copyToClipboard(connection.connectionInfo.username, `user-${connection.id}`)}
-                >
-                  {#if copiedField === `user-${connection.id}`}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {:else}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  {/if}
-                </button>
+                <CopyButton value={connection.connectionInfo.username} label="Copy username" />
               </div>
               <div class="detail-row">
                 <span class="detail-label">Password</span>
                 <code class="detail-value password">{maskPassword(connection.connectionInfo.password)}</code>
-                <button
-                  class="copy-btn"
-                  class:copied={copiedField === `pass-${connection.id}`}
-                  onclick={() => copyToClipboard(connection.connectionInfo.password, `pass-${connection.id}`)}
-                >
-                  {#if copiedField === `pass-${connection.id}`}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {:else}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  {/if}
-                </button>
+                <CopyButton value={connection.connectionInfo.password} label="Copy password" />
               </div>
               <div class="detail-row">
                 <span class="detail-label">Database</span>
                 <code class="detail-value">{connection.connectionInfo.database}</code>
-                <button
-                  class="copy-btn"
-                  class:copied={copiedField === `db-${connection.id}`}
-                  onclick={() => copyToClipboard(connection.connectionInfo.database, `db-${connection.id}`)}
-                >
-                  {#if copiedField === `db-${connection.id}`}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {:else}
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                      <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  {/if}
-                </button>
+                <CopyButton value={connection.connectionInfo.database} label="Copy database" />
               </div>
             </div>
           {/if}
@@ -222,7 +139,6 @@
     border: 1px solid rgba(52, 211, 153, 0.2);
     border-radius: 20px;
     padding: 24px;
-    backdrop-filter: blur(10px);
   }
 
   .card-header {
@@ -248,6 +164,7 @@
     justify-content: center;
     color: #34d399;
     animation: pulse 2s ease-in-out infinite;
+    will-change: opacity;
   }
 
   @keyframes pulse {
@@ -270,7 +187,7 @@
     border: 1px solid rgba(239, 68, 68, 0.2);
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s, border-color 0.2s;
   }
 
   .btn-disconnect-all:hover {
@@ -335,13 +252,13 @@
 
   .connection-port {
     color: #34d399;
-    font-family: 'SF Mono', 'Monaco', monospace;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85rem;
   }
 
   .connection-meta {
     font-size: 0.75rem;
-    color: #71717a;
+    color: #9e9ea7;
   }
 
   .connection-actions {
@@ -350,16 +267,16 @@
   }
 
   .btn-expand, .btn-disconnect {
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
     background: transparent;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-expand {
@@ -421,14 +338,14 @@
     width: 70px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #71717a;
+    color: #9e9ea7;
     text-transform: uppercase;
     flex-shrink: 0;
   }
 
   .detail-value {
     flex: 1;
-    font-family: 'SF Mono', 'Monaco', monospace;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.8rem;
     color: #a5b4fc;
     background: transparent;
@@ -440,29 +357,5 @@
   .detail-value.password {
     color: #fbbf24;
     letter-spacing: 0.1em;
-  }
-
-  .copy-btn {
-    width: 26px;
-    height: 26px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    color: #71717a;
-    cursor: pointer;
-    transition: all 0.2s;
-    flex-shrink: 0;
-  }
-
-  .copy-btn:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
-  }
-
-  .copy-btn.copied {
-    color: #34d399;
   }
 </style>

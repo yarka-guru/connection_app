@@ -1,32 +1,34 @@
 <script>
-  let { connectionStatus = 'disconnected', statusMessage = '' } = $props()
+const { connectionStatus = 'disconnected', statusMessage = '' } = $props()
 
-  let statusConfig = $derived({
-    disconnected: {
-      label: 'Ready',
-      color: '#71717a',
-      bgColor: 'rgba(113, 113, 122, 0.1)',
-      borderColor: 'rgba(113, 113, 122, 0.2)',
-      icon: 'circle'
-    },
-    connecting: {
-      label: 'Connecting',
-      color: '#fbbf24',
-      bgColor: 'rgba(251, 191, 36, 0.1)',
-      borderColor: 'rgba(251, 191, 36, 0.2)',
-      icon: 'loading'
-    },
-    connected: {
-      label: 'Connected',
-      color: '#34d399',
-      bgColor: 'rgba(52, 211, 153, 0.1)',
-      borderColor: 'rgba(52, 211, 153, 0.2)',
-      icon: 'check'
-    }
-  }[connectionStatus])
+const STATUS_CONFIGS = {
+  disconnected: {
+    label: 'Ready',
+    color: '#71717a',
+    bgColor: 'rgba(113, 113, 122, 0.1)',
+    borderColor: 'rgba(113, 113, 122, 0.2)',
+    icon: 'circle',
+  },
+  connecting: {
+    label: 'Connecting',
+    color: '#fbbf24',
+    bgColor: 'rgba(251, 191, 36, 0.1)',
+    borderColor: 'rgba(251, 191, 36, 0.2)',
+    icon: 'loading',
+  },
+  connected: {
+    label: 'Connected',
+    color: '#34d399',
+    bgColor: 'rgba(52, 211, 153, 0.1)',
+    borderColor: 'rgba(52, 211, 153, 0.2)',
+    icon: 'check',
+  },
+}
+
+const _statusConfig = $derived(STATUS_CONFIGS[connectionStatus])
 </script>
 
-<div class="status-bar" style="--status-color: {statusConfig.color}; --status-bg: {statusConfig.bgColor}; --status-border: {statusConfig.borderColor}">
+<div class="status-bar" role="status" aria-live="polite" style="--status-color: {statusConfig.color}; --status-bg: {statusConfig.bgColor}; --status-border: {statusConfig.borderColor}">
   <div class="status-badge">
     <div class="status-icon">
       {#if statusConfig.icon === 'loading'}
@@ -60,7 +62,7 @@
     background: var(--status-bg);
     border: 1px solid var(--status-border);
     border-radius: 12px;
-    transition: all 0.3s ease;
+    transition: background-color 0.3s ease, border-color 0.3s ease;
   }
 
   .status-badge {
@@ -80,6 +82,7 @@
 
   .spinning {
     animation: spin 1.5s linear infinite;
+    will-change: transform;
   }
 
   @keyframes spin {
@@ -97,6 +100,6 @@
   .status-detail {
     margin: 0;
     font-size: 0.8rem;
-    color: #71717a;
+    color: #9e9ea7;
   }
 </style>

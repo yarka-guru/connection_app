@@ -1,28 +1,30 @@
 <script>
-  let {
-    projects = [],
-    profiles = [],
-    selectedProject = '',
-    selectedProfile = '',
-    isConnecting = false,
-    onProjectChange,
-    onProfileChange,
-    onConnect
-  } = $props()
+const {
+  projects = [],
+  profiles = [],
+  selectedProject = '',
+  selectedProfile = '',
+  isConnecting = false,
+  onProjectChange,
+  onProfileChange,
+  onConnect,
+} = $props()
 
-  let canConnect = $derived(selectedProject && selectedProfile && !isConnecting)
+const _canConnect = $derived(
+  selectedProject && selectedProfile && !isConnecting,
+)
 
-  function handleProjectSelect(e) {
-    onProjectChange?.(e.target.value)
-  }
+function _handleProjectSelect(e) {
+  onProjectChange?.(e.target.value)
+}
 
-  function handleProfileSelect(e) {
-    onProfileChange?.(e.target.value)
-  }
+function _handleProfileSelect(e) {
+  onProfileChange?.(e.target.value)
+}
 
-  function handleConnectClick() {
-    onConnect?.()
-  }
+function _handleConnectClick() {
+  onConnect?.()
+}
 </script>
 
 <div class="connection-card">
@@ -113,7 +115,6 @@
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 20px;
     padding: 24px;
-    backdrop-filter: blur(10px);
   }
 
   .card-header {
@@ -180,7 +181,7 @@
     font-size: 0.95rem;
     color: #e4e4e7;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
   select:hover:not(:disabled) {
@@ -230,7 +231,7 @@
     font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
   }
 
   .btn-connect {
