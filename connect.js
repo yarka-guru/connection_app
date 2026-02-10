@@ -10,7 +10,7 @@ import { promisify } from 'node:util'
 import { PROJECT_CONFIGS } from './envPortMapping.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '1.6.2' }
+const packageJson = { name: 'rds_ssm_connect', version: '1.7.6' }
 
 const execAsync = promisify(exec)
 
