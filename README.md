@@ -22,17 +22,85 @@ Secure database tunneling to AWS RDS through SSM port forwarding via bastion hos
 
 ## Installation
 
-### Desktop App
+### macOS (Homebrew)
 
-Download the latest installer for your platform from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases):
+```bash
+brew tap yarka-guru/tap
+brew install --cask rds-ssm-connect
+```
 
-| Platform | Format |
-|----------|--------|
-| macOS (Apple Silicon + Intel) | `.dmg` |
-| Windows | `.msi` / `.exe` |
-| Linux | `.deb` / `.AppImage` |
+This installs the desktop app along with `aws-vault` and `awscli` dependencies. You also need the [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html):
 
-### CLI
+```bash
+brew install --cask session-manager-plugin
+```
+
+Or download the `.dmg` directly from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
+
+### Linux
+
+#### Option A: Homebrew
+
+```bash
+# Install Homebrew if not already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+
+# Install the app (includes aws-vault and awscli as dependencies)
+brew tap yarka-guru/tap
+brew install yarka-guru/tap/rds-ssm-connect
+
+# Install Session Manager Plugin (ARM64)
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_arm64/session-manager-plugin.deb" -o session-manager-plugin.deb
+sudo dpkg -i session-manager-plugin.deb
+# For x86_64, replace ubuntu_arm64 with ubuntu_64bit
+
+# Make brew tools visible to the desktop app
+echo 'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"' | sudo tee /etc/profile.d/linuxbrew.sh
+# Log out and back in for this to take effect
+```
+
+#### Option B: Direct .deb install
+
+```bash
+# 1. Download and install the app
+# ARM64:
+wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_1.7.5_arm64.deb
+sudo dpkg -i RDS.SSM.Connect_1.7.5_arm64.deb
+# x86_64:
+# wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_1.7.5_amd64.deb
+# sudo dpkg -i RDS.SSM.Connect_1.7.5_amd64.deb
+
+# 2. Install aws-vault
+# ARM64:
+wget https://github.com/99designs/aws-vault/releases/latest/download/aws-vault-linux-arm64 -O aws-vault
+# x86_64:
+# wget https://github.com/99designs/aws-vault/releases/latest/download/aws-vault-linux-amd64 -O aws-vault
+chmod +x aws-vault && sudo mv aws-vault /usr/local/bin/
+
+# 3. Install AWS CLI
+# ARM64:
+curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o awscliv2.zip
+# x86_64:
+# curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip awscliv2.zip && sudo ./aws/install
+
+# 4. Install Session Manager Plugin
+# ARM64:
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_arm64/session-manager-plugin.deb" -o session-manager-plugin.deb
+# x86_64:
+# curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o session-manager-plugin.deb
+sudo dpkg -i session-manager-plugin.deb
+```
+
+### Windows
+
+Download the `.msi` or `.exe` installer from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
+
+Prerequisites must be installed separately: [aws-vault](https://github.com/99designs/aws-vault), [AWS CLI](https://aws.amazon.com/cli/), [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+
+### CLI (all platforms)
 
 ```bash
 npm install -g rds_ssm_connect
@@ -141,7 +209,7 @@ src/
 ## Publishing
 
 - **npm**: Published automatically via GitHub Actions when a release is created
-- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux x64, Windows x64) via `tauri-action` on git tags
+- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux ARM64/x64, Windows x64) via `tauri-action` on git tags
 
 ## License
 
