@@ -18,6 +18,9 @@ let _connectionStatus = $state('disconnected')
 let _statusMessage = $state('')
 let _errorMessage = $state('')
 let _ready = $state(false)
+let _initStatus = $state('Initializing...')
+let _initFailed = $state(false)
+let _loadingProjects = $state(false)
 
 // New state for features
 let savedConnections = $state([])
@@ -56,67 +59,85 @@ function handleGlobalKeydown(e) {
 
 onMount(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
-
-  // Async initialization
-  ;(async () => {
-    try {
-      const core = await import('@tauri-apps/api/core')
-      const event = await import('@tauri-apps/api/event')
-      invoke = core.invoke
-      listen = event.listen
-
-      unlistenSidecar = await listen('sidecar-event', (ev) => {
-        const data = ev.payload
-        if (data.event === 'status') {
-          _statusMessage = data.message
-        } else if (data.event === 'credentials') {
-          // Credentials are now part of connection info, handled via activeConnections
-        } else if (data.event === 'disconnected') {
-          const { connectionId } = data
-          if (connectionId) {
-            activeConnections = activeConnections.filter(
-              (c) => c.id !== connectionId,
-            )
-          }
-          if (activeConnections.length === 0) {
-            _connectionStatus = 'disconnected'
-            _statusMessage = ''
-          }
-          _connectingId = null
-        } else if (data.event === 'error') {
-          _errorMessage = data.message
-          _connectingId = null
-        }
-      })
-
-      // Load initial data in parallel
-      const [projectsResult, savedResult, versionResult] = await Promise.all([
-        invoke('list_projects'),
-        invoke('load_saved_connections'),
-        invoke('get_current_version'),
-      ])
-
-      projects = projectsResult
-      savedConnections = savedResult
-      _currentVersion = versionResult
-
-      // Check for updates (don't await, non-blocking)
-      checkForUpdates()
-
-      // Check prerequisites
-      checkPrerequisites()
-
-      _ready = true
-    } catch (err) {
-      _errorMessage = `Initialization error: ${err}`
-      _ready = true
-    }
-  })()
+  _initApp()
 
   return () => {
     window.removeEventListener('keydown', handleGlobalKeydown)
   }
 })
+
+async function _initApp() {
+  _initFailed = false
+  _errorMessage = ''
+  _initStatus = 'Loading modules...'
+
+  try {
+    const core = await import('@tauri-apps/api/core')
+    const event = await import('@tauri-apps/api/event')
+    invoke = core.invoke
+    listen = event.listen
+
+    _initStatus = 'Setting up listeners...'
+    unlistenSidecar = await listen('sidecar-event', (ev) => {
+      const data = ev.payload
+      if (data.event === 'status') {
+        _statusMessage = data.message
+      } else if (data.event === 'credentials') {
+        // Credentials are now part of connection info, handled via activeConnections
+      } else if (data.event === 'disconnected') {
+        const { connectionId } = data
+        if (connectionId) {
+          activeConnections = activeConnections.filter(
+            (c) => c.id !== connectionId,
+          )
+        }
+        if (activeConnections.length === 0) {
+          _connectionStatus = 'disconnected'
+          _statusMessage = ''
+        }
+        _connectingId = null
+      } else if (data.event === 'error') {
+        _errorMessage = data.message
+        _connectingId = null
+      }
+    })
+
+    // Load instant data first (no sidecar dependency)
+    _initStatus = 'Loading saved data...'
+    const [savedResult, versionResult] = await Promise.all([
+      invoke('load_saved_connections'),
+      invoke('get_current_version'),
+    ])
+
+    savedConnections = savedResult
+    _currentVersion = versionResult
+
+    // Show app immediately with saved data
+    _ready = true
+
+    // Load projects from sidecar in background (no longer blocks UI)
+    _loadingProjects = true
+    try {
+      projects = await invoke('list_projects')
+    } catch (err) {
+      _errorMessage = `Failed to load projects: ${err}`
+    } finally {
+      _loadingProjects = false
+    }
+
+    // Non-blocking checks
+    checkForUpdates()
+    checkPrerequisites()
+  } catch (err) {
+    _errorMessage = `${err}`
+    _initStatus = 'Failed to initialize'
+    _initFailed = true
+  }
+}
+
+function _retryInit() {
+  _initApp()
+}
 
 onDestroy(() => {
   cancelUpdateMsgTimeout?.()
@@ -413,8 +434,14 @@ const _isAlreadySaved = $derived(
           </linearGradient>
         </defs>
       </svg>
-      <div class="loading-spinner"></div>
-      <span class="loading-text">Initializing...</span>
+      {#if !_initFailed}
+        <div class="loading-spinner"></div>
+      {/if}
+      <span class="loading-text">{_initStatus}</span>
+      {#if _initFailed && _errorMessage}
+        <p class="init-error-text">{_errorMessage}</p>
+        <button class="btn-retry" onclick={retryInit}>Retry</button>
+      {/if}
     </div>
   {:else}
     <div class="app-container">
@@ -459,12 +486,22 @@ const _isAlreadySaved = $derived(
           />
         {/if}
 
+        {#if activeConnections.length > 0}
+          <ActiveConnections
+            connections={activeConnections}
+            {projects}
+            onDisconnect={handleDisconnectOne}
+            onDisconnectAll={handleDisconnectAll}
+          />
+        {/if}
+
         <ConnectionForm
           {projects}
           {profiles}
           {selectedProject}
           {selectedProfile}
           isConnecting={connectionStatus === 'connecting'}
+          isLoadingProjects={loadingProjects}
           onProjectChange={handleProjectChange}
           onProfileChange={handleProfileChange}
           onConnect={handleConnect}
@@ -605,6 +642,39 @@ const _isAlreadySaved = $derived(
   .loading-text {
     font-size: 0.875rem;
     color: #9e9ea7;
+  }
+
+  .init-error-text {
+    margin: 8px 0 0;
+    font-size: 0.8rem;
+    color: #fca5a5;
+    text-align: center;
+    max-width: 360px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .btn-retry {
+    margin-top: 8px;
+    padding: 10px 24px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: white;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  }
+
+  .btn-retry:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+  }
+
+  .btn-retry:active {
+    transform: translateY(0);
   }
 
   .app-container {

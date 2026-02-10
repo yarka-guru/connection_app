@@ -112,7 +112,7 @@ fn get_active_connections() -> Arc<TokioMutex<HashMap<String, ActiveConnection>>
 // Initialize sidecar if not already running
 async fn ensure_sidecar(
     app_handle: &AppHandle,
-    state: &TokioMutex<SidecarState>,
+    state: &Arc<TokioMutex<SidecarState>>,
 ) -> Result<(), String> {
     let mut state_guard = state.lock().await;
 
@@ -158,11 +158,9 @@ async fn ensure_sidecar(
     // Drop the lock before spawning async task
     drop(state_guard);
 
-    // Clone state Arc for the reader task to clear child on termination
-    let state_ref: *const TokioMutex<SidecarState> = state as *const _;
-    // SAFETY: The TokioMutex<SidecarState> is managed by Tauri and lives for the app lifetime.
-    // The spawned task only accesses it on termination before returning.
-    let state_ptr = state_ref as usize;
+    // Clone Arc for the reader task (no unsafe pointer needed)
+    let state_clone = Arc::clone(state);
+    let (ready_tx, ready_rx) = oneshot::channel::<()>();
 
     // Spawn task to read stdout, route responses, and forward events
     let app_handle_clone = app_handle.clone();
@@ -170,12 +168,21 @@ async fn ensure_sidecar(
     tokio::spawn(async move {
         use tauri_plugin_shell::process::CommandEvent;
 
+        let mut ready_tx = Some(ready_tx);
+
         while let Some(event) = event_rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line_str = String::from_utf8_lossy(&line);
                     for json_str in line_str.lines() {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            // Signal readiness when sidecar sends ready event
+                            if json.get("event") == Some(&serde_json::json!("ready")) {
+                                if let Some(tx) = ready_tx.take() {
+                                    let _ = tx.send(());
+                                }
+                            }
+
                             // Route responses to the matching per-command oneshot
                             if let Some(id) = json.get("id").and_then(|v| v.as_u64()) {
                                 let mut map = pending_clone.lock().await;
@@ -195,9 +202,7 @@ async fn ensure_sidecar(
                     eprintln!("Sidecar terminated with status: {:?}", status);
 
                     // Clear sidecar child so ensure_sidecar can restart it
-                    // SAFETY: state lives for the app lifetime (Tauri managed state)
-                    let state = unsafe { &*(state_ptr as *const TokioMutex<SidecarState>) };
-                    let mut guard = state.lock().await;
+                    let mut guard = state_clone.lock().await;
                     guard.child = None;
 
                     // Fail all pending commands
@@ -216,16 +221,23 @@ async fn ensure_sidecar(
         }
     });
 
-    // Wait for sidecar to initialize
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-    Ok(())
+    // Wait for sidecar ready event instead of arbitrary sleep
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        ready_rx,
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Sidecar process exited before becoming ready".to_string()),
+        Err(_) => Err("Sidecar failed to start within 10 seconds".to_string()),
+    }
 }
 
 // Send command to sidecar and wait for response
 async fn send_command_and_wait(
     app_handle: &AppHandle,
-    state: &TokioMutex<SidecarState>,
+    state: &Arc<TokioMutex<SidecarState>>,
     action: &str,
     params: serde_json::Value,
     timeout_ms: u64,
@@ -413,7 +425,7 @@ fn chrono_now() -> String {
 #[tauri::command]
 async fn list_projects(
     app_handle: AppHandle,
-    state: tauri::State<'_, TokioMutex<SidecarState>>,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
 ) -> Result<Vec<Project>, String> {
     let response =
         send_command_and_wait(&app_handle, &state, "list-projects", serde_json::json!({}), 30000)
@@ -440,7 +452,7 @@ async fn list_projects(
 #[tauri::command]
 async fn list_profiles(
     app_handle: AppHandle,
-    state: tauri::State<'_, TokioMutex<SidecarState>>,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
     project_key: String,
 ) -> Result<Vec<String>, String> {
     let response = send_command_and_wait(
@@ -481,7 +493,7 @@ async fn get_used_ports() -> Result<Vec<String>, String> {
 #[tauri::command]
 async fn connect(
     app_handle: AppHandle,
-    state: tauri::State<'_, TokioMutex<SidecarState>>,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
     project_key: String,
     profile: String,
     local_port: Option<String>,
@@ -556,7 +568,7 @@ async fn connect(
 #[tauri::command]
 async fn disconnect(
     app_handle: AppHandle,
-    state: tauri::State<'_, TokioMutex<SidecarState>>,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
     connection_id: Option<String>,
 ) -> Result<(), String> {
     let connections = get_active_connections();
@@ -593,7 +605,7 @@ async fn disconnect(
 #[tauri::command]
 async fn disconnect_all(
     app_handle: AppHandle,
-    state: tauri::State<'_, TokioMutex<SidecarState>>,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
 ) -> Result<(), String> {
     let connections = get_active_connections();
 
@@ -1178,7 +1190,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::default().build())
-        .manage(TokioMutex::new(SidecarState::default()))
+        .manage(Arc::new(TokioMutex::new(SidecarState::default())))
         .invoke_handler(tauri::generate_handler![
             // Connection commands
             list_projects,

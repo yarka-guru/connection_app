@@ -5,6 +5,7 @@ const {
   selectedProject = '',
   selectedProfile = '',
   isConnecting = false,
+  isLoadingProjects = false,
   onProjectChange,
   onProfileChange,
   onConnect,
@@ -50,9 +51,9 @@ function _handleConnectClick() {
           id="project"
           value={selectedProject}
           onchange={handleProjectSelect}
-          disabled={isConnecting}
+          disabled={isConnecting || isLoadingProjects}
         >
-          <option value="">Choose a project</option>
+          <option value="">{isLoadingProjects ? 'Loading projects...' : 'Choose a project'}</option>
           {#each projects as project}
             <option value={project.key}>{project.name}</option>
           {/each}
