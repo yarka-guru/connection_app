@@ -3,6 +3,7 @@
 import { exec } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -22,6 +23,9 @@ const RETRY_CONFIG = {
   BASTION_WAIT_RETRY_DELAY_MS: 15000,
   PORT_FORWARDING_MAX_RETRIES: 2,
   SSM_AGENT_READY_WAIT_MS: 10000,
+  KEEPALIVE_INTERVAL_MS: 4 * 60 * 1000,
+  AUTO_RECONNECT_MAX_RETRIES: 50,
+  AUTO_RECONNECT_DELAY_MS: 3000,
 }
 
 // Version check configuration
@@ -117,6 +121,22 @@ async function runCommand(command) {
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Keepalive: periodic TCP ping through the tunnel to prevent SSM idle timeout.
+// Each connection attempt generates traffic on the SSM WebSocket channel,
+// resetting the server-side idle timer (default 20 min).
+function startKeepalive(localPort) {
+  const timer = setInterval(() => {
+    const socket = new net.Socket()
+    socket.setTimeout(5000)
+    socket.connect(parseInt(localPort, 10), '127.0.0.1', () => {
+      socket.destroy()
+    })
+    socket.on('error', () => socket.destroy())
+    socket.on('timeout', () => socket.destroy())
+  }, RETRY_CONFIG.KEEPALIVE_INTERVAL_MS)
+  return () => clearInterval(timer)
 }
 
 async function terminateBastionInstance(ENV, instanceId, region) {
@@ -487,7 +507,9 @@ async function getProfilesForProjectKey(projectKey) {
   return getProfilesForProject(allProfiles, projectConfig, PROJECT_CONFIGS)
 }
 
-// Connect to RDS through bastion - returns connection info and control object
+// Connect to RDS through bastion - returns connection info and control object.
+// Includes keepalive (prevents SSM idle timeout) and auto-reconnect
+// (transparently reconnects on the same port if session drops unexpectedly).
 async function connect(projectKey, profile, options = {}) {
   const projectConfig = PROJECT_CONFIGS[projectKey]
   if (!projectConfig) {
@@ -497,6 +519,9 @@ async function connect(projectKey, profile, options = {}) {
   const { region, database } = projectConfig
   // Use provided localPort or fall back to computed port from profile
   const localPort = options.localPort || getLocalPort(profile, projectConfig)
+
+  let manualDisconnect = false
+  let stopKeepalive = null
 
   // Emit status updates
   const emit = (event, data) => {
@@ -510,12 +535,12 @@ async function connect(projectKey, profile, options = {}) {
   const credentials = await getConnectionCredentials(profile, projectConfig)
 
   emit('status', { message: 'Finding bastion instance...' })
-  const instanceId = await findBastionInstance(profile, region)
+  let currentInstanceId = await findBastionInstance(profile, region)
 
   emit('status', { message: 'Getting RDS endpoint...' })
-  const rdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+  let currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
 
-  if (!rdsEndpoint || rdsEndpoint === 'None') {
+  if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
     throw new Error('Failed to find the RDS endpoint.')
   }
 
@@ -528,29 +553,104 @@ async function connect(projectKey, profile, options = {}) {
     username: credentials.username,
     password: credentials.password,
     database,
-    rdsEndpoint,
-    instanceId,
+    rdsEndpoint: currentRdsEndpoint,
+    instanceId: currentInstanceId,
   }
 
   emit('credentials', connectionInfo)
   emit('status', { message: 'Starting port forwarding...' })
 
-  // Start port forwarding
-  const portForwardingPromise = startPortForwardingWithConfig(
-    profile,
-    instanceId,
-    rdsEndpoint,
-    localPort,
-    rdsPort,
-    region,
-    0,
-    RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
-  )
+  // Auto-reconnect session management loop.
+  // Keeps the tunnel alive on the SAME local port. Only exits on
+  // manual disconnect or after exhausting reconnection attempts.
+  const portForwardingPromise = (async () => {
+    let reconnectCount = 0
+
+    while (!manualDisconnect) {
+      try {
+        stopKeepalive = startKeepalive(localPort)
+
+        await startPortForwardingWithConfig(
+          profile,
+          currentInstanceId,
+          currentRdsEndpoint,
+          localPort,
+          rdsPort,
+          region,
+          0,
+          RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
+        )
+
+        // Session ended — clean up keepalive
+        stopKeepalive?.()
+        stopKeepalive = null
+
+        if (manualDisconnect) break
+
+        // Unexpected disconnect (idle timeout, network issue) — auto-reconnect
+        reconnectCount++
+        if (reconnectCount > RETRY_CONFIG.AUTO_RECONNECT_MAX_RETRIES) {
+          throw new Error('Maximum auto-reconnection attempts reached.')
+        }
+
+        emit('status', {
+          message: `Session ended. Reconnecting... (${reconnectCount})`,
+        })
+        await sleep(RETRY_CONFIG.AUTO_RECONNECT_DELAY_MS)
+
+        if (manualDisconnect) break
+
+        // Re-discover infrastructure (bastion may have been replaced by ASG)
+        emit('status', { message: 'Finding bastion instance...' })
+        currentInstanceId = await findBastionInstance(profile, region)
+
+        emit('status', { message: 'Getting RDS endpoint...' })
+        currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+
+        if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
+          throw new Error(
+            'Failed to find the RDS endpoint during reconnection.',
+          )
+        }
+
+        emit('status', { message: 'Reconnecting port forwarding...' })
+      } catch (error) {
+        stopKeepalive?.()
+        stopKeepalive = null
+
+        if (manualDisconnect) break
+
+        reconnectCount++
+        if (reconnectCount > RETRY_CONFIG.AUTO_RECONNECT_MAX_RETRIES) {
+          throw error
+        }
+
+        emit('status', {
+          message: `Connection error. Retrying... (${reconnectCount}/${RETRY_CONFIG.AUTO_RECONNECT_MAX_RETRIES})`,
+        })
+        await sleep(RETRY_CONFIG.AUTO_RECONNECT_DELAY_MS * 2)
+
+        if (manualDisconnect) break
+
+        try {
+          currentInstanceId = await findBastionInstance(profile, region)
+          currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+          if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
+            throw new Error('Failed to find RDS endpoint')
+          }
+        } catch (_innerError) {
+          // Will retry on next loop iteration
+        }
+      }
+    }
+  })()
 
   // Return connection control object
   return {
     connectionInfo,
     disconnect: () => {
+      manualDisconnect = true
+      stopKeepalive?.()
       // Kill all active child processes
       activeChildProcesses.forEach((child) => {
         if (child && !child.killed) {
