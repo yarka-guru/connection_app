@@ -1,0 +1,27 @@
+{
+  "version": "1.7.6",
+  "notes": "Release v1.7.6",
+  "pub_date": "2026-02-10T17:22:53.469Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/yarka-guru/connection_app/releases/download/v1.7.6/RDS.SSM.Connect_aarch64.app.tar.gz",
+      "signature": ""
+    },
+    "darwin-x86_64": {
+      "url": "https://github.com/yarka-guru/connection_app/releases/download/v1.7.6/RDS.SSM.Connect_x64.app.tar.gz",
+      "signature": ""
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/yarka-guru/connection_app/releases/download/v1.7.6/RDS.SSM.Connect_1.7.6_amd64.AppImage",
+      "signature": ""
+    },
+    "linux-aarch64": {
+      "url": "https://github.com/yarka-guru/connection_app/releases/download/v1.7.6/RDS.SSM.Connect_1.7.6_aarch64.AppImage",
+      "signature": ""
+    },
+    "windows-x86_64": {
+      "url": "https://github.com/yarka-guru/connection_app/releases/download/v1.7.6/RDS.SSM.Connect_1.7.6_x64-setup.exe",
+      "signature": ""
+    }
+  }
+}

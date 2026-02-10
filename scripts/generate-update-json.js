@@ -6,8 +6,8 @@
  * This script generates the update manifest that needs to be uploaded
  * to GitHub releases for auto-updates to work.
  *
- * Usage: node scripts/generate-update-json.js <version> <release-url>
- * Example: node scripts/generate-update-json.js 1.7.0 https://github.com/yarka-guru/connection_app/releases/download/v1.7.0
+ * Usage: node scripts/generate-update-json.js <version> <release-url> [sigs-dir]
+ * Example: node scripts/generate-update-json.js 1.7.0 https://github.com/yarka-guru/connection_app/releases/download/v1.7.0 sigs
  */
 
 import fs from 'node:fs'
@@ -18,6 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const version = process.argv[2]
 const releaseUrl = process.argv[3]
+const sigsDir = process.argv[4] // Optional: directory containing .sig files downloaded from release
 
 if (!version || !releaseUrl) {
   process.exit(1)
@@ -30,7 +31,41 @@ const tauriConf = JSON.parse(
     'utf-8',
   ),
 )
-const productName = tauriConf.productName.replace(/\s+/g, '_')
+// Tauri uses dots for spaces in bundle filenames
+const productName = tauriConf.productName.replace(/\s+/g, '.')
+
+// Rust target → Tauri updater platform mapping
+const TARGET_TO_PLATFORM = {
+  'aarch64-apple-darwin': 'darwin-aarch64',
+  'x86_64-apple-darwin': 'darwin-x86_64',
+  'x86_64-unknown-linux-gnu': 'linux-x86_64',
+  'x86_64-pc-windows-msvc': 'windows-x86_64',
+}
+
+// Read signatures from CI artifacts (named by rust target: <target>.sig)
+function loadSignatures() {
+  const sigs = {}
+  if (!sigsDir) return sigs
+
+  for (const [target, platform] of Object.entries(TARGET_TO_PLATFORM)) {
+    try {
+      sigs[platform] = fs
+        .readFileSync(path.join(sigsDir, `${target}.sig`), 'utf-8')
+        .trim()
+    } catch {
+      sigs[platform] = ''
+    }
+  }
+  return sigs
+}
+
+const signatures = loadSignatures()
+
+const macAarch64 = `${productName}_aarch64.app.tar.gz`
+const macX64 = `${productName}_x64.app.tar.gz`
+const linuxAmd64 = `${productName}_${version}_amd64.AppImage`
+const linuxAarch64 = `${productName}_${version}_aarch64.AppImage`
+const windowsX64 = `${productName}_${version}_x64-setup.exe`
 
 const updateManifest = {
   version: version,
@@ -38,24 +73,24 @@ const updateManifest = {
   pub_date: new Date().toISOString(),
   platforms: {
     'darwin-aarch64': {
-      url: `${releaseUrl}/${productName}_${version}_aarch64.app.tar.gz`,
-      signature: '',
+      url: `${releaseUrl}/${macAarch64}`,
+      signature: signatures['darwin-aarch64'] || '',
     },
     'darwin-x86_64': {
-      url: `${releaseUrl}/${productName}_${version}_x64.app.tar.gz`,
-      signature: '',
+      url: `${releaseUrl}/${macX64}`,
+      signature: signatures['darwin-x86_64'] || '',
     },
     'linux-x86_64': {
-      url: `${releaseUrl}/${productName}_${version}_amd64.AppImage.tar.gz`,
-      signature: '',
+      url: `${releaseUrl}/${linuxAmd64}`,
+      signature: signatures['linux-x86_64'] || '',
     },
     'linux-aarch64': {
-      url: `${releaseUrl}/${productName}_${version}_aarch64.AppImage.tar.gz`,
-      signature: '',
+      url: `${releaseUrl}/${linuxAarch64}`,
+      signature: signatures['linux-aarch64'] || '',
     },
     'windows-x86_64': {
-      url: `${releaseUrl}/${productName}_${version}_x64-setup.nsis.zip`,
-      signature: '',
+      url: `${releaseUrl}/${windowsX64}`,
+      signature: signatures['windows-x86_64'] || '',
     },
   },
 }

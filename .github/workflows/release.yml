@@ -59,6 +59,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Install dependencies (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: brew install pango
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -81,7 +85,54 @@ jobs:
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: false
           args: --target ${{ matrix.rust_target }}
+
+      - name: Sign updater artifact and save signature
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          mkdir -p sigs
+          BUNDLE="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+
+          # Find the updater artifact — must match what generate-update-json.js URLs point to:
+          # macOS: .app.tar.gz, Linux: .AppImage, Windows: -setup.exe
+          UPDATER_FILE=""
+          for f in "$BUNDLE"/macos/*.app.tar.gz "$BUNDLE"/appimage/*.AppImage "$BUNDLE"/nsis/*-setup.exe; do
+            if [ -f "$f" ]; then
+              UPDATER_FILE="$f"
+              break
+            fi
+          done
+
+          if [ -z "$UPDATER_FILE" ]; then
+            echo "WARNING: No updater artifact found"
+            find "$BUNDLE" -type f 2>/dev/null | head -20
+            exit 0
+          fi
+
+          echo "Signing: $UPDATER_FILE"
+          npx tauri signer sign "$UPDATER_FILE" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+
+          # The signer creates a .sig file alongside the original
+          SIG_FILE="${UPDATER_FILE}.sig"
+          if [ -f "$SIG_FILE" ]; then
+            cp "$SIG_FILE" "sigs/${{ matrix.rust_target }}.sig"
+            echo "Signature saved ($(wc -c < "$SIG_FILE") bytes)"
+            cat "$SIG_FILE"
+          else
+            echo "ERROR: .sig file not created at $SIG_FILE"
+            exit 1
+          fi
+
+      - name: Upload signature artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sig-${{ matrix.rust_target }}
+          path: sigs/
+          if-no-files-found: error
 
   # Generate update manifest after all builds complete
   update-manifest:
@@ -101,14 +152,26 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Download all signature artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sigs
+          pattern: sig-*
+          merge-multiple: true
+
       - name: Generate latest.json
         run: |
-          node scripts/generate-update-json.js ${{ steps.version.outputs.VERSION }} https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.VERSION }}
+          echo "=== Downloaded signatures ==="
+          ls -la sigs/
+          echo "=== Signature contents ==="
+          for f in sigs/*.sig; do echo "--- $f ---"; cat "$f"; done
+          node scripts/generate-update-json.js ${{ steps.version.outputs.VERSION }} https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.VERSION }} sigs
 
       - name: Upload latest.json to release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: latest.json
-          tag_name: v${{ steps.version.outputs.VERSION }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.version.outputs.VERSION }}"
+          echo "=== latest.json content ==="
+          cat latest.json
+          gh release upload "$TAG" latest.json --clobber
