@@ -206,7 +206,7 @@ async function openUrl(url) {
 async function loadProfiles() {
   if (!selectedProject) return
   try {
-    profiles = await invoke('listprofiles', { projectKey: selectedProject })
+    profiles = await invoke('list_profiles', { projectKey: selectedProject })
     selectedProfile = ''
   } catch (err) {
     errorMessage = `Failed to load profiles: ${err}`

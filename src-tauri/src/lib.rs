@@ -133,7 +133,7 @@ async fn ensure_sidecar(
     // Get current PATH and extend with common installation locations
     let current_path = std::env::var("PATH").unwrap_or_default();
     let extended_path = format!(
-        "{}:/usr/local/bin:/opt/homebrew/bin:{}/.local/bin",
+        "{}:/usr/local/bin:/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:{}/.local/bin",
         current_path,
         std::env::var("HOME").unwrap_or_default()
     );
