@@ -11,7 +11,7 @@ const {
   onCancel,
 } = $props()
 
-function _handleKeydown(e) {
+function handleKeydown(e) {
   if (e.key === 'Escape') {
     onCancel?.()
   }

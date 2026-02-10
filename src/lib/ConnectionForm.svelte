@@ -11,19 +11,19 @@ const {
   onConnect,
 } = $props()
 
-const _canConnect = $derived(
+const canConnect = $derived(
   selectedProject && selectedProfile && !isConnecting,
 )
 
-function _handleProjectSelect(e) {
+function handleProjectSelect(e) {
   onProjectChange?.(e.target.value)
 }
 
-function _handleProfileSelect(e) {
+function handleProfileSelect(e) {
   onProfileChange?.(e.target.value)
 }
 
-function _handleConnectClick() {
+function handleConnectClick() {
   onConnect?.()
 }
 </script>

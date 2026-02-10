@@ -13,12 +13,12 @@ const {
 
 let expandedId = $state(null)
 
-function _getProjectName(projectKey) {
+function getProjectName(projectKey) {
   const project = projects.find((p) => p.key === projectKey)
   return project?.name || projectKey
 }
 
-function _getActiveConnection(savedConnection) {
+function getActiveConnection(savedConnection) {
   return activeConnections.find(
     (ac) =>
       ac.savedConnectionId === savedConnection.id ||
@@ -27,7 +27,7 @@ function _getActiveConnection(savedConnection) {
   )
 }
 
-function _formatLastUsed(timestamp) {
+function formatLastUsed(timestamp) {
   if (!timestamp) return 'Never'
   const date = new Date(parseInt(timestamp, 10))
   const now = new Date()
@@ -41,26 +41,26 @@ function _formatLastUsed(timestamp) {
   return date.toLocaleDateString()
 }
 
-function _toggleExpand(id) {
+function toggleExpand(id) {
   expandedId = expandedId === id ? null : id
 }
 
-function _handleConnect(connection) {
+function handleConnect(connection) {
   onConnect?.(connection)
 }
 
-function _handleDisconnect(activeConn) {
+function handleDisconnect(activeConn) {
   onDisconnect?.(activeConn.id)
 }
 
-function _handleDelete(connection) {
+function handleDelete(connection) {
   onDelete?.(connection)
 }
 
-function _handleHeaderKeydown(e, activeConn, connectionId) {
+function handleHeaderKeydown(e, activeConn, connectionId) {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
-    if (activeConn) _toggleExpand(connectionId)
+    if (activeConn) toggleExpand(connectionId)
   }
 }
 </script>

@@ -11,27 +11,27 @@ const {
 
 let expandedId = $state(null)
 
-function _getProjectName(projectKey) {
+function getProjectName(projectKey) {
   const project = projects.find((p) => p.key === projectKey)
   return project?.name || projectKey
 }
 
-function _toggleExpand(id) {
+function toggleExpand(id) {
   expandedId = expandedId === id ? null : id
 }
 
-function _handleDisconnect(connection) {
+function handleDisconnect(connection) {
   onDisconnect?.(connection.id)
 }
 
-function _handleDisconnectAll() {
+function handleDisconnectAll() {
   onDisconnectAll?.()
 }
 
-function _handleHeaderKeydown(e, connectionId) {
+function handleHeaderKeydown(e, connectionId) {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
-    _toggleExpand(connectionId)
+    toggleExpand(connectionId)
   }
 }
 </script>

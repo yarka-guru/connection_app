@@ -25,7 +25,7 @@ const STATUS_CONFIGS = {
   },
 }
 
-const _statusConfig = $derived(STATUS_CONFIGS[connectionStatus])
+const statusConfig = $derived(STATUS_CONFIGS[connectionStatus])
 </script>
 
 <div class="status-bar" role="status" aria-live="polite" style="--status-color: {statusConfig.color}; --status-bg: {statusConfig.bgColor}; --status-border: {statusConfig.borderColor}">

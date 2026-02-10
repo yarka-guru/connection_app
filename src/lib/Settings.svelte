@@ -4,16 +4,16 @@ import { trapFocus, safeTimeout } from './utils.js'
 
 const { onClose, invoke } = $props()
 
-const _activeTab = $state('profiles')
-let _awsProfiles = $state([])
+let activeTab = $state('profiles')
+let awsProfiles = $state([])
 let rawConfig = $state('')
-let _loading = $state(true)
-let _saving = $state(false)
-let _error = $state('')
-let _success = $state('')
+let loading = $state(true)
+let saving = $state(false)
+let error = $state('')
+let success = $state('')
 
 // Edit modal state
-let _editingProfile = $state(null)
+let editingProfile = $state(null)
 let editName = $state('')
 let editContent = $state('')
 
@@ -25,48 +25,48 @@ onMount(() => {
 })
 
 async function loadData() {
-  _loading = true
-  _error = ''
+  loading = true
+  error = ''
   try {
     const [profiles, config] = await Promise.all([
       invoke('read_aws_config'),
       invoke('get_raw_aws_config'),
     ])
-    _awsProfiles = profiles
+    awsProfiles = profiles
     rawConfig = config
   } catch (err) {
-    _error = `Failed to load AWS config: ${err}`
+    error = `Failed to load AWS config: ${err}`
   } finally {
-    _loading = false
+    loading = false
   }
 }
 
-function _openAddProfile() {
-  _editingProfile = { isNew: true }
+function openAddProfile() {
+  editingProfile = { isNew: true }
   editName = ''
   editContent = 'region = us-east-1\n'
 }
 
-function _openEditProfile(profile) {
-  _editingProfile = profile
+function openEditProfile(profile) {
+  editingProfile = profile
   editName = profile.name
   editContent = profile.rawContent
 }
 
 function closeEditModal() {
-  _editingProfile = null
+  editingProfile = null
   editName = ''
   editContent = ''
 }
 
-async function _saveProfile() {
+async function saveProfile() {
   if (!editName.trim()) {
-    _error = 'Profile name is required'
+    error = 'Profile name is required'
     return
   }
 
-  _saving = true
-  _error = ''
+  saving = true
+  error = ''
   try {
     await invoke('save_aws_profile', {
       profile: {
@@ -82,74 +82,74 @@ async function _saveProfile() {
         ssoRoleName: null,
       },
     })
-    _success = 'Profile saved successfully'
+    success = 'Profile saved successfully'
     cancelSuccessTimeout?.()
     cancelSuccessTimeout = safeTimeout(() => {
-      _success = ''
+      success = ''
     }, 3000)
     closeEditModal()
     await loadData()
   } catch (err) {
-    _error = `Failed to save profile: ${err}`
+    error = `Failed to save profile: ${err}`
   } finally {
-    _saving = false
+    saving = false
   }
 }
 
 // Delete confirmation state
-let _deleteConfirmProfile = $state(null)
+let deleteConfirmProfile = $state(null)
 
-function _requestDeleteProfile(profileName) {
-  _deleteConfirmProfile = profileName
+function requestDeleteProfile(profileName) {
+  deleteConfirmProfile = profileName
 }
 
-function _cancelDeleteProfile() {
-  _deleteConfirmProfile = null
+function cancelDeleteProfile() {
+  deleteConfirmProfile = null
 }
 
-async function _confirmDeleteProfile() {
-  if (!_deleteConfirmProfile) return
-  const profileName = _deleteConfirmProfile
-  _deleteConfirmProfile = null
+async function confirmDeleteProfile() {
+  if (!deleteConfirmProfile) return
+  const profileName = deleteConfirmProfile
+  deleteConfirmProfile = null
 
-  _saving = true
-  _error = ''
+  saving = true
+  error = ''
   try {
     await invoke('delete_aws_profile', { profileName })
-    _success = 'Profile deleted'
+    success = 'Profile deleted'
     cancelSuccessTimeout?.()
     cancelSuccessTimeout = safeTimeout(() => {
-      _success = ''
+      success = ''
     }, 3000)
     await loadData()
   } catch (err) {
-    _error = `Failed to delete profile: ${err}`
+    error = `Failed to delete profile: ${err}`
   } finally {
-    _saving = false
+    saving = false
   }
 }
 
-async function _saveRawConfig() {
-  _saving = true
-  _error = ''
+async function saveRawConfig() {
+  saving = true
+  error = ''
   try {
     await invoke('save_raw_aws_config', { content: rawConfig })
-    _success = 'Config saved successfully'
+    success = 'Config saved successfully'
     cancelSuccessTimeout?.()
     cancelSuccessTimeout = safeTimeout(() => {
-      _success = ''
+      success = ''
     }, 3000)
     await loadData()
   } catch (err) {
-    _error = `Failed to save config: ${err}`
+    error = `Failed to save config: ${err}`
   } finally {
-    _saving = false
+    saving = false
   }
 }
 
-function _handleOverlayKeydown(e) {
+function handleOverlayKeydown(e) {
   if (e.key === 'Escape') {
-    if (_editingProfile) {
+    if (editingProfile) {
       closeEditModal()
     } else {
       onClose()
@@ -157,7 +157,7 @@ function _handleOverlayKeydown(e) {
   }
 }
 
-function _handleEditOverlayKeydown(e) {
+function handleEditOverlayKeydown(e) {
   if (e.key === 'Escape') {
     closeEditModal()
   }

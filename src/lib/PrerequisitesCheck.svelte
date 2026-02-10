@@ -3,7 +3,7 @@ import { trapFocus } from './utils.js'
 
 const { prerequisites = [], onDismiss, onOpenUrl } = $props()
 
-function _handleKeydown(e) {
+function handleKeydown(e) {
   if (e.key === 'Escape') {
     onDismiss?.()
   }

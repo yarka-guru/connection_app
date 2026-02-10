@@ -2,7 +2,6 @@
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
 import SavedConnections from './lib/SavedConnections.svelte'
-import ActiveConnections from './lib/ActiveConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
 import UpdateBanner from './lib/UpdateBanner.svelte'
@@ -11,35 +10,35 @@ import Settings from './lib/Settings.svelte'
 import ConfirmDialog from './lib/ConfirmDialog.svelte'
 
 let projects = $state([])
-let _profiles = $state([])
+let profiles = $state([])
 let selectedProject = $state('')
 let selectedProfile = $state('')
-let _connectionStatus = $state('disconnected')
-let _statusMessage = $state('')
-let _errorMessage = $state('')
-let _ready = $state(false)
-let _initStatus = $state('Initializing...')
-let _initFailed = $state(false)
-let _loadingProjects = $state(false)
+let connectionStatus = $state('disconnected')
+let statusMessage = $state('')
+let errorMessage = $state('')
+let ready = $state(false)
+let initStatus = $state('Initializing...')
+let initFailed = $state(false)
+let loadingProjects = $state(false)
 
 // New state for features
 let savedConnections = $state([])
 let activeConnections = $state([])
 let updateInfo = $state(null)
-let _showUpdateBanner = $state(true)
-let _currentVersion = $state('')
-let _connectingId = $state(null) // Track which saved connection is being connected
-let _showSavePrompt = $state(false)
+let showUpdateBanner = $state(true)
+let currentVersion = $state('')
+let connectingId = $state(null) // Track which saved connection is being connected
+let showSavePrompt = $state(false)
 let lastConnectedConfig = $state(null)
 let saveConnectionName = $state('')
 let showDeleteConfirm = $state(null)
 let isCheckingUpdates = $state(false)
-let _updateCheckMessage = $state('')
+let updateCheckMessage = $state('')
 
 // Prerequisites and Settings
-let _showPrerequisites = $state(false)
-let _prerequisitesData = $state([])
-let _showSettings = $state(false)
+let showPrerequisites = $state(false)
+let prerequisitesData = $state([])
+let showSettings = $state(false)
 
 let invoke = null
 let listen = null
@@ -53,90 +52,108 @@ function handleGlobalKeydown(e) {
   // Cmd/Ctrl + , → toggle settings
   if ((e.metaKey || e.ctrlKey) && e.key === ',') {
     e.preventDefault()
-    _showSettings = !_showSettings
+    showSettings = !showSettings
   }
 }
 
 onMount(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
-  _initApp()
+  initApp()
 
   return () => {
     window.removeEventListener('keydown', handleGlobalKeydown)
   }
 })
 
-async function _initApp() {
-  _initFailed = false
-  _errorMessage = ''
-  _initStatus = 'Loading modules...'
-
-  try {
-    const core = await import('@tauri-apps/api/core')
-    const event = await import('@tauri-apps/api/event')
-    invoke = core.invoke
-    listen = event.listen
-
-    _initStatus = 'Setting up listeners...'
-    unlistenSidecar = await listen('sidecar-event', (ev) => {
-      const data = ev.payload
-      if (data.event === 'status') {
-        _statusMessage = data.message
-      } else if (data.event === 'credentials') {
-        // Credentials are now part of connection info, handled via activeConnections
-      } else if (data.event === 'disconnected') {
-        const { connectionId } = data
-        if (connectionId) {
-          activeConnections = activeConnections.filter(
-            (c) => c.id !== connectionId,
-          )
-        }
-        if (activeConnections.length === 0) {
-          _connectionStatus = 'disconnected'
-          _statusMessage = ''
-        }
-        _connectingId = null
-      } else if (data.event === 'error') {
-        _errorMessage = data.message
-        _connectingId = null
-      }
-    })
-
-    // Load instant data first (no sidecar dependency)
-    _initStatus = 'Loading saved data...'
-    const [savedResult, versionResult] = await Promise.all([
-      invoke('load_saved_connections'),
-      invoke('get_current_version'),
-    ])
-
-    savedConnections = savedResult
-    _currentVersion = versionResult
-
-    // Show app immediately with saved data
-    _ready = true
-
-    // Load projects from sidecar in background (no longer blocks UI)
-    _loadingProjects = true
-    try {
-      projects = await invoke('list_projects')
-    } catch (err) {
-      _errorMessage = `Failed to load projects: ${err}`
-    } finally {
-      _loadingProjects = false
-    }
-
-    // Non-blocking checks
-    checkForUpdates()
-    checkPrerequisites()
-  } catch (err) {
-    _errorMessage = `${err}`
-    _initStatus = 'Failed to initialize'
-    _initFailed = true
-  }
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Timed out after ${ms / 1000}s`)), ms),
+    ),
+  ])
 }
 
-function _retryInit() {
-  _initApp()
+async function initApp() {
+  initFailed = false
+  errorMessage = ''
+
+  // Show app immediately — before any async work
+  ready = true
+  loadingProjects = true
+
+  try {
+    const [core, event] = await withTimeout(
+      Promise.all([
+        import('@tauri-apps/api/core'),
+        import('@tauri-apps/api/event'),
+      ]),
+      5000,
+    )
+    invoke = core.invoke
+    listen = event.listen
+  } catch (err) {
+    errorMessage = `Failed to load Tauri API: ${err}`
+    loadingProjects = false
+    return
+  }
+
+  // Set up sidecar listener (non-blocking)
+  listen('sidecar-event', (ev) => {
+    const data = ev.payload
+    if (data.event === 'status') {
+      statusMessage = data.message
+    } else if (data.event === 'credentials') {
+      // Credentials are now part of connection info, handled via activeConnections
+    } else if (data.event === 'disconnected') {
+      const { connectionId } = data
+      if (connectionId) {
+        activeConnections = activeConnections.filter(
+          (c) => c.id !== connectionId,
+        )
+      }
+      if (activeConnections.length === 0) {
+        connectionStatus = 'disconnected'
+        statusMessage = ''
+      }
+      connectingId = null
+    } else if (data.event === 'error') {
+      errorMessage = data.message
+      connectingId = null
+    }
+  }).then((fn) => { unlistenSidecar = fn })
+
+  // Load saved data + version with timeout
+  try {
+    const [savedResult, versionResult] = await withTimeout(
+      Promise.all([
+        invoke('load_saved_connections'),
+        invoke('get_current_version'),
+      ]),
+      5000,
+    )
+    savedConnections = savedResult
+    currentVersion = versionResult
+  } catch (_err) {
+    // Non-fatal: app works without saved data
+  }
+
+  // Load projects from sidecar
+  try {
+    projects = await invoke('list_projects')
+  } catch (err) {
+    errorMessage = `Failed to load projects: ${err}`
+  } finally {
+    loadingProjects = false
+  }
+
+  // Non-blocking checks
+  checkForUpdates()
+  checkPrerequisites()
+}
+
+function retryInit() {
+  initApp()
 }
 
 onDestroy(() => {
@@ -145,25 +162,25 @@ onDestroy(() => {
 })
 
 async function checkForUpdates() {
-  if (!invoke || isCheckingUpdates) return
+  if (isCheckingUpdates) return
   isCheckingUpdates = true
-  _updateCheckMessage = ''
+  updateCheckMessage = ''
   try {
     updateInfo = await invoke('check_for_updates')
     if (updateInfo?.updateAvailable) {
-      _showUpdateBanner = true
+      showUpdateBanner = true
     } else {
-      _updateCheckMessage = 'You are up to date!'
+      updateCheckMessage = 'You are up to date!'
       cancelUpdateMsgTimeout?.()
       cancelUpdateMsgTimeout = safeTimeout(() => {
-        _updateCheckMessage = ''
+        updateCheckMessage = ''
       }, 3000)
     }
   } catch (_err) {
-    _updateCheckMessage = 'Could not check for updates'
+    updateCheckMessage = 'Could not check for updates'
     cancelUpdateMsgTimeout?.()
     cancelUpdateMsgTimeout = safeTimeout(() => {
-      _updateCheckMessage = ''
+      updateCheckMessage = ''
     }, 3000)
   } finally {
     isCheckingUpdates = false
@@ -171,39 +188,37 @@ async function checkForUpdates() {
 }
 
 async function checkPrerequisites() {
-  if (!invoke) return
   try {
     const result = await invoke('check_prerequisites')
     if (!result.allInstalled) {
-      _prerequisitesData = result.prerequisites
-      _showPrerequisites = true
+      prerequisitesData = result.prerequisites
+      showPrerequisites = true
     }
   } catch (_err) {}
 }
 
-async function _openUrl(url) {
-  if (!invoke) return
+async function openUrl(url) {
   try {
     await invoke('open_url', { url })
   } catch (_err) {}
 }
 
 async function loadProfiles() {
-  if (!selectedProject || !invoke) return
+  if (!selectedProject) return
   try {
-    _profiles = await invoke('list_profiles', { projectKey: selectedProject })
+    profiles = await invoke('listprofiles', { projectKey: selectedProject })
     selectedProfile = ''
   } catch (err) {
-    _errorMessage = `Failed to load profiles: ${err}`
+    errorMessage = `Failed to load profiles: ${err}`
   }
 }
 
-async function _handleConnect() {
-  if (!selectedProject || !selectedProfile || !invoke) return
+async function handleConnect() {
+  if (!selectedProject || !selectedProfile) return
 
-  _errorMessage = ''
-  _connectionStatus = 'connecting'
-  _statusMessage = 'Initializing connection...'
+  errorMessage = ''
+  connectionStatus = 'connecting'
+  statusMessage = 'Initializing connection...'
 
   try {
     const result = await invoke('connect', {
@@ -226,30 +241,28 @@ async function _handleConnect() {
       },
     ]
 
-    _connectionStatus = 'connected'
-    _statusMessage = 'Tunnel active'
+    connectionStatus = 'connected'
+    statusMessage = 'Tunnel active'
 
     // Show save prompt
     lastConnectedConfig = {
       projectKey: selectedProject,
       profile: selectedProfile,
     }
-    _showSavePrompt = true
+    showSavePrompt = true
     initSavePrompt()
   } catch (err) {
-    _errorMessage = `${err}`
-    _connectionStatus = 'disconnected'
-    _statusMessage = ''
+    errorMessage = `${err}`
+    connectionStatus = 'disconnected'
+    statusMessage = ''
   }
 }
 
-async function _handleSavedConnectionConnect(savedConnection) {
-  if (!invoke) return
-
-  _errorMessage = ''
-  _connectingId = savedConnection.id
-  _connectionStatus = 'connecting'
-  _statusMessage = `Connecting to ${savedConnection.name}...`
+async function handleSavedConnectionConnect(savedConnection) {
+  errorMessage = ''
+  connectingId = savedConnection.id
+  connectionStatus = 'connecting'
+  statusMessage = `Connecting to ${savedConnection.name}...`
 
   try {
     const result = await invoke('connect', {
@@ -273,54 +286,51 @@ async function _handleSavedConnectionConnect(savedConnection) {
       },
     ]
 
-    _connectionStatus = 'connected'
-    _statusMessage = 'Tunnel active'
-    _connectingId = null
+    connectionStatus = 'connected'
+    statusMessage = 'Tunnel active'
+    connectingId = null
   } catch (err) {
-    _errorMessage = `${err}`
-    _connectionStatus =
+    errorMessage = `${err}`
+    connectionStatus =
       activeConnections.length > 0 ? 'connected' : 'disconnected'
-    _statusMessage = activeConnections.length > 0 ? 'Tunnel active' : ''
-    _connectingId = null
+    statusMessage = activeConnections.length > 0 ? 'Tunnel active' : ''
+    connectingId = null
   }
 }
 
-async function _handleDisconnect() {
-  if (!invoke) return
+async function handleDisconnect() {
   try {
     await invoke('disconnect_all')
     activeConnections = []
-    _connectionStatus = 'disconnected'
-    _statusMessage = ''
-    _showSavePrompt = false
+    connectionStatus = 'disconnected'
+    statusMessage = ''
+    showSavePrompt = false
   } catch (err) {
-    _errorMessage = `Disconnect failed: ${err}`
+    errorMessage = `Disconnect failed: ${err}`
   }
 }
 
-async function _handleDisconnectOne(connectionId) {
-  if (!invoke) return
+async function handleDisconnectOne(connectionId) {
   try {
     await invoke('disconnect', { connectionId })
     activeConnections = activeConnections.filter((c) => c.id !== connectionId)
     if (activeConnections.length === 0) {
-      _connectionStatus = 'disconnected'
-      _statusMessage = ''
+      connectionStatus = 'disconnected'
+      statusMessage = ''
     }
   } catch (err) {
-    _errorMessage = `Disconnect failed: ${err}`
+    errorMessage = `Disconnect failed: ${err}`
   }
 }
 
-async function _handleDisconnectAll() {
-  if (!invoke) return
+async function handleDisconnectAll() {
   try {
     await invoke('disconnect_all')
     activeConnections = []
-    _connectionStatus = 'disconnected'
-    _statusMessage = ''
+    connectionStatus = 'disconnected'
+    statusMessage = ''
   } catch (err) {
-    _errorMessage = `Disconnect all failed: ${err}`
+    errorMessage = `Disconnect all failed: ${err}`
   }
 }
 
@@ -330,8 +340,8 @@ function initSavePrompt() {
   saveConnectionName = `${project?.name || lastConnectedConfig.projectKey} - ${lastConnectedConfig.profile}`
 }
 
-async function _handleSaveConnection() {
-  if (!invoke || !lastConnectedConfig || !saveConnectionName.trim()) return
+async function handleSaveConnection() {
+  if (!lastConnectedConfig || !saveConnectionName.trim()) return
 
   try {
     const saved = await invoke('save_connection', {
@@ -343,19 +353,19 @@ async function _handleSaveConnection() {
       ...savedConnections.filter((c) => c.id !== saved.id),
       saved,
     ]
-    _showSavePrompt = false
+    showSavePrompt = false
     saveConnectionName = ''
   } catch (err) {
-    _errorMessage = `Failed to save connection: ${err}`
+    errorMessage = `Failed to save connection: ${err}`
   }
 }
 
-function _handleDeleteSavedConnection(connection) {
+function handleDeleteSavedConnection(connection) {
   showDeleteConfirm = connection
 }
 
-async function _confirmDelete() {
-  if (!invoke || !showDeleteConfirm) return
+async function confirmDelete() {
+  if (!showDeleteConfirm) return
   try {
     await invoke('delete_saved_connection', { id: showDeleteConfirm.id })
     savedConnections = savedConnections.filter(
@@ -363,57 +373,57 @@ async function _confirmDelete() {
     )
     showDeleteConfirm = null
   } catch (err) {
-    _errorMessage = `Failed to delete connection: ${err}`
+    errorMessage = `Failed to delete connection: ${err}`
     showDeleteConfirm = null
   }
 }
 
-function _cancelDelete() {
+function cancelDelete() {
   showDeleteConfirm = null
 }
 
 let isUpdating = $state(false)
 
-async function _handleInstallUpdate() {
-  if (!invoke || !updateInfo?.updateAvailable || isUpdating) return
+async function handleInstallUpdate() {
+  if (!updateInfo?.updateAvailable || isUpdating) return
 
   isUpdating = true
-  _statusMessage = 'Downloading update...'
+  statusMessage = 'Downloading update...'
 
   try {
     await invoke('install_update')
-    _statusMessage = 'Update installed! Restart to apply.'
+    statusMessage = 'Update installed! Restart to apply.'
     // The app will restart automatically after install
   } catch (err) {
-    _errorMessage = `Update failed: ${err}`
+    errorMessage = `Update failed: ${err}`
     isUpdating = false
-    _statusMessage = ''
+    statusMessage = ''
   }
 }
 
-function _handleDismissUpdate() {
-  _showUpdateBanner = false
+function handleDismissUpdate() {
+  showUpdateBanner = false
 }
 
-function _handleProjectChange(newProject) {
+function handleProjectChange(newProject) {
   selectedProject = newProject
   loadProfiles()
 }
 
-function _handleProfileChange(newProfile) {
+function handleProfileChange(newProfile) {
   selectedProfile = newProfile
 }
 
-function _dismissError() {
-  _errorMessage = ''
+function dismissError() {
+  errorMessage = ''
 }
 
-function _dismissSavePrompt() {
-  _showSavePrompt = false
+function dismissSavePrompt() {
+  showSavePrompt = false
 }
 
 // Computed: check if the selected project/profile is already saved
-const _isAlreadySaved = $derived(
+const isAlreadySaved = $derived(
   savedConnections.some(
     (c) => c.projectKey === selectedProject && c.profile === selectedProfile,
   ),
@@ -421,7 +431,7 @@ const _isAlreadySaved = $derived(
 </script>
 
 <main>
-  {#if !_ready}
+  {#if !ready}
     <div class="loading-screen">
       <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
         <rect width="32" height="32" rx="8" fill="url(#gradient-loading)"/>
@@ -434,12 +444,12 @@ const _isAlreadySaved = $derived(
           </linearGradient>
         </defs>
       </svg>
-      {#if !_initFailed}
+      {#if !initFailed}
         <div class="loading-spinner"></div>
       {/if}
-      <span class="loading-text">{_initStatus}</span>
-      {#if _initFailed && _errorMessage}
-        <p class="init-error-text">{_errorMessage}</p>
+      <span class="loading-text">{initStatus}</span>
+      {#if initFailed && errorMessage}
+        <p class="init-error-text">{errorMessage}</p>
         <button class="btn-retry" onclick={retryInit}>Retry</button>
       {/if}
     </div>
@@ -486,14 +496,6 @@ const _isAlreadySaved = $derived(
           />
         {/if}
 
-        {#if activeConnections.length > 0}
-          <ActiveConnections
-            connections={activeConnections}
-            {projects}
-            onDisconnect={handleDisconnectOne}
-            onDisconnectAll={handleDisconnectAll}
-          />
-        {/if}
 
         <ConnectionForm
           {projects}
