@@ -49,6 +49,10 @@ const updateManifest = {
       url: `${releaseUrl}/${productName}_${version}_amd64.AppImage.tar.gz`,
       signature: '',
     },
+    'linux-aarch64': {
+      url: `${releaseUrl}/${productName}_${version}_aarch64.AppImage.tar.gz`,
+      signature: '',
+    },
     'windows-x86_64': {
       url: `${releaseUrl}/${productName}_${version}_x64-setup.nsis.zip`,
       signature: '',

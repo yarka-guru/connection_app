@@ -15,6 +15,7 @@ const TARGETS = [
   { triple: 'aarch64-apple-darwin', pkg: 'node22-macos-arm64' },
   { triple: 'x86_64-apple-darwin', pkg: 'node22-macos-x64' },
   { triple: 'x86_64-unknown-linux-gnu', pkg: 'node22-linux-x64' },
+  { triple: 'aarch64-unknown-linux-gnu', pkg: 'node22-linux-arm64' },
   { triple: 'x86_64-pc-windows-msvc', pkg: 'node22-win-x64' },
 ]
 
