@@ -136,6 +136,7 @@ dist
 # Tauri
 src-tauri/target/
 src-tauri/binaries/
+latest.json
 
 # Vite build output
 dist/

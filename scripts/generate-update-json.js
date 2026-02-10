@@ -39,6 +39,7 @@ const TARGET_TO_PLATFORM = {
   'aarch64-apple-darwin': 'darwin-aarch64',
   'x86_64-apple-darwin': 'darwin-x86_64',
   'x86_64-unknown-linux-gnu': 'linux-x86_64',
+  'aarch64-unknown-linux-gnu': 'linux-aarch64',
   'x86_64-pc-windows-msvc': 'windows-x86_64',
 }
 
@@ -97,3 +98,13 @@ const updateManifest = {
 
 const outputPath = path.join(__dirname, '../latest.json')
 fs.writeFileSync(outputPath, JSON.stringify(updateManifest, null, 2))
+
+// Warn if latest.json is not gitignored (it should never be committed)
+const gitignorePath = path.join(__dirname, '../.gitignore')
+try {
+  const gitignore = fs.readFileSync(gitignorePath, 'utf-8')
+  if (!gitignore.includes('latest.json')) {
+    console.warn('WARNING: latest.json is not in .gitignore — add it to avoid accidental commits')
+  }
+} catch {}
+
