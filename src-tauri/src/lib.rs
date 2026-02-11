@@ -419,6 +419,112 @@ fn chrono_now() -> String {
 }
 
 // ========================
+// PROJECT CONFIG COMMANDS
+// ========================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProjectConfig {
+    pub name: String,
+    pub region: String,
+    pub database: String,
+    #[serde(rename = "secretPrefix")]
+    pub secret_prefix: String,
+    #[serde(rename = "rdsType")]
+    pub rds_type: String,
+    #[serde(rename = "rdsPattern")]
+    pub rds_pattern: String,
+    #[serde(rename = "profileFilter")]
+    pub profile_filter: Option<String>,
+    #[serde(rename = "envPortMapping")]
+    pub env_port_mapping: HashMap<String, String>,
+    #[serde(rename = "defaultPort")]
+    pub default_port: String,
+}
+
+#[tauri::command]
+async fn list_project_configs(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
+) -> Result<HashMap<String, ProjectConfig>, String> {
+    let response = send_command_and_wait(
+        &app_handle,
+        &state,
+        "list-project-configs",
+        serde_json::json!({}),
+        10000,
+    )
+    .await?;
+
+    if response.get("type") == Some(&serde_json::json!("error")) {
+        return Err(response["message"]
+            .as_str()
+            .unwrap_or("Unknown error")
+            .to_string());
+    }
+
+    let configs: HashMap<String, ProjectConfig> = serde_json::from_value(
+        response
+            .get("configs")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(configs)
+}
+
+#[tauri::command]
+async fn save_project_config(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
+    key: String,
+    config: ProjectConfig,
+) -> Result<(), String> {
+    let response = send_command_and_wait(
+        &app_handle,
+        &state,
+        "save-project-config",
+        serde_json::json!({ "key": key, "config": config }),
+        10000,
+    )
+    .await?;
+
+    if response.get("type") == Some(&serde_json::json!("error")) {
+        return Err(response["message"]
+            .as_str()
+            .unwrap_or("Unknown error")
+            .to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_project_config(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
+    key: String,
+) -> Result<(), String> {
+    let response = send_command_and_wait(
+        &app_handle,
+        &state,
+        "delete-project-config",
+        serde_json::json!({ "key": key }),
+        10000,
+    )
+    .await?;
+
+    if response.get("type") == Some(&serde_json::json!("error")) {
+        return Err(response["message"]
+            .as_str()
+            .unwrap_or("Unknown error")
+            .to_string());
+    }
+
+    Ok(())
+}
+
+// ========================
 // CONNECTION COMMANDS
 // ========================
 
@@ -727,6 +833,12 @@ async fn open_url(app_handle: AppHandle, url: String) -> Result<(), String> {
         .opener()
         .open_url(url, None::<&str>)
         .map_err(|e| format!("Failed to open URL: {}", e))
+}
+
+#[tauri::command]
+async fn quit_app(app_handle: AppHandle) -> Result<(), String> {
+    app_handle.exit(0);
+    Ok(())
 }
 
 // ========================
@@ -1192,6 +1304,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::default().build())
         .manage(Arc::new(TokioMutex::new(SidecarState::default())))
         .invoke_handler(tauri::generate_handler![
+            // Project config commands
+            list_project_configs,
+            save_project_config,
+            delete_project_config,
             // Connection commands
             list_projects,
             list_profiles,
@@ -1210,6 +1326,7 @@ pub fn run() {
             install_update,
             get_current_version,
             open_url,
+            quit_app,
             // Prerequisites commands
             check_prerequisites,
             // AWS config commands

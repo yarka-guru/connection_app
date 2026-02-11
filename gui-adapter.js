@@ -22,8 +22,13 @@ import {
   getAvailableProjects,
   getLocalPort,
   getProfilesForProjectKey,
-  PROJECT_CONFIGS,
+  loadProjectConfigs,
 } from './connect.js'
+import {
+  deleteProjectConfig,
+  saveProjectConfig,
+  validateProjectConfig,
+} from './configLoader.js'
 
 // Active connections Map - connectionId -> connection control object
 const activeConnections = new Map()
@@ -49,19 +54,6 @@ async function isPortAvailable(port) {
     })
     server.listen(port, '127.0.0.1')
   })
-}
-
-// Find next available port starting from basePort
-async function findAvailablePort(basePort, usedPorts = []) {
-  const usedSet = new Set(usedPorts.map((p) => parseInt(p, 10)))
-
-  for (let port = basePort; port < basePort + 100; port++) {
-    if (usedSet.has(port)) continue
-    if (await isPortAvailable(port)) {
-      return port.toString()
-    }
-  }
-  throw new Error(`No available ports found starting from ${basePort}`)
 }
 
 // Handle incoming commands
@@ -100,7 +92,8 @@ async function handleCommand(command) {
         const connectionId = `conn_${randomUUID().slice(0, 8)}`
 
         // Determine port to use
-        const projectConfig = PROJECT_CONFIGS[projectKey]
+        const configs = await loadProjectConfigs()
+        const projectConfig = configs[projectKey]
         if (!projectConfig) {
           sendResponse(id, 'error', {
             message: `Unknown project: ${projectKey}`,
@@ -108,31 +101,21 @@ async function handleCommand(command) {
           break
         }
 
-        let portToUse
-        if (localPort) {
-          // Use specified port if available
-          const portNum = parseInt(localPort, 10)
-          if (
-            usedPorts.includes(localPort) ||
-            !(await isPortAvailable(portNum))
-          ) {
-            sendResponse(id, 'error', {
-              message: `Port ${localPort} is not available`,
-            })
-            break
-          }
-          portToUse = localPort
-        } else {
-          // Find next available port based on project's base port
-          const basePort = parseInt(getLocalPort(profile, projectConfig), 10)
-          // Combine usedPorts from params with currently active connections
-          const allUsedPorts = [
-            ...usedPorts,
-            ...Array.from(activeConnections.values()).map(
-              (c) => c.connectionInfo?.port,
-            ),
-          ].filter(Boolean)
-          portToUse = await findAvailablePort(basePort, allUsedPorts)
+        const portToUse = localPort || getLocalPort(profile, projectConfig)
+        const portNum = parseInt(portToUse, 10)
+
+        // Strict port check — never silently increment
+        const allUsedPorts = new Set([
+          ...usedPorts.map((p) => parseInt(p, 10)),
+          ...Array.from(activeConnections.values())
+            .map((c) => parseInt(c.connectionInfo?.port, 10))
+            .filter(Boolean),
+        ])
+        if (allUsedPorts.has(portNum) || !(await isPortAvailable(portNum))) {
+          sendResponse(id, 'error', {
+            message: `Port ${portToUse} is not available. Close the application using it or change the port in project settings.`,
+          })
+          break
         }
 
         // Start new connection with the determined port
@@ -217,6 +200,43 @@ async function handleCommand(command) {
           connectionCount: activeConnections.size,
           connections,
         })
+        break
+      }
+
+      case 'list-project-configs': {
+        const configs = await loadProjectConfigs()
+        sendResponse(id, 'success', { configs })
+        break
+      }
+
+      case 'save-project-config': {
+        const { key, config } = params
+        if (!key || !config) {
+          sendResponse(id, 'error', {
+            message: 'key and config are required',
+          })
+          break
+        }
+        const validation = validateProjectConfig(config)
+        if (!validation.valid) {
+          sendResponse(id, 'error', {
+            message: `Validation failed: ${validation.errors.join(', ')}`,
+          })
+          break
+        }
+        await saveProjectConfig(key, config)
+        sendResponse(id, 'success', { message: 'Project config saved' })
+        break
+      }
+
+      case 'delete-project-config': {
+        const { key: deleteKey } = params
+        if (!deleteKey) {
+          sendResponse(id, 'error', { message: 'key is required' })
+          break
+        }
+        await deleteProjectConfig(deleteKey)
+        sendResponse(id, 'success', { message: 'Project config deleted' })
         break
       }
 

@@ -6,6 +6,7 @@ const {
   savedConnections = [],
   activeConnections = [],
   projects = [],
+  connectingId = null,
   onConnect,
   onDisconnect,
   onDelete,
@@ -85,7 +86,8 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     <div class="connections-list">
       {#each savedConnections as connection (connection.id)}
         {@const activeConn = getActiveConnection(connection)}
-        <div class="connection-item" class:active={activeConn} class:expanded={expandedId === connection.id}>
+        {@const isConnecting = connectingId === connection.id}
+        <div class="connection-item" class:active={activeConn} class:connecting={isConnecting} class:expanded={expandedId === connection.id}>
           <div
             class="connection-header"
             role="button"
@@ -93,7 +95,11 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
             onclick={() => activeConn && toggleExpand(connection.id)}
             onkeydown={(e) => handleHeaderKeydown(e, activeConn, connection.id)}
           >
-            {#if activeConn}
+            {#if isConnecting}
+              <div class="connection-status">
+                <span class="connecting-spinner"></span>
+              </div>
+            {:else if activeConn}
               <div class="connection-status">
                 <span class="status-dot"></span>
               </div>
@@ -105,19 +111,24 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
                   <span class="connection-port">:{activeConn.localPort}</span>
                 {/if}
               </div>
-              <span class="connection-meta">
-                {getProjectName(connection.projectKey)} / {connection.profile}
-              </span>
-              {#if !activeConn}
-                <span class="connection-last-used">
-                  Last used: {formatLastUsed(connection.lastUsedAt)}
+              {#if isConnecting}
+                <span class="connecting-text">Connecting...</span>
+              {:else}
+                <span class="connection-meta">
+                  {getProjectName(connection.projectKey)} / {connection.profile}
                 </span>
+                {#if !activeConn}
+                  <span class="connection-last-used">
+                    Last used: {formatLastUsed(connection.lastUsedAt)}
+                  </span>
+                {/if}
               {/if}
             </div>
             <div class="connection-actions">
               {#if activeConn}
                 <button
                   class="btn-expand"
+                  disabled={!!connectingId}
                   aria-label={expandedId === connection.id ? 'Collapse credentials' : 'Show credentials'}
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" class:rotated={expandedId === connection.id}>
@@ -126,6 +137,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
                 </button>
                 <button
                   class="btn-disconnect"
+                  disabled={!!connectingId}
                   onclick={(e) => { e.stopPropagation(); handleDisconnect(activeConn); }}
                   aria-label="Disconnect {connection.name}"
                 >
@@ -136,15 +148,21 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
               {:else}
                 <button
                   class="btn-connect"
+                  disabled={!!connectingId}
                   onclick={(e) => { e.stopPropagation(); handleConnect(connection); }}
                   aria-label="Connect to {connection.name}"
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M5 3l8 5-8 5V3z" fill="currentColor"/>
-                  </svg>
+                  {#if isConnecting}
+                    <span class="btn-spinner"></span>
+                  {:else}
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <path d="M5 3l8 5-8 5V3z" fill="currentColor"/>
+                    </svg>
+                  {/if}
                 </button>
                 <button
                   class="btn-delete"
+                  disabled={!!connectingId}
                   onclick={(e) => { e.stopPropagation(); handleDelete(connection); }}
                   aria-label="Delete {connection.name}"
                 >
@@ -253,6 +271,10 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .connection-item.active {
     border: 1px solid rgba(52, 211, 153, 0.2);
+  }
+
+  .connection-item.connecting {
+    border: 1px solid rgba(99, 102, 241, 0.3);
   }
 
   .connection-header {
@@ -396,6 +418,49 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .btn-expand svg.rotated {
     transform: rotate(180deg);
+  }
+
+  .btn-connect:disabled, .btn-delete:disabled, .btn-disconnect:disabled, .btn-expand:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .connecting-spinner {
+    display: block;
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid rgba(99, 102, 241, 0.3);
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    will-change: transform;
+  }
+
+  .connecting-text {
+    font-size: 0.75rem;
+    color: #a5b4fc;
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  .btn-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid rgba(52, 211, 153, 0.3);
+    border-top-color: #34d399;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    will-change: transform;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 
   .connection-details {

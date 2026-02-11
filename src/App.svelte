@@ -32,6 +32,7 @@ let showSavePrompt = $state(false)
 let lastConnectedConfig = $state(null)
 let saveConnectionName = $state('')
 let showDeleteConfirm = $state(null)
+let showCloseConfirm = $state(false)
 let isCheckingUpdates = $state(false)
 let updateCheckMessage = $state('')
 
@@ -42,10 +43,12 @@ let showSettings = $state(false)
 
 let invoke = null
 let listen = null
+let appWindow = null
 
 // Cleanup references
 let cancelUpdateMsgTimeout = null
 let unlistenSidecar = null
+let unlistenCloseRequested = null
 
 // Global keyboard shortcuts
 function handleGlobalKeydown(e) {
@@ -83,20 +86,30 @@ async function initApp() {
   loadingProjects = true
 
   try {
-    const [core, event] = await withTimeout(
+    const [core, event, windowModule] = await withTimeout(
       Promise.all([
         import('@tauri-apps/api/core'),
         import('@tauri-apps/api/event'),
+        import('@tauri-apps/api/window'),
       ]),
       5000,
     )
     invoke = core.invoke
     listen = event.listen
+    appWindow = windowModule.getCurrentWindow()
   } catch (err) {
     errorMessage = `Failed to load Tauri API: ${err}`
     loadingProjects = false
     return
   }
+
+  // Intercept window close — prompt if there are active connections
+  unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
+    if (activeConnections.length > 0) {
+      event.preventDefault()
+      showCloseConfirm = true
+    }
+  })
 
   // Set up sidecar listener (non-blocking)
   listen('sidecar-event', (ev) => {
@@ -159,7 +172,22 @@ function retryInit() {
 onDestroy(() => {
   cancelUpdateMsgTimeout?.()
   unlistenSidecar?.()
+  unlistenCloseRequested?.()
 })
+
+async function confirmClose() {
+  showCloseConfirm = false
+  try {
+    await invoke('disconnect_all')
+  } catch (_err) {
+    // Best-effort disconnect before closing
+  }
+  await invoke('quit_app')
+}
+
+function cancelClose() {
+  showCloseConfirm = false
+}
 
 async function checkForUpdates() {
   if (isCheckingUpdates) return
@@ -210,6 +238,14 @@ async function loadProfiles() {
     selectedProfile = ''
   } catch (err) {
     errorMessage = `Failed to load profiles: ${err}`
+  }
+}
+
+async function refreshProjects() {
+  try {
+    projects = await invoke('list_projects')
+  } catch (err) {
+    errorMessage = `Failed to refresh projects: ${err}`
   }
 }
 
@@ -490,6 +526,7 @@ const isAlreadySaved = $derived(
             {savedConnections}
             {activeConnections}
             {projects}
+            {connectingId}
             onConnect={handleSavedConnectionConnect}
             onDisconnect={handleDisconnectOne}
             onDelete={handleDeleteSavedConnection}
@@ -586,6 +623,18 @@ const isAlreadySaved = $derived(
       />
     {/if}
 
+    {#if showCloseConfirm}
+      <ConfirmDialog
+        title="Close Application"
+        message="All active connections will be closed. Are you sure you want to quit?"
+        confirmLabel="Quit"
+        cancelLabel="Cancel"
+        destructive={true}
+        onConfirm={confirmClose}
+        onCancel={cancelClose}
+      />
+    {/if}
+
     {#if showPrerequisites}
       <PrerequisitesCheck
         prerequisites={prerequisitesData}
@@ -598,6 +647,7 @@ const isAlreadySaved = $derived(
       <Settings
         onClose={() => showSettings = false}
         {invoke}
+        onProjectsChanged={refreshProjects}
       />
     {/if}
   {/if}
