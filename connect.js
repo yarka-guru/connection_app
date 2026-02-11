@@ -7,7 +7,11 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { PROJECT_CONFIGS } from './envPortMapping.js'
+import {
+  loadProjectConfigs,
+  saveProjectConfig,
+  validateProjectConfig,
+} from './configLoader.js'
 
 // Package info for version checking
 const packageJson = { name: 'rds_ssm_connect', version: '1.7.13' }
@@ -389,21 +393,34 @@ async function getRdsPort(ENV, projectConfig) {
 }
 
 function getProfilesForProject(allProfiles, projectConfig, allProjectConfigs) {
-  const { profileFilter } = projectConfig
+  const { profileFilter, envPortMapping } = projectConfig
 
+  let filtered
   if (profileFilter) {
     // Project has explicit filter - return profiles starting with filter
-    return allProfiles.filter((env) => env.startsWith(profileFilter))
+    filtered = allProfiles.filter((env) => env.startsWith(profileFilter))
   } else {
     // No filter (legacy project like TLN) - return profiles that don't match any other project's filter
     const otherFilters = Object.values(allProjectConfigs)
       .filter((config) => config.profileFilter)
       .map((config) => config.profileFilter)
 
-    return allProfiles.filter(
+    filtered = allProfiles.filter(
       (env) => !otherFilters.some((filter) => env.startsWith(filter)),
     )
   }
+
+  // Further restrict to profiles matching an envPortMapping suffix
+  if (envPortMapping && Object.keys(envPortMapping).length > 0) {
+    const suffixes = Object.keys(envPortMapping).sort(
+      (a, b) => b.length - a.length,
+    )
+    filtered = filtered.filter((env) =>
+      suffixes.some((suffix) => env.endsWith(suffix) || env === suffix),
+    )
+  }
+
+  return filtered
 }
 
 // Get local port number based on environment suffix
@@ -480,6 +497,8 @@ async function getAvailableProjects() {
     return []
   }
 
+  const PROJECT_CONFIGS = await loadProjectConfigs()
+
   return Object.entries(PROJECT_CONFIGS)
     .filter(([_key, config]) => {
       const matchingProfiles = getProfilesForProject(
@@ -498,6 +517,7 @@ async function getAvailableProjects() {
 // Get profiles for a specific project
 async function getProfilesForProjectKey(projectKey) {
   const allProfiles = await readAwsConfig()
+  const PROJECT_CONFIGS = await loadProjectConfigs()
   const projectConfig = PROJECT_CONFIGS[projectKey]
 
   if (!projectConfig) {
@@ -511,6 +531,7 @@ async function getProfilesForProjectKey(projectKey) {
 // Includes keepalive (prevents SSM idle timeout) and auto-reconnect
 // (transparently reconnects on the same port if session drops unexpectedly).
 async function connect(projectKey, profile, options = {}) {
+  const PROJECT_CONFIGS = await loadProjectConfigs()
   const projectConfig = PROJECT_CONFIGS[projectKey]
   if (!projectConfig) {
     throw new Error(`Unknown project: ${projectKey}`)
@@ -674,6 +695,116 @@ async function main() {
   await checkForUpdates()
 
   try {
+    // Load project configs from user config file
+    let PROJECT_CONFIGS = await loadProjectConfigs()
+
+    // First-run wizard: if no projects configured, prompt to create one
+    if (Object.keys(PROJECT_CONFIGS).length === 0) {
+      const { setupNow } = await inquirer.default.prompt([
+        {
+          type: 'confirm',
+          name: 'setupNow',
+          message:
+            'No projects configured. Would you like to set up a project now?',
+          default: true,
+        },
+      ])
+
+      if (!setupNow) {
+        console.log(
+          `\nTo configure manually, create ~/.rds-ssm-connect/projects.json\nSee the README for the config schema.\n`,
+        )
+        return
+      }
+
+      const answers = await inquirer.default.prompt([
+        {
+          type: 'input',
+          name: 'key',
+          message: 'Project key (lowercase, hyphens):',
+          validate: (v) =>
+            /^[a-z][a-z0-9-]*$/.test(v) || 'Lowercase letters, digits, hyphens',
+        },
+        { type: 'input', name: 'name', message: 'Display name:' },
+        {
+          type: 'input',
+          name: 'region',
+          message: 'AWS region:',
+          default: 'us-east-1',
+        },
+        { type: 'input', name: 'database', message: 'Database name:' },
+        {
+          type: 'input',
+          name: 'secretPrefix',
+          message: 'Secret prefix (e.g. rds!cluster):',
+        },
+        {
+          type: 'select',
+          name: 'rdsType',
+          message: 'RDS type:',
+          choices: ['cluster', 'instance'],
+        },
+        {
+          type: 'input',
+          name: 'rdsPattern',
+          message: 'RDS identifier pattern:',
+        },
+        {
+          type: 'input',
+          name: 'profileFilter',
+          message: 'Profile filter prefix (leave empty for none):',
+          default: '',
+        },
+        {
+          type: 'input',
+          name: 'defaultPort',
+          message: 'Default local port:',
+          default: '5432',
+        },
+      ])
+
+      // Collect port mappings
+      const envPortMappingInput = {}
+      let addMore = true
+      while (addMore) {
+        const mapping = await inquirer.default.prompt([
+          { type: 'input', name: 'suffix', message: 'Environment suffix:' },
+          { type: 'input', name: 'port', message: 'Local port:' },
+          {
+            type: 'confirm',
+            name: 'more',
+            message: 'Add another port mapping?',
+            default: false,
+          },
+        ])
+        envPortMappingInput[mapping.suffix] = mapping.port
+        addMore = mapping.more
+      }
+
+      const newConfig = {
+        name: answers.name,
+        region: answers.region,
+        database: answers.database,
+        secretPrefix: answers.secretPrefix,
+        rdsType: answers.rdsType,
+        rdsPattern: answers.rdsPattern,
+        profileFilter: answers.profileFilter || null,
+        envPortMapping: envPortMappingInput,
+        defaultPort: answers.defaultPort,
+      }
+
+      const validation = validateProjectConfig(newConfig)
+      if (!validation.valid) {
+        console.log('\nValidation errors:')
+        validation.errors.forEach((e) => console.log(`  - ${e}`))
+        return
+      }
+
+      await saveProjectConfig(answers.key, newConfig)
+      console.log(`\nProject "${answers.name}" saved!\n`)
+      PROJECT_CONFIGS = await loadProjectConfigs()
+    }
+
     // Read all AWS profiles first
     const allProfiles = await readAwsConfig()
 
@@ -834,6 +965,6 @@ export {
   getLocalPort,
   connect,
   ipcEmitter,
-  PROJECT_CONFIGS,
+  loadProjectConfigs,
   RETRY_CONFIG,
 }

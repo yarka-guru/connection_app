@@ -2,20 +2,38 @@
 import { onMount, onDestroy } from 'svelte'
 import { trapFocus, safeTimeout } from './utils.js'
 
-const { onClose, invoke } = $props()
+const { onClose, invoke, onProjectsChanged } = $props()
 
-let activeTab = $state('profiles')
+let activeTab = $state('projects')
 let awsProfiles = $state([])
 let rawConfig = $state('')
+let projectConfigs = $state({})
 let loading = $state(true)
 let saving = $state(false)
 let error = $state('')
 let success = $state('')
 
-// Edit modal state
+// AWS Profile edit modal state
 let editingProfile = $state(null)
 let editName = $state('')
 let editContent = $state('')
+
+// Project edit modal state
+let editingProject = $state(null)
+let projectKey = $state('')
+let projectName = $state('')
+let projectRegion = $state('us-east-1')
+let projectDatabase = $state('')
+let projectSecretPrefix = $state('')
+let projectRdsType = $state('cluster')
+let projectRdsPattern = $state('')
+let projectProfileFilter = $state('')
+let projectDefaultPort = $state('5432')
+let projectPortMappings = $state([])
+
+// Delete confirmation state
+let deleteConfirmProfile = $state(null)
+let deleteConfirmProjectKey = $state(null)
 
 // Timeout cleanup
 let cancelSuccessTimeout = null
@@ -28,18 +46,28 @@ async function loadData() {
   loading = true
   error = ''
   try {
-    const [profiles, config] = await Promise.all([
+    const [profiles, config, configs] = await Promise.all([
       invoke('read_aws_config'),
       invoke('get_raw_aws_config'),
+      invoke('list_project_configs'),
     ])
     awsProfiles = profiles
     rawConfig = config
+    projectConfigs = configs
   } catch (err) {
-    error = `Failed to load AWS config: ${err}`
+    error = `Failed to load settings: ${err}`
   } finally {
     loading = false
   }
 }
+
+function showSuccess(msg) {
+  success = msg
+  cancelSuccessTimeout?.()
+  cancelSuccessTimeout = safeTimeout(() => { success = '' }, 3000)
+}
+
+// ---- AWS Profile functions ----
 
 function openAddProfile() {
   editingProfile = { isNew: true }
@@ -82,11 +110,7 @@ async function saveProfile() {
         ssoRoleName: null,
       },
     })
-    success = 'Profile saved successfully'
-    cancelSuccessTimeout?.()
-    cancelSuccessTimeout = safeTimeout(() => {
-      success = ''
-    }, 3000)
+    showSuccess('Profile saved successfully')
     closeEditModal()
     await loadData()
   } catch (err) {
@@ -95,9 +119,6 @@ async function saveProfile() {
     saving = false
   }
 }
-
-// Delete confirmation state
-let deleteConfirmProfile = $state(null)
 
 function requestDeleteProfile(profileName) {
   deleteConfirmProfile = profileName
@@ -116,11 +137,7 @@ async function confirmDeleteProfile() {
   error = ''
   try {
     await invoke('delete_aws_profile', { profileName })
-    success = 'Profile deleted'
-    cancelSuccessTimeout?.()
-    cancelSuccessTimeout = safeTimeout(() => {
-      success = ''
-    }, 3000)
+    showSuccess('Profile deleted')
     await loadData()
   } catch (err) {
     error = `Failed to delete profile: ${err}`
@@ -134,11 +151,7 @@ async function saveRawConfig() {
   error = ''
   try {
     await invoke('save_raw_aws_config', { content: rawConfig })
-    success = 'Config saved successfully'
-    cancelSuccessTimeout?.()
-    cancelSuccessTimeout = safeTimeout(() => {
-      success = ''
-    }, 3000)
+    showSuccess('Config saved successfully')
     await loadData()
   } catch (err) {
     error = `Failed to save config: ${err}`
@@ -147,10 +160,127 @@ async function saveRawConfig() {
   }
 }
 
+// ---- Project config functions ----
+
+function openAddProject() {
+  editingProject = { isNew: true }
+  projectKey = ''
+  projectName = ''
+  projectRegion = 'us-east-1'
+  projectDatabase = ''
+  projectSecretPrefix = 'rds!cluster'
+  projectRdsType = 'cluster'
+  projectRdsPattern = ''
+  projectProfileFilter = ''
+  projectDefaultPort = '5432'
+  projectPortMappings = [{ suffix: '', port: '' }]
+}
+
+function openEditProject(key, config) {
+  editingProject = { isNew: false, key }
+  projectKey = key
+  projectName = config.name
+  projectRegion = config.region
+  projectDatabase = config.database
+  projectSecretPrefix = config.secretPrefix
+  projectRdsType = config.rdsType
+  projectRdsPattern = config.rdsPattern
+  projectProfileFilter = config.profileFilter || ''
+  projectDefaultPort = config.defaultPort
+  const mappings = Object.entries(config.envPortMapping || {}).map(([suffix, port]) => ({ suffix, port }))
+  projectPortMappings = mappings.length > 0 ? mappings : [{ suffix: '', port: '' }]
+}
+
+function closeProjectModal() {
+  editingProject = null
+}
+
+function addPortMapping() {
+  projectPortMappings = [...projectPortMappings, { suffix: '', port: '' }]
+}
+
+function removePortMapping(index) {
+  projectPortMappings = projectPortMappings.filter((_, i) => i !== index)
+}
+
+async function saveProject() {
+  if (!projectKey.trim()) {
+    error = 'Project key is required'
+    return
+  }
+  if (!projectName.trim()) {
+    error = 'Project name is required'
+    return
+  }
+
+  const envPortMapping = {}
+  for (const m of projectPortMappings) {
+    if (m.suffix.trim() && m.port.trim()) {
+      envPortMapping[m.suffix.trim()] = m.port.trim()
+    }
+  }
+
+  const config = {
+    name: projectName.trim(),
+    region: projectRegion.trim(),
+    database: projectDatabase.trim(),
+    secretPrefix: projectSecretPrefix.trim(),
+    rdsType: projectRdsType,
+    rdsPattern: projectRdsPattern.trim(),
+    profileFilter: projectProfileFilter.trim() || null,
+    envPortMapping,
+    defaultPort: projectDefaultPort.trim(),
+  }
+
+  saving = true
+  error = ''
+  try {
+    await invoke('save_project_config', { key: projectKey.trim(), config })
+    showSuccess('Project saved')
+    closeProjectModal()
+    await loadData()
+    onProjectsChanged?.()
+  } catch (err) {
+    error = `Failed to save project: ${err}`
+  } finally {
+    saving = false
+  }
+}
+
+function requestDeleteProject(key) {
+  deleteConfirmProjectKey = key
+}
+
+function cancelDeleteProject() {
+  deleteConfirmProjectKey = null
+}
+
+async function confirmDeleteProject() {
+  if (!deleteConfirmProjectKey) return
+  const key = deleteConfirmProjectKey
+  deleteConfirmProjectKey = null
+
+  saving = true
+  error = ''
+  try {
+    await invoke('delete_project_config', { key })
+    showSuccess('Project deleted')
+    await loadData()
+    onProjectsChanged?.()
+  } catch (err) {
+    error = `Failed to delete project: ${err}`
+  } finally {
+    saving = false
+  }
+}
+
+// ---- Keyboard handlers ----
+
 function handleOverlayKeydown(e) {
   if (e.key === 'Escape') {
-    if (editingProfile) {
+    if (editingProfile || editingProject) {
       closeEditModal()
+      closeProjectModal()
     } else {
       onClose()
     }
@@ -160,6 +290,7 @@ function handleOverlayKeydown(e) {
 function handleEditOverlayKeydown(e) {
   if (e.key === 'Escape') {
     closeEditModal()
+    closeProjectModal()
   }
 }
 
@@ -181,6 +312,13 @@ onDestroy(() => {
     </div>
 
     <div class="tabs">
+      <button
+        class="tab"
+        class:active={activeTab === 'projects'}
+        onclick={() => activeTab = 'projects'}
+      >
+        Projects
+      </button>
       <button
         class="tab"
         class:active={activeTab === 'profiles'}
@@ -207,6 +345,63 @@ onDestroy(() => {
     <div class="tab-content">
       {#if loading}
         <div class="loading">Loading...</div>
+      {:else if activeTab === 'projects'}
+        <div class="profiles-tab">
+          <div class="profiles-header">
+            <span class="profiles-path">~/.rds-ssm-connect/projects.json</span>
+            <button class="btn-add" onclick={openAddProject}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              Add Project
+            </button>
+          </div>
+
+          {#if Object.keys(projectConfigs).length === 0}
+            <div class="empty-state">
+              <p>No projects configured</p>
+              <p class="hint">Click "Add Project" to get started</p>
+            </div>
+          {:else}
+            <div class="profiles-list">
+              {#each Object.entries(projectConfigs) as [key, config]}
+                <div class="profile-card">
+                  <div class="profile-header">
+                    <span class="profile-name">{config.name}</span>
+                    <div class="profile-actions">
+                      <button class="btn-icon" onclick={() => openEditProject(key, config)} aria-label="Edit {config.name}">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M10.5 1.5l2 2-8 8H2.5v-2l8-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </button>
+                      <button class="btn-icon delete" onclick={() => requestDeleteProject(key)} aria-label="Delete {config.name}">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M2 4h10M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M11 4v8a1 1 0 01-1 1H4a1 1 0 01-1-1V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  {#if deleteConfirmProjectKey === key}
+                    <div class="inline-confirm">
+                      <span>Delete "{config.name}"?</span>
+                      <div class="inline-confirm-actions">
+                        <button class="btn-inline-confirm" onclick={confirmDeleteProject}>Delete</button>
+                        <button class="btn-inline-cancel" onclick={cancelDeleteProject}>Cancel</button>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="profile-details">
+                      <span class="detail">{config.region}</span>
+                      <span class="detail">{config.rdsType}</span>
+                      <span class="detail">{config.database}</span>
+                      <span class="detail">{Object.keys(config.envPortMapping || {}).length} port mappings</span>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {:else if activeTab === 'profiles'}
         <div class="profiles-tab">
           <div class="profiles-header">
@@ -290,7 +485,7 @@ onDestroy(() => {
     </div>
   </div>
 
-  <!-- Edit Profile Modal -->
+  <!-- Edit AWS Profile Modal -->
   {#if editingProfile}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="edit-modal-overlay" onclick={closeEditModal} onkeydown={handleEditOverlayKeydown}>
@@ -322,6 +517,105 @@ onDestroy(() => {
         <div class="edit-actions">
           <button class="btn-cancel" onclick={closeEditModal}>Cancel</button>
           <button class="btn-save" onclick={saveProfile} disabled={saving}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Edit Project Modal -->
+  {#if editingProject}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="edit-modal-overlay" onclick={closeProjectModal} onkeydown={handleEditOverlayKeydown}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="edit-modal project-modal" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProject.isNew ? 'Add project' : 'Edit project'}>
+        <h3>{editingProject.isNew ? 'Add Project' : 'Edit Project'}</h3>
+
+        <div class="project-form-scroll">
+          <div class="form-group">
+            <label for="project-key">Project Key</label>
+            <input
+              id="project-key"
+              type="text"
+              bind:value={projectKey}
+              placeholder="my-project"
+              disabled={!editingProject.isNew}
+            />
+            {#if editingProject.isNew}
+              <span class="field-hint">Lowercase letters, digits, and hyphens</span>
+            {/if}
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="project-name">Name</label>
+              <input id="project-name" type="text" bind:value={projectName} placeholder="My Project" />
+            </div>
+            <div class="form-group">
+              <label for="project-region">Region</label>
+              <input id="project-region" type="text" bind:value={projectRegion} placeholder="us-east-1" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="project-database">Database</label>
+              <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
+            </div>
+            <div class="form-group">
+              <label for="project-secret-prefix">Secret Prefix</label>
+              <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="project-rds-type">RDS Type</label>
+              <select id="project-rds-type" bind:value={projectRdsType}>
+                <option value="cluster">Cluster (Aurora)</option>
+                <option value="instance">Instance</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="project-rds-pattern">RDS Pattern</label>
+              <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="project-profile-filter">Profile Filter</label>
+              <input id="project-profile-filter" type="text" bind:value={projectProfileFilter} placeholder="(optional)" />
+            </div>
+            <div class="form-group">
+              <label for="project-default-port">Default Port</label>
+              <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder="5432" />
+            </div>
+          </div>
+
+          <div class="port-mappings">
+            <div class="port-mappings-header">
+              <span class="port-mappings-label">Port Mappings</span>
+              <button class="btn-add-small" onclick={addPortMapping} type="button">+ Add</button>
+            </div>
+            {#each projectPortMappings as mapping, i}
+              <div class="port-mapping-row">
+                <input type="text" bind:value={mapping.suffix} placeholder="env suffix" />
+                <input type="text" bind:value={mapping.port} placeholder="port" />
+                <button class="btn-remove" onclick={() => removePortMapping(i)} type="button" aria-label="Remove mapping">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="edit-actions">
+          <button class="btn-cancel" onclick={closeProjectModal}>Cancel</button>
+          <button class="btn-save" onclick={saveProject} disabled={saving}>
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -687,6 +981,19 @@ onDestroy(() => {
     max-width: 90%;
   }
 
+  .edit-modal.project-modal {
+    width: 480px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .project-form-scroll {
+    flex: 1;
+    overflow-y: auto;
+    margin-bottom: 8px;
+  }
+
   .edit-modal h3 {
     margin: 0 0 20px;
     font-size: 1.1rem;
@@ -706,19 +1013,30 @@ onDestroy(() => {
   }
 
   .form-group input,
-  .form-group textarea {
+  .form-group textarea,
+  .form-group select {
     width: 100%;
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
-    padding: 12px;
+    padding: 10px 12px;
     font-size: 0.875rem;
     color: #e4e4e7;
     outline: none;
   }
 
+  .form-group select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2371717a' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
+  }
+
   .form-group input:focus,
-  .form-group textarea:focus {
+  .form-group textarea:focus,
+  .form-group select:focus {
     border-color: #6366f1;
   }
 
@@ -732,6 +1050,93 @@ onDestroy(() => {
     font-family: ui-monospace, monospace;
     font-size: 0.8rem;
     resize: vertical;
+  }
+
+  .field-hint {
+    display: block;
+    font-size: 0.7rem;
+    color: #8b8b95;
+    margin-top: 4px;
+  }
+
+  .form-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .form-row .form-group {
+    flex: 1;
+  }
+
+  .port-mappings {
+    margin-bottom: 16px;
+  }
+
+  .port-mappings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .port-mappings-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #a1a1aa;
+  }
+
+  .btn-add-small {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #a5b4fc;
+    background: rgba(99, 102, 241, 0.1);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .btn-add-small:hover {
+    background: rgba(99, 102, 241, 0.15);
+  }
+
+  .port-mapping-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+    align-items: center;
+  }
+
+  .port-mapping-row input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.8rem;
+    color: #e4e4e7;
+    outline: none;
+  }
+
+  .port-mapping-row input:focus {
+    border-color: #6366f1;
+  }
+
+  .btn-remove {
+    padding: 6px;
+    background: none;
+    border: none;
+    color: #71717a;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+    flex-shrink: 0;
+  }
+
+  .btn-remove:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #f87171;
   }
 
   .edit-actions {
