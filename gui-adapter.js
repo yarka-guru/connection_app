@@ -253,19 +253,19 @@ async function handleCommand(command) {
   }
 }
 
+// Disconnect all active connections (idempotent — safe to call multiple times)
+function disconnectAll() {
+  for (const [_connId, connection] of activeConnections) {
+    connection.disconnect()
+  }
+  activeConnections.clear()
+}
+
 // Handle process signals for cleanup
 function setupCleanup() {
-  const cleanup = () => {
-    for (const [_connId, connection] of activeConnections) {
-      connection.disconnect()
-    }
-    activeConnections.clear()
-    process.exit(0)
-  }
-
-  process.on('SIGINT', cleanup)
-  process.on('SIGTERM', cleanup)
-  process.on('exit', cleanup)
+  process.on('SIGINT', () => { disconnectAll(); process.exit(0) })
+  process.on('SIGTERM', () => { disconnectAll(); process.exit(0) })
+  process.on('exit', disconnectAll)
 }
 
 // Main entry point
@@ -294,10 +294,7 @@ async function main() {
   })
 
   rl.on('close', () => {
-    for (const [_connId, connection] of activeConnections) {
-      connection.disconnect()
-    }
-    activeConnections.clear()
+    disconnectAll()
     process.exit(0)
   })
 }

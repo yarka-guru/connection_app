@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { exec } from 'node:child_process'
+import { exec, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs/promises'
 import net from 'node:net'
@@ -83,20 +83,30 @@ async function checkForUpdates() {
 // Store active child processes for cleanup
 let activeChildProcesses = []
 
+// Kill entire process group (shell + aws-vault + session-manager-plugin).
+// Requires the child to have been spawned with `detached: true` so that
+// setsid() makes it a process group leader.
+function killProcessTree(child) {
+  if (!child || !child.pid) return
+  try {
+    process.kill(-child.pid, 'SIGTERM') // negative PID = kill entire process group
+  } catch (_err) {
+    // ESRCH: process group already exited — safe to ignore
+  }
+}
+
 // Handle graceful shutdown
 function setupProcessCleanup() {
-  const cleanup = () => {
+  const killAll = () => {
     activeChildProcesses.forEach((child) => {
-      if (child && !child.killed) {
-        child.kill('SIGTERM')
-      }
+      killProcessTree(child)
     })
-    process.exit(0)
+    activeChildProcesses = []
   }
 
-  process.on('SIGINT', cleanup)
-  process.on('SIGTERM', cleanup)
-  process.on('exit', cleanup)
+  process.on('SIGINT', () => { killAll(); process.exit(0) })
+  process.on('SIGTERM', () => { killAll(); process.exit(0) })
+  process.on('exit', killAll)
 }
 
 async function readAwsConfig() {
@@ -251,6 +261,7 @@ async function handleTargetNotConnectedError(
   region,
   retryCount,
   maxRetries,
+  onChild,
 ) {
   // Terminate the disconnected instance
   await terminateBastionInstance(ENV, instanceId, region)
@@ -270,6 +281,7 @@ async function handleTargetNotConnectedError(
     region,
     retryCount + 1,
     maxRetries,
+    onChild,
   )
 }
 
@@ -282,7 +294,11 @@ function executePortForwardingCommand(
   region,
 ) {
   const portForwardingCommand = `aws-vault exec ${ENV} -- aws ssm start-session --region ${region} --target ${instanceId} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${rdsEndpoint},portNumber='${remotePort}',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
-  const child = exec(portForwardingCommand)
+  const child = spawn(portForwardingCommand, {
+    shell: true,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
 
   // Register child process for cleanup
   activeChildProcesses.push(child)
@@ -299,6 +315,7 @@ async function startPortForwardingWithConfig(
   region,
   retryCount = 0,
   maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
+  onChild,
 ) {
   return new Promise((resolve, reject) => {
     const child = executePortForwardingCommand(
@@ -309,6 +326,11 @@ async function startPortForwardingWithConfig(
       remotePort,
       region,
     )
+    // Notify caller of the new child (used for per-connection tracking).
+    // If the connection was already disconnected, the callback kills this
+    // child immediately so it doesn't linger as an orphan.
+    if (onChild) onChild(child)
+
     const sessionState = monitorPortForwardingSession(child)
 
     child.on('close', async (code) => {
@@ -331,6 +353,7 @@ async function startPortForwardingWithConfig(
             region,
             retryCount,
             maxRetries,
+            onChild,
           )
           resolve()
         } else if (code !== 0) {
@@ -543,6 +566,18 @@ async function connect(projectKey, profile, options = {}) {
 
   let manualDisconnect = false
   let stopKeepalive = null
+  let currentChild = null // per-connection child tracking
+
+  // Called whenever a new child process is spawned for this connection.
+  // If disconnect() was already called, kills the child immediately so
+  // it doesn't linger as an orphan during retry chains.
+  const onChild = (child) => {
+    currentChild = child
+    if (manualDisconnect) {
+      killProcessTree(child)
+      activeChildProcesses = activeChildProcesses.filter((p) => p !== child)
+    }
+  }
 
   // Emit status updates
   const emit = (event, data) => {
@@ -600,6 +635,7 @@ async function connect(projectKey, profile, options = {}) {
           region,
           0,
           RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
+          onChild,
         )
 
         // Session ended — clean up keepalive
@@ -672,13 +708,12 @@ async function connect(projectKey, profile, options = {}) {
     disconnect: () => {
       manualDisconnect = true
       stopKeepalive?.()
-      // Kill all active child processes
-      activeChildProcesses.forEach((child) => {
-        if (child && !child.killed) {
-          child.kill('SIGTERM')
-        }
-      })
-      activeChildProcesses = []
+      // Kill only THIS connection's child process group
+      if (currentChild) {
+        killProcessTree(currentChild)
+        activeChildProcesses = activeChildProcesses.filter((p) => p !== currentChild)
+        currentChild = null
+      }
     },
     waitForClose: () => portForwardingPromise,
   }

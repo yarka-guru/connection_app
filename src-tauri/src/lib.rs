@@ -838,7 +838,18 @@ async fn open_url(app_handle: AppHandle, url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn quit_app(app_handle: AppHandle) -> Result<(), String> {
+async fn quit_app(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
+) -> Result<(), String> {
+    // Kill the sidecar process (triggers its cleanup handlers which
+    // disconnect all active connections and kill process groups)
+    {
+        let mut guard = state.lock().await;
+        if let Some(child) = guard.child.take() {
+            let _ = child.kill();
+        }
+    }
     app_handle.exit(0);
     Ok(())
 }

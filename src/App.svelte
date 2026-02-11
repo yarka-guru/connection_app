@@ -182,7 +182,12 @@ async function confirmClose() {
   } catch (_err) {
     // Best-effort disconnect before closing
   }
-  await invoke('quit_app')
+  try {
+    await invoke('quit_app')
+  } catch (_err) {
+    // If quit_app fails, force close via window API
+    appWindow?.close()
+  }
 }
 
 function cancelClose() {
