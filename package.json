@@ -1,6 +1,6 @@
 {
   "name": "rds_ssm_connect",
-  "version": "1.7.14",
+  "version": "1.7.15",
   "type": "module",
   "repository": {
     "type": "git",
