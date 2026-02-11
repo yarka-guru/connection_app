@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { exec, spawn } from 'node:child_process'
+import { exec, spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs/promises'
 import net from 'node:net'
@@ -83,15 +83,48 @@ async function checkForUpdates() {
 // Store active child processes for cleanup
 let activeChildProcesses = []
 
-// Kill entire process group (shell + aws-vault + session-manager-plugin).
-// Requires the child to have been spawned with `detached: true` so that
-// setsid() makes it a process group leader.
+// Recursively collect all descendant PIDs of a process via pgrep.
+function getDescendantPids(pid) {
+  const descendants = []
+  try {
+    const { stdout } = spawnSync('pgrep', ['-P', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 3000,
+    })
+    if (stdout) {
+      const children = stdout.trim().split('\n').filter(Boolean).map(Number)
+      for (const childPid of children) {
+        descendants.push(childPid, ...getDescendantPids(childPid))
+      }
+    }
+  } catch (_err) {
+    // pgrep not available or timed out
+  }
+  return descendants
+}
+
+// Kill entire process tree: shell → aws-vault → aws → session-manager-plugin.
+// Uses three strategies because descendants may escape to different process
+// groups (aws-vault / AWS CLI behavior on macOS).
 function killProcessTree(child) {
   if (!child || !child.pid) return
-  try {
-    process.kill(-child.pid, 'SIGTERM') // negative PID = kill entire process group
-  } catch (_err) {
-    // ESRCH: process group already exited — safe to ignore
+  const rootPid = child.pid
+
+  // Walk the tree to find every descendant PID
+  const descendants = getDescendantPids(rootPid)
+  const allPids = [rootPid, ...descendants]
+
+  // Strategy 1: Process group kill (fast, atomic — works when all share PGID)
+  try { process.kill(-rootPid, 'SIGTERM') } catch (_err) {}
+
+  // Strategy 2: Individual SIGTERM (handles descendants in different groups)
+  for (const pid of allPids) {
+    try { process.kill(pid, 'SIGTERM') } catch (_err) {}
+  }
+
+  // Strategy 3: SIGKILL survivors (cannot be caught or ignored)
+  for (const pid of allPids) {
+    try { process.kill(pid, 'SIGKILL') } catch (_err) {}
   }
 }
 

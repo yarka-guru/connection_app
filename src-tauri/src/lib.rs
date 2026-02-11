@@ -842,14 +842,27 @@ async fn quit_app(
     app_handle: AppHandle,
     state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
 ) -> Result<(), String> {
-    // Kill the sidecar process (triggers its cleanup handlers which
-    // disconnect all active connections and kill process groups)
-    {
+    // Take the sidecar child out (releases the lock before sleeping)
+    let child_to_kill = {
         let mut guard = state.lock().await;
-        if let Some(child) = guard.child.take() {
-            let _ = child.kill();
-        }
+        guard.child.take()
+    };
+
+    if let Some(child) = child_to_kill {
+        // Send SIGTERM first so the sidecar's cleanup handlers fire
+        // (disconnects all connections and kills process trees)
+        let pid = child.pid();
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+
+        // Brief wait for graceful shutdown
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Force-kill if still alive
+        let _ = child.kill();
     }
+
     app_handle.exit(0);
     Ok(())
 }
