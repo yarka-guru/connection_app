@@ -818,6 +818,8 @@ async fn install_update(app_handle: AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| format!("Failed to download/install update: {}", e))?;
 
+    app_handle.restart();
+
     Ok(())
 }
 

@@ -428,8 +428,10 @@ async function handleInstallUpdate() {
 
   try {
     await invoke('install_update')
-    statusMessage = 'Update installed! Restart to apply.'
-    // The app will restart automatically after install
+    // App should auto-restart and never reach here, but just in case:
+    isUpdating = false
+    showUpdateBanner = false
+    statusMessage = 'Update installed successfully.'
   } catch (err) {
     errorMessage = `Update failed: ${err}`
     isUpdating = false
