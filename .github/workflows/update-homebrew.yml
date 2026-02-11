@@ -1,0 +1,186 @@
+name: Update Homebrew Tap
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          gh release download "v${VERSION}" -R yarka-guru/connection_app \
+            -p "RDS.SSM.Connect_${VERSION}_aarch64.dmg" \
+            -p "RDS.SSM.Connect_${VERSION}_x64.dmg" \
+            -p "RDS.SSM.Connect_${VERSION}_amd64.deb" \
+            -p "RDS.SSM.Connect_${VERSION}_arm64.deb"
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          echo "ARM_DMG_SHA=$(sha256sum RDS.SSM.Connect_${VERSION}_aarch64.dmg | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "X64_DMG_SHA=$(sha256sum RDS.SSM.Connect_${VERSION}_x64.dmg | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "AMD64_DEB_SHA=$(sha256sum RDS.SSM.Connect_${VERSION}_amd64.deb | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "ARM64_DEB_SHA=$(sha256sum RDS.SSM.Connect_${VERSION}_arm64.deb | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: yarka-guru/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Cask formula
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cat > homebrew-tap/Casks/rds-ssm-connect.rb << CASK
+          cask "rds-ssm-connect" do
+            version "${VERSION}"
+
+            on_arm do
+              sha256 "${{ steps.hashes.outputs.ARM_DMG_SHA }}"
+              url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/RDS.SSM.Connect_#{version}_aarch64.dmg"
+            end
+
+            on_intel do
+              sha256 "${{ steps.hashes.outputs.X64_DMG_SHA }}"
+              url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/RDS.SSM.Connect_#{version}_x64.dmg"
+            end
+
+            name "RDS SSM Connect"
+            desc "Secure database tunneling via AWS SSM"
+            homepage "https://github.com/yarka-guru/connection_app"
+
+            depends_on macos: ">= :monterey"
+            depends_on formula: "aws-vault"
+            depends_on formula: "awscli"
+
+            app "RDS SSM Connect.app"
+
+            caveats <<~EOS
+              You also need the AWS Session Manager Plugin:
+                brew install --cask session-manager-plugin
+
+              Ensure your AWS profiles are configured in ~/.aws/config
+            EOS
+
+            zap trash: [
+              "~/Library/Application Support/com.rds-ssm-connect.desktop",
+              "~/Library/Caches/com.rds-ssm-connect.desktop",
+            ]
+          end
+          CASK
+
+      - name: Update Linux formula
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cat > homebrew-tap/Formula/rds-ssm-connect.rb << FORMULA
+          class RdsSsmConnect < Formula
+            desc "Secure database tunneling via AWS SSM"
+            homepage "https://github.com/yarka-guru/connection_app"
+            version "${VERSION}"
+            license "MIT"
+
+            on_linux do
+              on_intel do
+                url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/RDS.SSM.Connect_#{version}_amd64.deb"
+                sha256 "${{ steps.hashes.outputs.AMD64_DEB_SHA }}"
+              end
+              on_arm do
+                url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/RDS.SSM.Connect_#{version}_arm64.deb"
+                sha256 "${{ steps.hashes.outputs.ARM64_DEB_SHA }}"
+              end
+            end
+
+            depends_on "awscli"
+            depends_on "aws-vault"
+
+            def install
+              system "ar", "x", cached_download
+              mkdir_p "extract"
+              system "tar", "xf", Dir["data.tar.*"].first, "-C", "extract"
+
+              bin.install Dir["extract/usr/bin/*"]
+              share.install Dir["extract/usr/share/*"] if Dir.exist?("extract/usr/share")
+            end
+
+            def caveats
+              <<~EOS
+                You also need the AWS Session Manager Plugin:
+                  https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
+
+                Ensure your AWS profiles are configured in ~/.aws/config
+
+                On macOS, install the desktop app instead:
+                  brew install --cask rds-ssm-connect
+              EOS
+            end
+          end
+          FORMULA
+
+      - name: Update README
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cat > homebrew-tap/README.md << 'README'
+          # Homebrew Tap for RDS SSM Connect
+
+          Secure database tunneling via AWS SSM.
+
+          ## Installation
+
+          ### macOS (Desktop App)
+
+          ```bash
+          brew tap yarka-guru/tap
+          brew install --cask rds-ssm-connect
+          ```
+
+          ### Linux (x86_64 / ARM64)
+
+          ```bash
+          brew tap yarka-guru/tap
+          brew install rds-ssm-connect
+          ```
+
+          ## Direct Downloads
+
+          Download installers directly from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases/latest):
+
+          | Platform | Format |
+          |----------|--------|
+          | macOS (Apple Silicon) | `.dmg` |
+          | macOS (Intel) | `.dmg` |
+          | Linux (x86_64) | `.deb`, `.rpm`, `.AppImage` |
+          | Linux (ARM64) | `.deb`, `.AppImage` |
+          | Windows | `.exe` (NSIS), `.msi` |
+
+          ## Updating
+
+          ```bash
+          brew update
+          brew upgrade --cask rds-ssm-connect  # macOS
+          brew upgrade rds-ssm-connect          # Linux
+          ```
+          README
+
+      - name: Commit and push
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update to v${{ steps.version.outputs.VERSION }}"
+            git push
+          fi
