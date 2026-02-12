@@ -14,7 +14,7 @@ import {
 } from './configLoader.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '1.7.15' }
+const packageJson = { name: 'rds_ssm_connect', version: '1.7.16' }
 
 const execAsync = promisify(exec)
 
@@ -950,10 +950,12 @@ async function main() {
     const portNumber = envPortMapping[matchedSuffix] || defaultPort
 
     // Get RDS credentials from Secrets Manager
+    console.log('\n⏳ Getting credentials...')
     const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?starts_with(Name, '${secretPrefix}')].Name | [0]" --output text`
     const SECRET_NAME = await runCommand(secretsListCommand)
 
     if (!SECRET_NAME || SECRET_NAME === 'None') {
+      console.error('❌ No secret found with prefix:', secretPrefix)
       return
     }
 
@@ -961,6 +963,7 @@ async function main() {
     const secretString = await runCommand(secretsGetCommand)
 
     if (!secretString) {
+      console.error('❌ Failed to retrieve secret value')
       return
     }
 
@@ -971,29 +974,41 @@ async function main() {
         throw new Error('Missing username or password in credentials')
       }
     } catch (_error) {
+      console.error('❌ Failed to parse credentials')
       return
     }
 
-    const _USERNAME = CREDENTIALS.username
-    const _PASSWORD = CREDENTIALS.password
-
     // Find bastion instance
+    console.log('⏳ Finding bastion instance...')
     const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
     const INSTANCE_ID = await runCommand(instanceIdCommand)
 
     if (!INSTANCE_ID || INSTANCE_ID === 'None') {
+      console.error('❌ No running bastion instance found')
       return
     }
 
     // Get RDS endpoint
+    console.log('⏳ Getting RDS endpoint...')
     const RDS_ENDPOINT = await getRdsEndpoint(ENV, projectConfig)
 
     if (!RDS_ENDPOINT || RDS_ENDPOINT === 'None') {
+      console.error('❌ Failed to find RDS endpoint')
       return
     }
 
     // Get RDS port (remote port)
     const rdsPort = await getRdsPort(ENV, projectConfig)
+
+    // Print connection details
+    console.log('\n✅ Connection details:')
+    console.log(`   Host:     localhost`)
+    console.log(`   Port:     ${portNumber}`)
+    console.log(`   Username: ${CREDENTIALS.username}`)
+    console.log(`   Password: ${CREDENTIALS.password}`)
+    console.log(`   Database: ${projectConfig.database}`)
+    console.log(`\n⏳ Starting port forwarding...`)
+    console.log('   Press Ctrl+C to disconnect\n')
 
     await startPortForwardingWithConfig(
       ENV,
