@@ -14,7 +14,7 @@ import {
 } from './configLoader.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '1.7.16' }
+const packageJson = { name: 'rds_ssm_connect', version: '1.7.17' }
 
 const execAsync = promisify(exec)
 
