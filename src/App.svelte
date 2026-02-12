@@ -57,6 +57,15 @@ function handleGlobalKeydown(e) {
     e.preventDefault()
     showSettings = !showSettings
   }
+  // Ctrl+Q (Linux) / Cmd+Q fallback → quit app
+  if ((e.metaKey || e.ctrlKey) && e.key === 'q') {
+    e.preventDefault()
+    if (activeConnections.length > 0) {
+      showCloseConfirm = true
+    } else {
+      invoke?.('quit_app').catch(() => appWindow?.destroy())
+    }
+  }
 }
 
 onMount(() => {
@@ -103,11 +112,13 @@ async function initApp() {
     return
   }
 
-  // Intercept window close — prompt if there are active connections
+  // Intercept window close — prompt if active connections, otherwise quit cleanly
   unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
+    event.preventDefault()
     if (activeConnections.length > 0) {
-      event.preventDefault()
       showCloseConfirm = true
+    } else {
+      try { await invoke('quit_app') } catch (_err) { appWindow?.destroy() }
     }
   })
 
