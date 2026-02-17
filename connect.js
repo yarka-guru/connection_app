@@ -505,12 +505,12 @@ function getLocalPort(ENV, projectConfig) {
 async function getConnectionCredentials(ENV, projectConfig) {
   const { region, secretPrefix, database } = projectConfig
 
-  const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?starts_with(Name, '${secretPrefix}')].Name | [0]" --output text`
+  const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?contains(Name, '${secretPrefix}')].Name | [0]" --output text`
   const SECRET_NAME = await runCommand(secretsListCommand)
 
   if (!SECRET_NAME || SECRET_NAME === 'None') {
     throw new Error(
-      `No secret found with name starting with '${secretPrefix}'.`,
+      `No secret found with name containing '${secretPrefix}'.`,
     )
   }
 
@@ -985,7 +985,7 @@ async function main() {
 
     // Get RDS credentials from Secrets Manager
     console.log('\n⏳ Getting credentials...')
-    const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?starts_with(Name, '${secretPrefix}')].Name | [0]" --output text`
+    const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?contains(Name, '${secretPrefix}')].Name | [0]" --output text`
     const SECRET_NAME = await runCommand(secretsListCommand)
 
     if (!SECRET_NAME || SECRET_NAME === 'None') {
