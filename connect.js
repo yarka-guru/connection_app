@@ -14,7 +14,7 @@ import {
 } from './configLoader.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '1.7.17' }
+const packageJson = { name: 'rds_ssm_connect', version: '1.8.0' }
 
 const execAsync = promisify(exec)
 
@@ -422,6 +422,15 @@ async function _startPortForwarding(
   )
 }
 
+// Validation patterns for security
+const PROFILE_SAFE_PATTERN = /^[a-zA-Z0-9._-]+$/
+const INSTANCE_ID_PATTERN = /^i-[a-f0-9]{8,17}$/
+const HOSTNAME_PATTERN = /^[a-zA-Z0-9.-]+$/
+
+function getDefaultPortForEngine(projectConfig) {
+  return projectConfig.engine === 'mysql' ? '3306' : '5432'
+}
+
 async function getRdsEndpoint(ENV, projectConfig) {
   const { region, rdsType, rdsPattern } = projectConfig
 
@@ -438,13 +447,14 @@ async function getRdsEndpoint(ENV, projectConfig) {
 
 async function getRdsPort(ENV, projectConfig) {
   const { region, rdsType, rdsPattern } = projectConfig
+  const fallbackPort = getDefaultPortForEngine(projectConfig)
 
   if (rdsType === 'cluster') {
     const portCommand = `aws-vault exec ${ENV} -- aws rds describe-db-clusters --region ${region} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '${rdsPattern}')].Port | [0]" --output text`
-    return (await runCommand(portCommand)) || '5432'
+    return (await runCommand(portCommand)) || fallbackPort
   } else {
     const portCommand = `aws-vault exec ${ENV} -- aws rds describe-db-instances --region ${region} --query "DBInstances[?DBInstanceStatus=='available' && contains(DBInstanceIdentifier, '${rdsPattern}')].Endpoint.Port | [0]" --output text`
-    return (await runCommand(portCommand)) || '5432'
+    return (await runCommand(portCommand)) || fallbackPort
   }
 }
 
@@ -587,6 +597,10 @@ async function getProfilesForProjectKey(projectKey) {
 // Includes keepalive (prevents SSM idle timeout) and auto-reconnect
 // (transparently reconnects on the same port if session drops unexpectedly).
 async function connect(projectKey, profile, options = {}) {
+  if (!PROFILE_SAFE_PATTERN.test(profile)) {
+    throw new Error(`Invalid profile name: ${profile}`)
+  }
+
   const PROJECT_CONFIGS = await loadProjectConfigs()
   const projectConfig = PROJECT_CONFIGS[projectKey]
   if (!projectConfig) {
@@ -626,11 +640,19 @@ async function connect(projectKey, profile, options = {}) {
   emit('status', { message: 'Finding bastion instance...' })
   let currentInstanceId = await findBastionInstance(profile, region)
 
+  if (!INSTANCE_ID_PATTERN.test(currentInstanceId)) {
+    throw new Error(`Invalid instance ID format: ${currentInstanceId}`)
+  }
+
   emit('status', { message: 'Getting RDS endpoint...' })
   let currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
 
   if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
     throw new Error('Failed to find the RDS endpoint.')
+  }
+
+  if (!HOSTNAME_PATTERN.test(currentRdsEndpoint)) {
+    throw new Error(`Invalid RDS endpoint format: ${currentRdsEndpoint}`)
   }
 
   emit('status', { message: 'Getting RDS port...' })
@@ -813,6 +835,12 @@ async function main() {
           choices: ['cluster', 'instance'],
         },
         {
+          type: 'select',
+          name: 'engine',
+          message: 'Database engine:',
+          choices: ['postgres', 'mysql'],
+        },
+        {
           type: 'input',
           name: 'rdsPattern',
           message: 'RDS identifier pattern:',
@@ -827,7 +855,7 @@ async function main() {
           type: 'input',
           name: 'defaultPort',
           message: 'Default local port:',
-          default: '5432',
+          default: (ctx) => ctx.engine === 'mysql' ? '3306' : '5432',
         },
       ])
 
@@ -855,6 +883,7 @@ async function main() {
         database: answers.database,
         secretPrefix: answers.secretPrefix,
         rdsType: answers.rdsType,
+        engine: answers.engine,
         rdsPattern: answers.rdsPattern,
         profileFilter: answers.profileFilter || null,
         envPortMapping: envPortMappingInput,
@@ -940,6 +969,11 @@ async function main() {
 
     const ENV = envAnswer.ENV
 
+    if (!PROFILE_SAFE_PATTERN.test(ENV)) {
+      console.error('❌ Invalid profile name:', ENV)
+      return
+    }
+
     // Determine local port number
     const allEnvSuffixes = Object.keys(envPortMapping).sort(
       (a, b) => b.length - a.length,
@@ -988,12 +1022,22 @@ async function main() {
       return
     }
 
+    if (!INSTANCE_ID_PATTERN.test(INSTANCE_ID)) {
+      console.error('❌ Invalid instance ID format:', INSTANCE_ID)
+      return
+    }
+
     // Get RDS endpoint
     console.log('⏳ Getting RDS endpoint...')
     const RDS_ENDPOINT = await getRdsEndpoint(ENV, projectConfig)
 
     if (!RDS_ENDPOINT || RDS_ENDPOINT === 'None') {
       console.error('❌ Failed to find RDS endpoint')
+      return
+    }
+
+    if (!HOSTNAME_PATTERN.test(RDS_ENDPOINT)) {
+      console.error('❌ Invalid RDS endpoint format:', RDS_ENDPOINT)
       return
     }
 
@@ -1045,6 +1089,7 @@ export {
   findBastionInstance,
   getRdsEndpoint,
   getRdsPort,
+  getDefaultPortForEngine,
   getLocalPort,
   connect,
   ipcEmitter,

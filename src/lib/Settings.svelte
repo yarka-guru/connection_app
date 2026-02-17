@@ -26,6 +26,7 @@ let projectRegion = $state('us-east-1')
 let projectDatabase = $state('')
 let projectSecretPrefix = $state('')
 let projectRdsType = $state('cluster')
+let projectEngine = $state('postgres')
 let projectRdsPattern = $state('')
 let projectProfileFilter = $state('')
 let projectDefaultPort = $state('5432')
@@ -162,6 +163,11 @@ async function saveRawConfig() {
 
 // ---- Project config functions ----
 
+function handleEngineChange(e) {
+  projectEngine = e.target.value
+  projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432'
+}
+
 function openAddProject() {
   editingProject = { isNew: true }
   projectKey = ''
@@ -170,6 +176,7 @@ function openAddProject() {
   projectDatabase = ''
   projectSecretPrefix = 'rds!cluster'
   projectRdsType = 'cluster'
+  projectEngine = 'postgres'
   projectRdsPattern = ''
   projectProfileFilter = ''
   projectDefaultPort = '5432'
@@ -184,6 +191,7 @@ function openEditProject(key, config) {
   projectDatabase = config.database
   projectSecretPrefix = config.secretPrefix
   projectRdsType = config.rdsType
+  projectEngine = config.engine || 'postgres'
   projectRdsPattern = config.rdsPattern
   projectProfileFilter = config.profileFilter || ''
   projectDefaultPort = config.defaultPort
@@ -226,6 +234,7 @@ async function saveProject() {
     database: projectDatabase.trim(),
     secretPrefix: projectSecretPrefix.trim(),
     rdsType: projectRdsType,
+    engine: projectEngine,
     rdsPattern: projectRdsPattern.trim(),
     profileFilter: projectProfileFilter.trim() || null,
     envPortMapping,
@@ -393,6 +402,7 @@ onDestroy(() => {
                     <div class="profile-details">
                       <span class="detail">{config.region}</span>
                       <span class="detail">{config.rdsType}</span>
+                      <span class="detail">{config.engine || 'postgres'}</span>
                       <span class="detail">{config.database}</span>
                       <span class="detail">{Object.keys(config.envPortMapping || {}).length} port mappings</span>
                     </div>
@@ -578,9 +588,17 @@ onDestroy(() => {
               </select>
             </div>
             <div class="form-group">
-              <label for="project-rds-pattern">RDS Pattern</label>
-              <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
+              <label for="project-engine">Engine</label>
+              <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
+                <option value="postgres">PostgreSQL</option>
+                <option value="mysql">MySQL</option>
+              </select>
             </div>
+          </div>
+
+          <div class="form-group">
+            <label for="project-rds-pattern">RDS Pattern</label>
+            <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
           </div>
 
           <div class="form-row">

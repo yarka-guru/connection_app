@@ -146,5 +146,57 @@ describe('configLoader', () => {
       assert.equal(result.valid, false)
       assert.ok(result.errors.some((e) => e.includes('Port for "dev"')))
     })
+
+    // Engine validation tests
+    it('should accept config with engine=postgres', () => {
+      const result = validateProjectConfig({ ...validConfig, engine: 'postgres' })
+      assert.equal(result.valid, true)
+    })
+
+    it('should accept config with engine=mysql', () => {
+      const result = validateProjectConfig({ ...validConfig, engine: 'mysql' })
+      assert.equal(result.valid, true)
+    })
+
+    it('should accept config without engine field (backward compat)', () => {
+      const { engine: _, ...configWithoutEngine } = validConfig
+      const result = validateProjectConfig(configWithoutEngine)
+      assert.equal(result.valid, true)
+    })
+
+    it('should reject invalid engine value', () => {
+      const result = validateProjectConfig({ ...validConfig, engine: 'sqlite' })
+      assert.equal(result.valid, false)
+      assert.ok(result.errors.some((e) => e.includes('engine')))
+    })
+
+    // Shell-safe validation tests
+    it('should reject secretPrefix with shell metacharacters', () => {
+      const result = validateProjectConfig({ ...validConfig, secretPrefix: 'rds;rm -rf /' })
+      assert.equal(result.valid, false)
+      assert.ok(result.errors.some((e) => e.includes('secretPrefix')))
+    })
+
+    it('should reject rdsPattern with shell metacharacters', () => {
+      const result = validateProjectConfig({ ...validConfig, rdsPattern: '$(whoami)' })
+      assert.equal(result.valid, false)
+      assert.ok(result.errors.some((e) => e.includes('rdsPattern')))
+    })
+
+    it('should reject database with shell metacharacters', () => {
+      const result = validateProjectConfig({ ...validConfig, database: 'db&echo' })
+      assert.equal(result.valid, false)
+      assert.ok(result.errors.some((e) => e.includes('database')))
+    })
+
+    it('should accept safe special characters in fields', () => {
+      const result = validateProjectConfig({
+        ...validConfig,
+        secretPrefix: 'rds!cluster-my/prefix',
+        rdsPattern: 'my-rds_pattern.v2',
+        database: 'my_db.prod',
+      })
+      assert.equal(result.valid, true)
+    })
   })
 })

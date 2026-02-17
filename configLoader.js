@@ -50,8 +50,10 @@ const REQUIRED_FIELDS = [
 ]
 
 const VALID_RDS_TYPES = ['cluster', 'instance']
+const VALID_ENGINES = ['postgres', 'mysql']
 const REGION_PATTERN = /^[a-z]{2}(-[a-z]+-\d+)$/
 const PORT_PATTERN = /^\d+$/
+const SHELL_SAFE_PATTERN = /^[a-zA-Z0-9._!/-]+$/
 
 export function validateProjectConfig(config) {
   const errors = []
@@ -64,6 +66,16 @@ export function validateProjectConfig(config) {
 
   if (config.rdsType && !VALID_RDS_TYPES.includes(config.rdsType)) {
     errors.push(`rdsType must be one of: ${VALID_RDS_TYPES.join(', ')}`)
+  }
+
+  if (config.engine !== undefined && config.engine !== null && !VALID_ENGINES.includes(config.engine)) {
+    errors.push(`engine must be one of: ${VALID_ENGINES.join(', ')}`)
+  }
+
+  for (const field of ['secretPrefix', 'rdsPattern', 'database']) {
+    if (config[field] && !SHELL_SAFE_PATTERN.test(config[field])) {
+      errors.push(`${field} contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, and ! allowed)`)
+    }
   }
 
   if (config.region && !REGION_PATTERN.test(config.region)) {

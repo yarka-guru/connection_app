@@ -431,6 +431,8 @@ pub struct ProjectConfig {
     pub secret_prefix: String,
     #[serde(rename = "rdsType")]
     pub rds_type: String,
+    #[serde(default)]
+    pub engine: Option<String>,
     #[serde(rename = "rdsPattern")]
     pub rds_pattern: String,
     #[serde(rename = "profileFilter")]
