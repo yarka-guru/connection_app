@@ -135,10 +135,13 @@ function handleHeaderKeydown(e, connectionId) {
 
 <style>
   .active-connections-card {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(52, 211, 153, 0.2);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid rgba(16, 185, 129, 0.3);
     border-radius: 20px;
     padding: 24px;
+    box-shadow: var(--glass-inner-glow);
   }
 
   .card-header {
@@ -193,6 +196,10 @@ function handleHeaderKeydown(e, connectionId) {
   .btn-disconnect-all:hover {
     background: rgba(239, 68, 68, 0.15);
     border-color: rgba(239, 68, 68, 0.3);
+  }
+
+  .btn-disconnect-all:active {
+    transform: var(--press-scale);
   }
 
   .connections-list {

@@ -95,6 +95,16 @@ async function initApp() {
   loadingProjects = true
 
   try {
+    // Wait for Tauri IPC bridge before importing modules
+    await withTimeout(
+      new Promise((resolve) => {
+        if (window.__TAURI_INTERNALS__) return resolve()
+        const id = setInterval(() => {
+          if (window.__TAURI_INTERNALS__) { clearInterval(id); resolve() }
+        }, 50)
+      }),
+      5000,
+    )
     const [core, event, windowModule] = await withTimeout(
       Promise.all([
         import('@tauri-apps/api/core'),
@@ -672,6 +682,37 @@ const isAlreadySaved = $derived(
 </main>
 
 <style>
+  :global(:root) {
+    --glass-bg: rgba(255, 255, 255, 0.04);
+    --glass-bg-hover: rgba(255, 255, 255, 0.07);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-border-hover: rgba(255, 255, 255, 0.14);
+    --glass-blur: blur(16px) saturate(1.8);
+    --glass-blur-heavy: blur(32px) saturate(1.8);
+    --glass-inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    --press-scale: scale(0.97);
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.2s ease;
+  }
+
+  @media (prefers-reduced-transparency) {
+    :global(:root) {
+      --glass-bg: rgba(30, 30, 50, 0.95);
+      --glass-bg-hover: rgba(40, 40, 60, 0.95);
+      --glass-blur: none;
+      --glass-blur-heavy: none;
+    }
+  }
+
+  @media (prefers-reduced-motion) {
+    :global(:root) {
+      --press-scale: none;
+      --transition-fast: 0s;
+      --transition-normal: 0s;
+    }
+  }
+
   :global(*) {
     box-sizing: border-box;
   }
@@ -793,9 +834,12 @@ const isAlreadySaved = $derived(
     flex-direction: column;
     gap: 12px;
     padding: 16px;
-    background: rgba(251, 191, 36, 0.1);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border: 1px solid rgba(251, 191, 36, 0.2);
     border-radius: 12px;
+    box-shadow: var(--glass-inner-glow);
     animation: fadeIn 0.3s ease-out;
   }
 
@@ -847,6 +891,10 @@ const isAlreadySaved = $derived(
     background: #fcd34d;
   }
 
+  .btn-save:active {
+    transform: var(--press-scale);
+  }
+
   .btn-dismiss-save {
     padding: 6px 14px;
     font-size: 0.8rem;
@@ -869,9 +917,12 @@ const isAlreadySaved = $derived(
     align-items: flex-start;
     gap: 12px;
     padding: 16px;
-    background: rgba(239, 68, 68, 0.1);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border: 1px solid rgba(239, 68, 68, 0.2);
     border-radius: 16px;
+    box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
   }
 
@@ -965,6 +1016,10 @@ const isAlreadySaved = $derived(
     color: #a1a1aa;
   }
 
+  .settings-btn:active {
+    transform: var(--press-scale);
+  }
+
   .check-updates-btn {
     padding: 6px 12px;
     font-size: 0.7rem;
@@ -981,6 +1036,10 @@ const isAlreadySaved = $derived(
     background: rgba(255, 255, 255, 0.05);
     border-color: rgba(255, 255, 255, 0.12);
     color: #a1a1aa;
+  }
+
+  .check-updates-btn:active:not(:disabled) {
+    transform: var(--press-scale);
   }
 
   .check-updates-btn:disabled {

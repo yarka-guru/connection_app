@@ -656,8 +656,10 @@ onDestroy(() => {
   }
 
   .modal-content {
-    background: linear-gradient(145deg, #1a1a2e 0%, #16162a 100%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(26, 26, 46, 0.85);
+    -webkit-backdrop-filter: var(--glass-blur-heavy);
+    backdrop-filter: var(--glass-blur-heavy);
+    border: 1px solid var(--glass-border);
     border-radius: 20px;
     padding: 24px;
     max-width: 560px;
@@ -665,6 +667,7 @@ onDestroy(() => {
     max-height: 80vh;
     display: flex;
     flex-direction: column;
+    box-shadow: var(--glass-inner-glow), var(--glass-shadow);
     animation: slideUp 0.3s ease-out;
   }
 
@@ -726,6 +729,7 @@ onDestroy(() => {
 
   .tab:hover {
     color: #a1a1aa;
+    background: var(--glass-bg-hover);
   }
 
   .tab.active {
@@ -798,6 +802,10 @@ onDestroy(() => {
     background: rgba(99, 102, 241, 0.15);
   }
 
+  .btn-add:active {
+    transform: var(--press-scale);
+  }
+
   .empty-state {
     text-align: center;
     padding: 40px 20px;
@@ -820,8 +828,8 @@ onDestroy(() => {
   }
 
   .profile-card {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
     border-radius: 12px;
     padding: 14px;
   }
@@ -974,6 +982,10 @@ onDestroy(() => {
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
   }
 
+  .btn-save:active:not(:disabled) {
+    transform: var(--press-scale);
+  }
+
   .btn-save:disabled {
     opacity: 0.5;
     cursor: not-allowed;
@@ -991,12 +1003,15 @@ onDestroy(() => {
   }
 
   .edit-modal {
-    background: #1e1e32;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(30, 30, 50, 0.9);
+    -webkit-backdrop-filter: var(--glass-blur-heavy);
+    backdrop-filter: var(--glass-blur-heavy);
+    border: 1px solid var(--glass-border);
     border-radius: 16px;
     padding: 24px;
     width: 400px;
     max-width: 90%;
+    box-shadow: var(--glass-inner-glow), var(--glass-shadow);
   }
 
   .edit-modal.project-modal {
@@ -1179,5 +1194,9 @@ onDestroy(() => {
   .btn-cancel:hover {
     background: rgba(255, 255, 255, 0.05);
     color: #a1a1aa;
+  }
+
+  .btn-cancel:active {
+    transform: var(--press-scale);
   }
 </style>

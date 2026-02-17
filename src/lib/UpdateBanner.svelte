@@ -53,9 +53,12 @@ function handleDismiss() {
     align-items: center;
     gap: 12px;
     padding: 12px 16px;
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border: 1px solid rgba(99, 102, 241, 0.3);
     border-radius: 14px;
+    box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
   }
 
@@ -139,6 +142,10 @@ function handleDismiss() {
   .btn-install:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  }
+
+  .btn-install:active {
+    transform: var(--press-scale);
   }
 
   .btn-dismiss {

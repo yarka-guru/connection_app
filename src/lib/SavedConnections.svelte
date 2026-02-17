@@ -211,10 +211,13 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
 <style>
   .saved-connections-card {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
     border-radius: 20px;
     padding: 24px;
+    box-shadow: var(--glass-inner-glow);
   }
 
   .card-header {
@@ -381,6 +384,10 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .btn-connect:hover {
     background: rgba(52, 211, 153, 0.1);
     border-color: rgba(52, 211, 153, 0.3);
+  }
+
+  .btn-connect:active {
+    transform: var(--press-scale);
   }
 
   .btn-delete {

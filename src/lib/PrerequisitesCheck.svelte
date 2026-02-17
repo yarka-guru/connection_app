@@ -81,12 +81,15 @@ function handleKeydown(e) {
   }
 
   .modal-content {
-    background: linear-gradient(145deg, #1a1a2e 0%, #16162a 100%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(26, 26, 46, 0.85);
+    -webkit-backdrop-filter: var(--glass-blur-heavy);
+    backdrop-filter: var(--glass-blur-heavy);
+    border: 1px solid var(--glass-border);
     border-radius: 20px;
     padding: 28px;
     max-width: 440px;
     width: 100%;
+    box-shadow: var(--glass-inner-glow), var(--glass-shadow);
     animation: slideUp 0.3s ease-out;
   }
 
@@ -242,5 +245,9 @@ function handleKeydown(e) {
   .btn-continue:hover {
     background: rgba(255, 255, 255, 0.1);
     color: #e4e4e7;
+  }
+
+  .btn-continue:active {
+    transform: var(--press-scale);
   }
 </style>

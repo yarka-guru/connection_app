@@ -57,12 +57,15 @@ function handleKeydown(e) {
   }
 
   .confirm-dialog {
-    background: linear-gradient(145deg, #1a1a2e 0%, #16162a 100%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(26, 26, 46, 0.85);
+    -webkit-backdrop-filter: var(--glass-blur-heavy);
+    backdrop-filter: var(--glass-blur-heavy);
+    border: 1px solid var(--glass-border);
     border-radius: 16px;
     padding: 24px;
     max-width: 380px;
     width: 100%;
+    box-shadow: var(--glass-inner-glow), var(--glass-shadow);
     animation: slideUp 0.2s ease-out;
   }
 
@@ -108,6 +111,10 @@ function handleKeydown(e) {
     color: #a1a1aa;
   }
 
+  .btn-cancel:active {
+    transform: var(--press-scale);
+  }
+
   .btn-confirm {
     padding: 10px 18px;
     font-size: 0.875rem;
@@ -123,6 +130,10 @@ function handleKeydown(e) {
   .btn-confirm:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  }
+
+  .btn-confirm:active {
+    transform: var(--press-scale);
   }
 
   .btn-confirm.destructive {

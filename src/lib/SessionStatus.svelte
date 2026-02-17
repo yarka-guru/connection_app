@@ -60,8 +60,11 @@ const statusConfig = $derived(STATUS_CONFIGS[connectionStatus])
     justify-content: space-between;
     padding: 12px 16px;
     background: var(--status-bg);
+    -webkit-backdrop-filter: blur(12px) saturate(1.8);
+    backdrop-filter: blur(12px) saturate(1.8);
     border: 1px solid var(--status-border);
     border-radius: 12px;
+    box-shadow: var(--glass-inner-glow);
     transition: background-color 0.3s ease, border-color 0.3s ease;
   }
 
