@@ -14,7 +14,7 @@ import {
 } from './configLoader.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '1.8.1' }
+const packageJson = { name: 'rds_ssm_connect', version: '1.8.3' }
 
 const execAsync = promisify(exec)
 
@@ -28,8 +28,9 @@ const RETRY_CONFIG = {
   PORT_FORWARDING_MAX_RETRIES: 2,
   SSM_AGENT_READY_WAIT_MS: 10000,
   KEEPALIVE_INTERVAL_MS: 4 * 60 * 1000,
-  AUTO_RECONNECT_MAX_RETRIES: 50,
+  AUTO_RECONNECT_MAX_RETRIES: 3,
   AUTO_RECONNECT_DELAY_MS: 3000,
+  CREDENTIAL_CHECK_TIMEOUT_MS: 60000,
 }
 
 // Version check configuration
@@ -168,6 +169,21 @@ async function runCommand(command) {
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Pre-flight credential check. Uses a short timeout so that if aws-vault
+// needs to open a browser for SSO re-auth (which blocks indefinitely), the
+// command is killed before any browser tab appears.
+async function checkCredentialsValid(profile, region) {
+  try {
+    await execAsync(
+      `aws-vault exec ${profile} -- aws sts get-caller-identity --region ${region}`,
+      { timeout: RETRY_CONFIG.CREDENTIAL_CHECK_TIMEOUT_MS },
+    )
+    return { valid: true }
+  } catch (_error) {
+    return { valid: false }
+  }
 }
 
 // Keepalive: periodic TCP ping through the tunnel to prevent SSM idle timeout.
@@ -712,6 +728,18 @@ async function connect(projectKey, profile, options = {}) {
 
         if (manualDisconnect) break
 
+        // Verify credentials are still valid before retrying.
+        // Avoids opening browser SSO tabs when the user is away.
+        emit('status', { message: 'Checking credentials...' })
+        const credCheck = await checkCredentialsValid(profile, region)
+        if (!credCheck.valid) {
+          emit('status', {
+            message:
+              'AWS credentials expired. Please re-authenticate and reconnect.',
+          })
+          break
+        }
+
         // Re-discover infrastructure (bastion may have been replaced by ASG)
         emit('status', { message: 'Finding bastion instance...' })
         currentInstanceId = await findBastionInstance(profile, region)
@@ -743,6 +771,16 @@ async function connect(projectKey, profile, options = {}) {
         await sleep(RETRY_CONFIG.AUTO_RECONNECT_DELAY_MS * 2)
 
         if (manualDisconnect) break
+
+        // Verify credentials before retrying (same check as happy path)
+        const credCheckOnError = await checkCredentialsValid(profile, region)
+        if (!credCheckOnError.valid) {
+          emit('status', {
+            message:
+              'AWS credentials expired. Please re-authenticate and reconnect.',
+          })
+          break
+        }
 
         try {
           currentInstanceId = await findBastionInstance(profile, region)

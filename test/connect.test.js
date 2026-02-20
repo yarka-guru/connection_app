@@ -180,6 +180,8 @@ describe('Retry Configuration', () => {
       BASTION_WAIT_RETRY_DELAY_MS: 15000,
       PORT_FORWARDING_MAX_RETRIES: 2,
       SSM_AGENT_READY_WAIT_MS: 10000,
+      AUTO_RECONNECT_MAX_RETRIES: 3,
+      CREDENTIAL_CHECK_TIMEOUT_MS: 60000,
     }
 
     assert.ok(
@@ -197,6 +199,15 @@ describe('Retry Configuration', () => {
     assert.ok(
       RETRY_CONFIG.SSM_AGENT_READY_WAIT_MS > 0,
       'SSM wait should be positive',
+    )
+    assert.ok(
+      RETRY_CONFIG.AUTO_RECONNECT_MAX_RETRIES > 0 &&
+        RETRY_CONFIG.AUTO_RECONNECT_MAX_RETRIES <= 10,
+      'Auto-reconnect retries should be between 1 and 10',
+    )
+    assert.ok(
+      RETRY_CONFIG.CREDENTIAL_CHECK_TIMEOUT_MS >= 5000,
+      'Credential check timeout should be at least 5 seconds',
     )
   })
 })
