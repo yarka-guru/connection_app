@@ -84,6 +84,18 @@ async function checkForUpdates() {
 // Store active child processes for cleanup
 let activeChildProcesses = []
 
+// Copy text to system clipboard. Returns true on success.
+function copyToClipboard(text) {
+  try {
+    const cmd = process.platform === 'darwin' ? 'pbcopy' : process.platform === 'win32' ? 'clip' : 'xclip -selection clipboard'
+    const [bin, ...args] = cmd.split(' ')
+    const result = spawnSync(bin, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] })
+    return result.status === 0
+  } catch {
+    return false
+  }
+}
+
 // Recursively collect all descendant PIDs of a process via pgrep.
 function getDescendantPids(pid) {
   const descendants = []
@@ -1087,7 +1099,9 @@ async function main() {
     console.log(`   Host:     localhost`)
     console.log(`   Port:     ${portNumber}`)
     console.log(`   Username: ${CREDENTIALS.username}`)
-    console.log(`   Password: ${CREDENTIALS.password}`)
+    // Copy password to clipboard without logging it in clear text
+    const copied = copyToClipboard(CREDENTIALS.password)
+    console.log(`   Password: ${'*'.repeat(CREDENTIALS.password.length)}${copied ? ' (copied to clipboard)' : ''}`)
     console.log(`   Database: ${projectConfig.database}`)
     console.log(`\n⏳ Starting port forwarding...`)
     console.log('   Press Ctrl+C to disconnect\n')
