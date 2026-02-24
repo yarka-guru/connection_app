@@ -1100,8 +1100,10 @@ async function main() {
     console.log(`   Port:     ${portNumber}`)
     console.log(`   Username: ${CREDENTIALS.username}`)
     // Copy password to clipboard without logging it in clear text
-    const copied = copyToClipboard(CREDENTIALS.password)
-    console.log(`   Password: ${'*'.repeat(CREDENTIALS.password.length)}${copied ? ' (copied to clipboard)' : ''}`)
+    const pw = CREDENTIALS.password
+    const pwLen = pw.length
+    const copied = copyToClipboard(pw)
+    console.log(`   Password: ${'*'.repeat(pwLen)}${copied ? ' (copied to clipboard)' : ''}`)
     console.log(`   Database: ${projectConfig.database}`)
     console.log(`\n⏳ Starting port forwarding...`)
     console.log('   Press Ctrl+C to disconnect\n')
