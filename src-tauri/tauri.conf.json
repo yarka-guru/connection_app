@@ -36,7 +36,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/gui-adapter"
+      "binaries/gui-adapter",
+      "binaries/session-manager-plugin"
     ]
   },
   "plugins": {

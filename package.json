@@ -43,10 +43,12 @@
     "test": "node --test test/**/*.test.js",
     "dev:vite": "vite",
     "build:vite": "vite build",
-    "dev:gui": "npm run pkg:sidecar:dev && tauri dev",
-    "build:gui": "npm run pkg:sidecar && CI=true tauri build",
+    "dev:gui": "npm run pkg:sidecar:dev && npm run download:ssm-plugin:dev && tauri dev",
+    "build:gui": "npm run pkg:sidecar && npm run download:ssm-plugin && CI=true tauri build",
     "pkg:sidecar": "node scripts/pkg-sidecar.js",
     "pkg:sidecar:dev": "node scripts/pkg-sidecar-dev.js",
+    "download:ssm-plugin": "node scripts/download-ssm-plugin.js",
+    "download:ssm-plugin:dev": "node scripts/download-ssm-plugin.js --current-platform-only",
     "tauri": "tauri",
     "generate-icons": "node scripts/generate-icons.js"
   }

@@ -1,28 +1,39 @@
-import { execSync } from 'node:child_process'
-import { spawn } from 'node:child_process'
+import { execSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /**
  * Locates the session-manager-plugin binary on the system.
  *
  * Search order:
- *   1. PATH lookup via `which` (or `where` on Windows)
- *   2. Known platform-specific installation paths
- *   3. Bundled binary at <project-root>/bin/<platform>-<arch>/
+ *   1. Bundled alongside the app (Tauri externalBin — same dir as process.execPath)
+ *   2. SSM_PLUGIN_PATH environment variable (set by Tauri Rust backend)
+ *   3. System PATH via `which` / `where`
+ *   4. Known platform-specific installation paths
+ *   5. Legacy: project-root/bin/<platform>-<arch>/
  *
  * @returns {string|null} Absolute path to the binary, or null if not found.
  */
 export function findPluginBinary() {
-  // 1. Check PATH using which/where
+  // 1. Check alongside the running binary (Tauri puts all externalBin in same dir)
+  const appBundled = findInAppBundle()
+  if (appBundled) return appBundled
+
+  // 2. Check explicit env var (Tauri Rust backend can set this)
+  if (process.env.SSM_PLUGIN_PATH && isExecutable(process.env.SSM_PLUGIN_PATH)) {
+    return process.env.SSM_PLUGIN_PATH
+  }
+
+  // 3. Check system PATH
   const pathResult = findOnPath()
   if (pathResult) return pathResult
 
-  // 2. Check known platform-specific installation paths
+  // 4. Check known platform-specific installation paths
   const platformResult = findAtKnownPaths()
   if (platformResult) return platformResult
 
-  // 3. Check for bundled binary (future-proofing for Phase 4)
+  // 5. Check for bundled binary in project bin/ directory
   const bundledResult = findBundledBinary()
   if (bundledResult) return bundledResult
 
@@ -82,6 +93,27 @@ export function checkPluginVersion(pluginPath) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Checks for the plugin binary alongside the running executable.
+ * In a Tauri app, all externalBin entries are placed in the same directory
+ * as the sidecar binary (process.execPath).
+ */
+function findInAppBundle() {
+  const execDir = path.dirname(process.execPath)
+  const binaryName = process.platform === 'win32'
+    ? 'session-manager-plugin.exe'
+    : 'session-manager-plugin'
+
+  // Tauri names externalBin with target triple suffix at build time,
+  // but at runtime the binary is renamed to the base name.
+  const candidate = path.join(execDir, binaryName)
+  if (isExecutable(candidate)) {
+    return candidate
+  }
+
+  return null
+}
+
+/**
  * Attempts to locate the binary on PATH via `which` (Unix) or `where` (Windows).
  */
 function findOnPath() {
@@ -131,7 +163,6 @@ function findAtKnownPaths() {
 
 /**
  * Checks for a bundled binary at <project-root>/bin/<platform>-<arch>/.
- * Future-proofing for Phase 4 bundled distribution.
  */
 function findBundledBinary() {
   const platform = process.platform === 'win32' ? 'win32' : process.platform
@@ -140,8 +171,15 @@ function findBundledBinary() {
     ? 'session-manager-plugin.exe'
     : 'session-manager-plugin'
 
-  // Resolve project root relative to this file's location (src/)
-  const projectRoot = path.resolve(path.dirname(import.meta.url.replace('file://', '')), '..')
+  // Resolve project root relative to this file's location (src/).
+  // Uses fileURLToPath for correct handling across ESM, esbuild CJS, and pkg.
+  let projectRoot
+  try {
+    const thisDir = path.dirname(fileURLToPath(import.meta.url))
+    projectRoot = path.resolve(thisDir, '..')
+  } catch {
+    return null
+  }
   const candidate = path.join(projectRoot, 'bin', `${platform}-${arch}`, binaryName)
 
   if (isExecutable(candidate)) {
