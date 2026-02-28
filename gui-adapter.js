@@ -29,6 +29,7 @@ import {
   saveProjectConfig,
   validateProjectConfig,
 } from './configLoader.js'
+import { ensureSsoSession } from './src/sso-login.js'
 
 // Active connections Map - connectionId -> connection control object
 const activeConnections = new Map()
@@ -114,6 +115,23 @@ async function handleCommand(command) {
         if (allUsedPorts.has(portNum) || !(await isPortAvailable(portNum))) {
           sendResponse(id, 'error', {
             message: `Port ${portToUse} is not available. Close the application using it or change the port in project settings.`,
+          })
+          break
+        }
+
+        // SSO pre-flight: ensure SSO session is valid before connecting
+        try {
+          await ensureSsoSession(profile, {
+            onEvent: (event, data) => {
+              sendEvent(event, { ...data, connectionId })
+            },
+            onOpenUrl: (url) => {
+              sendEvent('sso-open-url', { url, connectionId })
+            },
+          })
+        } catch (ssoErr) {
+          sendResponse(id, 'error', {
+            message: `SSO login failed: ${ssoErr.message}`,
           })
           break
         }
@@ -237,6 +255,30 @@ async function handleCommand(command) {
         }
         await deleteProjectConfig(deleteKey)
         sendResponse(id, 'success', { message: 'Project config deleted' })
+        break
+      }
+
+      case 'sso-login': {
+        const { profile: ssoProfile } = params
+        if (!ssoProfile) {
+          sendResponse(id, 'error', { message: 'profile is required' })
+          break
+        }
+        try {
+          await ensureSsoSession(ssoProfile, {
+            onEvent: (event, data) => {
+              sendEvent(event, data)
+            },
+            onOpenUrl: (url) => {
+              sendEvent('sso-open-url', { url })
+            },
+          })
+          sendResponse(id, 'success', { message: 'SSO login successful' })
+        } catch (ssoErr) {
+          sendResponse(id, 'error', {
+            message: `SSO login failed: ${ssoErr.message}`,
+          })
+        }
         break
       }
 

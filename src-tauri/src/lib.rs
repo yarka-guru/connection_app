@@ -190,6 +190,14 @@ async fn ensure_sidecar(
                                     let _ = tx.send(json.clone());
                                 }
                             }
+                            // Intercept sso-open-url events: open the URL in the default browser
+                            if json.get("event") == Some(&serde_json::json!("sso-open-url")) {
+                                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                                    use tauri_plugin_opener::OpenerExt;
+                                    let _ = app_handle_clone.opener().open_url(url, None::<&str>);
+                                }
+                            }
+
                             // Forward all messages (responses + events) to the frontend
                             let _ = app_handle_clone.emit("sidecar-event", json);
                         }
@@ -599,6 +607,31 @@ async fn get_used_ports() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+async fn sso_login(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
+    profile: String,
+) -> Result<(), String> {
+    let response = send_command_and_wait(
+        &app_handle,
+        &state,
+        "sso-login",
+        serde_json::json!({ "profile": profile }),
+        600000, // 10 minutes for SSO authorization
+    )
+    .await?;
+
+    if response.get("type") == Some(&serde_json::json!("error")) {
+        return Err(response["message"]
+            .as_str()
+            .unwrap_or("SSO login failed")
+            .to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn connect(
     app_handle: AppHandle,
     state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
@@ -614,6 +647,7 @@ async fn connect(
         guard.values().map(|c| c.local_port.clone()).collect()
     };
 
+    // 720s timeout: up to 600s for SSO login + 120s for connection
     let response = send_command_and_wait(
         &app_handle,
         &state,
@@ -624,7 +658,7 @@ async fn connect(
             "localPort": local_port,
             "usedPorts": used_ports
         }),
-        120000,
+        720000,
     )
     .await?;
 
@@ -822,6 +856,7 @@ async fn install_update(app_handle: AppHandle) -> Result<(), String> {
 
     app_handle.restart();
 
+    #[allow(unreachable_code)]
     Ok(())
 }
 
@@ -925,19 +960,6 @@ async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
                 }
             }
             None
-        }
-
-        // OS-agnostic install command helper
-        fn install_command_for(macos_cmd: &str, _linux_hint: &str) -> Option<String> {
-            if cfg!(target_os = "macos") {
-                Some(macos_cmd.to_string())
-            } else if cfg!(target_os = "linux") {
-                Some(_linux_hint.to_string())
-            } else if cfg!(target_os = "windows") {
-                None // Windows users should follow the install URL
-            } else {
-                None
-            }
         }
 
         let mut prerequisites = Vec::new();
@@ -1310,6 +1332,7 @@ pub fn run() {
             // Connection commands
             list_projects,
             list_profiles,
+            sso_login,
             connect,
             disconnect,
             disconnect_all,

@@ -133,6 +133,31 @@ function defaultMfaPrompt(serialArn) {
   });
 }
 
+/**
+ * Extract SSO config for a profile. Handles both legacy SSO (keys on profile)
+ * and new-style sso-session sections. Returns null for non-SSO profiles.
+ */
+export async function getSsoConfig(profile) {
+  const profiles = await parseAwsConfig()
+  const config = profiles[profile] || {}
+
+  let startUrl = config.sso_start_url
+  let region = config.sso_region
+  const accountId = config.sso_account_id || null
+  const roleName = config.sso_role_name || null
+
+  // New-style: profile references an [sso-session <name>] section
+  if (!startUrl && config.sso_session) {
+    const sessionConfig = profiles[`sso-session ${config.sso_session}`] || {}
+    startUrl = sessionConfig.sso_start_url
+    region = region || sessionConfig.sso_region
+  }
+
+  if (!startUrl || !region) return null
+
+  return { startUrl, region, accountId, roleName }
+}
+
 export function resolveCredentials(profile, options = {}) {
   const mfaCodeProvider = options.mfaPrompt || defaultMfaPrompt;
 

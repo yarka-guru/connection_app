@@ -135,7 +135,11 @@ async function initApp() {
   // Set up sidecar listener (non-blocking)
   listen('sidecar-event', (ev) => {
     const data = ev.payload
-    if (data.event === 'status') {
+    if (data.event === 'sso-status') {
+      statusMessage = data.message
+    } else if (data.event === 'sso-open-url') {
+      statusMessage = 'Waiting for SSO authorization in browser...'
+    } else if (data.event === 'status') {
       statusMessage = data.message
     } else if (data.event === 'credentials') {
       // Credentials are now part of connection info, handled via activeConnections
