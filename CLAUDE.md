@@ -38,7 +38,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `plugin-resolver.js` - Locates session-manager-plugin binary
 
 ### Tauri Desktop App
-- `src-tauri/src/lib.rs` - Tauri commands (connect, disconnect, saved connections CRUD, project config CRUD, AWS profile CRUD, updates, prerequisites check)
+- `src-tauri/src/lib.rs` - Tauri commands (connect, disconnect, saved connections CRUD, project config CRUD, AWS profile CRUD, updates)
 - `src-tauri/tauri.conf.json` - App config, plugins, window settings, bundling
 - Session Manager Plugin is bundled as an external binary
 
@@ -49,7 +49,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `lib/SavedConnections.svelte` - Bookmarked connections list
 - `lib/Settings.svelte` - Project management + AWS profile CRUD + raw config editor
 - `lib/SessionStatus.svelte` - Connection status indicator
-- `lib/PrerequisitesCheck.svelte` - Missing dependency warnings
 - `lib/UpdateBanner.svelte` - In-app update notification
 - `lib/CopyButton.svelte` - Reusable copy-to-clipboard with feedback
 - `lib/ConfirmDialog.svelte` - Reusable confirmation modal

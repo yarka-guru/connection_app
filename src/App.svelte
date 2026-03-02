@@ -5,7 +5,6 @@ import SavedConnections from './lib/SavedConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
 import UpdateBanner from './lib/UpdateBanner.svelte'
-import PrerequisitesCheck from './lib/PrerequisitesCheck.svelte'
 import Settings from './lib/Settings.svelte'
 import ConfirmDialog from './lib/ConfirmDialog.svelte'
 
@@ -36,9 +35,6 @@ let showCloseConfirm = $state(false)
 let isCheckingUpdates = $state(false)
 let updateCheckMessage = $state('')
 
-// Prerequisites and Settings
-let showPrerequisites = $state(false)
-let prerequisitesData = $state([])
 let showSettings = $state(false)
 
 let invoke = null
@@ -185,9 +181,8 @@ async function initApp() {
     loadingProjects = false
   }
 
-  // Non-blocking checks
+  // Non-blocking update check
   checkForUpdates()
-  checkPrerequisites()
 }
 
 function retryInit() {
@@ -243,22 +238,6 @@ async function checkForUpdates() {
   } finally {
     isCheckingUpdates = false
   }
-}
-
-async function checkPrerequisites() {
-  try {
-    const result = await invoke('check_prerequisites')
-    if (!result.allInstalled) {
-      prerequisitesData = result.prerequisites
-      showPrerequisites = true
-    }
-  } catch (_err) {}
-}
-
-async function openUrl(url) {
-  try {
-    await invoke('open_url', { url })
-  } catch (_err) {}
 }
 
 async function loadProfiles() {
@@ -664,14 +643,6 @@ const isAlreadySaved = $derived(
         destructive={true}
         onConfirm={confirmClose}
         onCancel={cancelClose}
-      />
-    {/if}
-
-    {#if showPrerequisites}
-      <PrerequisitesCheck
-        prerequisites={prerequisitesData}
-        onDismiss={() => showPrerequisites = false}
-        onOpenUrl={openUrl}
       />
     {/if}
 

@@ -12,7 +12,6 @@ Secure database tunneling to AWS RDS through SSM port forwarding via bastion hos
 - **SSO support** — handles AWS SSO (OIDC device authorization) with automatic browser launch
 - **Keepalive** — periodic TCP pings prevent SSM idle timeout
 - **In-app updates** — checks GitHub releases, downloads and installs signed updates
-- **Prerequisites validation** — detects missing dependencies on launch
 - **Keyboard shortcuts** — `Cmd/Ctrl + ,` for settings
 - **Accessible** — ARIA labels, focus trapping, keyboard navigation, screen reader support
 
@@ -216,7 +215,6 @@ src/
     ActiveConnections.svelte  Live connection panels with credentials
     SessionStatus.svelte    Connection status indicator
     Settings.svelte       Project management + AWS profile CRUD + raw config editor
-    PrerequisitesCheck.svelte  Missing dependency warnings
     UpdateBanner.svelte   In-app update notification
 ```
 
