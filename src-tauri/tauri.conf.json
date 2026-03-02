@@ -35,10 +35,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/gui-adapter",
-      "binaries/session-manager-plugin"
-    ]
+    "externalBin": [],
+    "macOS": {
+      "entitlements": "./Entitlements.plist"
+    }
   },
   "plugins": {
     "shell": {

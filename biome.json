@@ -41,7 +41,7 @@
   },
   "overrides": [
     {
-      "includes": ["scripts/**", "connect.js", "gui-adapter.js", "test/**"],
+      "includes": ["scripts/**"],
       "linter": {
         "rules": {
           "suspicious": {

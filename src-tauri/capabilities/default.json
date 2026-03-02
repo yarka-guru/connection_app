@@ -5,26 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:allow-spawn",
-    "shell:allow-execute",
-    "shell:allow-open",
     "store:default",
     "opener:default",
     "updater:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "binaries/gui-adapter",
-          "sidecar": true,
-          "args": true
-        },
-        {
-          "name": "binaries/session-manager-plugin",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    }
+    "dialog:default"
   ]
 }

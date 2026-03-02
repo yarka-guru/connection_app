@@ -36,6 +36,12 @@ let isCheckingUpdates = $state(false)
 let updateCheckMessage = $state('')
 
 let showSettings = $state(false)
+let showSetupScreen = $state(false)
+let setupError = $state('')
+let isGrantingAccess = $state(false)
+let showMigrationOffer = $state(false)
+let isImporting = $state(false)
+let migrationResult = $state('')
 
 let invoke = null
 let listen = null
@@ -43,7 +49,11 @@ let appWindow = null
 
 // Cleanup references
 let cancelUpdateMsgTimeout = null
-let unlistenSidecar = null
+let unlistenSsoStatus = null
+let unlistenSsoOpenUrl = null
+let unlistenStatus = null
+let unlistenDisconnected = null
+let unlistenConnectionError = null
 let unlistenCloseRequested = null
 
 // Global keyboard shortcuts
@@ -118,6 +128,18 @@ async function initApp() {
     return
   }
 
+  // Check sandbox status — if sandboxed and no AWS access, show setup screen
+  try {
+    const sandboxStatus = await invoke('get_sandbox_status')
+    if (sandboxStatus.isSandboxed && !sandboxStatus.hasAwsAccess) {
+      showSetupScreen = true
+      loadingProjects = false
+      return
+    }
+  } catch (_err) {
+    // Non-fatal: if check fails, continue normally (not sandboxed)
+  }
+
   // Intercept window close — prompt if active connections, otherwise quit cleanly
   unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
     event.preventDefault()
@@ -128,34 +150,37 @@ async function initApp() {
     }
   })
 
-  // Set up sidecar listener (non-blocking)
-  listen('sidecar-event', (ev) => {
-    const data = ev.payload
-    if (data.event === 'sso-status') {
-      statusMessage = data.message
-    } else if (data.event === 'sso-open-url') {
-      statusMessage = 'Waiting for SSO authorization in browser...'
-    } else if (data.event === 'status') {
-      statusMessage = data.message
-    } else if (data.event === 'credentials') {
-      // Credentials are now part of connection info, handled via activeConnections
-    } else if (data.event === 'disconnected') {
-      const { connectionId } = data
-      if (connectionId) {
-        activeConnections = activeConnections.filter(
-          (c) => c.id !== connectionId,
-        )
-      }
-      if (activeConnections.length === 0) {
-        connectionStatus = 'disconnected'
-        statusMessage = ''
-      }
-      connectingId = null
-    } else if (data.event === 'error') {
-      errorMessage = data.message
-      connectingId = null
+  // Set up named event listeners (direct from Rust backend)
+  listen('sso-status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenSsoStatus = fn })
+
+  listen('sso-open-url', (ev) => {
+    statusMessage = 'Waiting for SSO authorization in browser...'
+  }).then((fn) => { unlistenSsoOpenUrl = fn })
+
+  listen('status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenStatus = fn })
+
+  listen('disconnected', (ev) => {
+    const { connectionId } = ev.payload
+    if (connectionId) {
+      activeConnections = activeConnections.filter(
+        (c) => c.id !== connectionId,
+      )
     }
-  }).then((fn) => { unlistenSidecar = fn })
+    if (activeConnections.length === 0) {
+      connectionStatus = 'disconnected'
+      statusMessage = ''
+    }
+    connectingId = null
+  }).then((fn) => { unlistenDisconnected = fn })
+
+  listen('connection-error', (ev) => {
+    errorMessage = ev.payload.message
+    connectingId = null
+  }).then((fn) => { unlistenConnectionError = fn })
 
   // Load saved data + version with timeout
   try {
@@ -189,9 +214,142 @@ function retryInit() {
   initApp()
 }
 
+async function handleGrantAccess() {
+  if (isGrantingAccess) return
+  isGrantingAccess = true
+  setupError = ''
+
+  try {
+    await invoke('grant_aws_access')
+    // Check if migration is available before continuing
+    try {
+      const migrationAvailable = await invoke('check_migration_available')
+      if (migrationAvailable) {
+        showMigrationOffer = true
+        isGrantingAccess = false
+        return
+      }
+    } catch (_err) {
+      // Non-fatal: skip migration check
+    }
+    showSetupScreen = false
+    await continueAfterSetup()
+  } catch (err) {
+    setupError = `${err}`
+  } finally {
+    isGrantingAccess = false
+  }
+}
+
+async function handleImportProjects() {
+  if (isImporting) return
+  isImporting = true
+  migrationResult = ''
+
+  try {
+    const count = await invoke('import_projects_file')
+    migrationResult = `Imported ${count} project${count !== 1 ? 's' : ''}`
+    await finishSetup()
+  } catch (err) {
+    if (`${err}`.includes('cancelled')) {
+      migrationResult = 'Import cancelled'
+    } else {
+      migrationResult = `Import failed: ${err}`
+    }
+  } finally {
+    isImporting = false
+  }
+}
+
+async function skipMigration() {
+  await finishSetup()
+}
+
+async function finishSetup() {
+  showSetupScreen = false
+  showMigrationOffer = false
+  await continueAfterSetup()
+}
+
+async function continueAfterSetup() {
+  loadingProjects = true
+
+  // Set up close handler
+  unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
+    event.preventDefault()
+    if (activeConnections.length > 0) {
+      showCloseConfirm = true
+    } else {
+      try { await invoke('quit_app') } catch (_err) { appWindow?.destroy() }
+    }
+  })
+
+  // Set up event listeners
+  listen('sso-status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenSsoStatus = fn })
+
+  listen('sso-open-url', (ev) => {
+    statusMessage = 'Waiting for SSO authorization in browser...'
+  }).then((fn) => { unlistenSsoOpenUrl = fn })
+
+  listen('status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenStatus = fn })
+
+  listen('disconnected', (ev) => {
+    const { connectionId } = ev.payload
+    if (connectionId) {
+      activeConnections = activeConnections.filter(
+        (c) => c.id !== connectionId,
+      )
+    }
+    if (activeConnections.length === 0) {
+      connectionStatus = 'disconnected'
+      statusMessage = ''
+    }
+    connectingId = null
+  }).then((fn) => { unlistenDisconnected = fn })
+
+  listen('connection-error', (ev) => {
+    errorMessage = ev.payload.message
+    connectingId = null
+  }).then((fn) => { unlistenConnectionError = fn })
+
+  // Load saved data + version
+  try {
+    const [savedResult, versionResult] = await withTimeout(
+      Promise.all([
+        invoke('load_saved_connections'),
+        invoke('get_current_version'),
+      ]),
+      5000,
+    )
+    savedConnections = savedResult
+    currentVersion = versionResult
+  } catch (_err) {
+    // Non-fatal
+  }
+
+  // Load projects
+  try {
+    projects = await invoke('list_projects')
+  } catch (err) {
+    errorMessage = `Failed to load projects: ${err}`
+  } finally {
+    loadingProjects = false
+  }
+
+  checkForUpdates()
+}
+
 onDestroy(() => {
   cancelUpdateMsgTimeout?.()
-  unlistenSidecar?.()
+  unlistenSsoStatus?.()
+  unlistenSsoOpenUrl?.()
+  unlistenStatus?.()
+  unlistenDisconnected?.()
+  unlistenConnectionError?.()
   unlistenCloseRequested?.()
 })
 
@@ -499,6 +657,66 @@ const isAlreadySaved = $derived(
         <p class="init-error-text">{errorMessage}</p>
         <button class="btn-retry" onclick={retryInit}>Retry</button>
       {/if}
+    </div>
+  {:else if showSetupScreen}
+    <div class="setup-screen">
+      <div class="setup-card">
+        <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
+          <rect width="32" height="32" rx="8" fill="url(#gradient-setup)"/>
+          <path d="M10 12h12M10 16h12M10 20h8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="24" cy="20" r="3" fill="white"/>
+          <defs>
+            <linearGradient id="gradient-setup" x1="0" y1="0" x2="32" y2="32">
+              <stop stop-color="#6366f1"/>
+              <stop offset="1" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        {#if showMigrationOffer}
+          <h2 class="setup-title">Import Projects</h2>
+          <p class="setup-description">
+            Would you like to import projects from an existing <code>projects.json</code> file?
+          </p>
+          <p class="setup-hint">
+            If you previously used RDS Connect, you can import your projects from <code>~/.rds-ssm-connect/projects.json</code>.
+          </p>
+          <div class="setup-actions">
+            <button class="btn-grant" onclick={handleImportProjects} disabled={isImporting}>
+              {#if isImporting}
+                <span class="btn-spinner"></span>
+                Importing...
+              {:else}
+                Import Projects
+              {/if}
+            </button>
+            <button class="btn-skip" onclick={skipMigration} disabled={isImporting}>
+              Skip
+            </button>
+          </div>
+          {#if migrationResult}
+            <p class={migrationResult.startsWith('Import failed') ? 'setup-error' : 'setup-success'}>{migrationResult}</p>
+          {/if}
+        {:else}
+          <h2 class="setup-title">AWS Directory Access</h2>
+          <p class="setup-description">
+            RDS Connect needs access to your <code>~/.aws</code> directory to read AWS profiles and SSO credentials.
+          </p>
+          <p class="setup-hint">
+            You'll be asked to select your <code>~/.aws</code> folder once. Access is remembered for future launches.
+          </p>
+          <button class="btn-grant" onclick={handleGrantAccess} disabled={isGrantingAccess}>
+            {#if isGrantingAccess}
+              <span class="btn-spinner"></span>
+              Granting access...
+            {:else}
+              Grant Access
+            {/if}
+          </button>
+          {#if setupError}
+            <p class="setup-error">{setupError}</p>
+          {/if}
+        {/if}
+      </div>
     </div>
   {:else}
     <div class="app-container">
@@ -1037,5 +1255,146 @@ const isAlreadySaved = $derived(
     font-size: 0.75rem;
     color: #10b981;
     animation: fadeIn 0.3s ease-out;
+  }
+
+  .setup-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 48px);
+  }
+
+  .setup-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    max-width: 400px;
+    padding: 32px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: var(--glass-shadow), var(--glass-inner-glow);
+    text-align: center;
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  .setup-title {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #e4e4e7;
+  }
+
+  .setup-description {
+    margin: 0;
+    font-size: 0.9rem;
+    color: #9e9ea7;
+    line-height: 1.5;
+  }
+
+  .setup-description code,
+  .setup-hint code {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.85em;
+    color: #a5b4fc;
+    background: rgba(99, 102, 241, 0.15);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .setup-hint {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #71717a;
+    line-height: 1.5;
+  }
+
+  .btn-grant {
+    margin-top: 8px;
+    padding: 12px 32px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: white;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-grant:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+  }
+
+  .btn-grant:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .btn-grant:disabled {
+    opacity: 0.7;
+    cursor: wait;
+  }
+
+  .btn-grant .btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .setup-error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #fca5a5;
+    line-height: 1.5;
+    max-width: 100%;
+    word-break: break-word;
+  }
+
+  .setup-success {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #10b981;
+    line-height: 1.5;
+  }
+
+  .setup-actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 8px;
+  }
+
+  .btn-skip {
+    padding: 12px 24px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #71717a;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+  }
+
+  .btn-skip:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05);
+    color: #a1a1aa;
+  }
+
+  .btn-skip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
