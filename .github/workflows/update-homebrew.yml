@@ -64,15 +64,10 @@ jobs:
             homepage "https://github.com/yarka-guru/connection_app"
 
             depends_on macos: ">= :monterey"
-            depends_on formula: "aws-vault"
-            depends_on formula: "awscli"
 
             app "RDS SSM Connect.app"
 
             caveats <<~EOS
-              You also need the AWS Session Manager Plugin:
-                brew install --cask session-manager-plugin
-
               Ensure your AWS profiles are configured in ~/.aws/config
             EOS
 
@@ -104,9 +99,6 @@ jobs:
               end
             end
 
-            depends_on "awscli"
-            depends_on "aws-vault"
-
             def install
               system "ar", "x", cached_download
               mkdir_p "extract"
@@ -118,9 +110,6 @@ jobs:
 
             def caveats
               <<~EOS
-                You also need the AWS Session Manager Plugin:
-                  https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
-
                 Ensure your AWS profiles are configured in ~/.aws/config
 
                 On macOS, install the desktop app instead:
