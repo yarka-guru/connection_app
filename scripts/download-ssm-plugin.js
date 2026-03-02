@@ -216,6 +216,21 @@ function extractWindowsZip(archivePath, tmpDir) {
     }
   }
 
+  // The AWS Windows zip may contain a nested SessionManagerPlugin.zip — extract it
+  const innerZip = join(tmpDir, "SessionManagerPlugin.zip");
+  if (existsSync(innerZip)) {
+    const innerDir = join(tmpDir, "SessionManagerPlugin");
+    mkdirSync(innerDir, { recursive: true });
+    if (isWindows) {
+      execSync(
+        `powershell -Command "Expand-Archive -Force -Path '${innerZip}' -DestinationPath '${innerDir}'"`,
+        { stdio: "pipe" },
+      );
+    } else {
+      execSync(`unzip -o "${innerZip}" -d "${innerDir}"`, { stdio: "pipe" });
+    }
+  }
+
   // Search for the exe — could be in bin/ subdirectory or at root
   const candidates = [
     join(tmpDir, "bin", "session-manager-plugin.exe"),
