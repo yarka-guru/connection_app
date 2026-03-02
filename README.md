@@ -4,21 +4,25 @@ Secure database tunneling to AWS RDS through SSM port forwarding via bastion hos
 
 ## Features
 
-- **Multi-project support** — TLN (Aurora clusters, us-east-2) and Covered (RDS instances, us-west-1)
-- **Multiple simultaneous connections** with automatic port assignment
+- **User-configurable projects** — define any number of RDS projects (Aurora clusters or RDS instances, PostgreSQL or MySQL)
+- **Multiple simultaneous connections** with strict port availability checks
 - **Saved connections** — bookmark frequently used profiles with one-click connect
-- **Auto-reconnect** — handles `TargetNotConnected` errors by cycling bastion instances via ASG
+- **Auto-reconnect** — transparently reconnects on the same port if the session drops unexpectedly
+- **TargetNotConnected recovery** — cycles bastion instances via ASG when the SSM agent is disconnected
+- **SSO support** — handles AWS SSO (OIDC device authorization) with automatic browser launch
+- **Keepalive** — periodic TCP pings prevent SSM idle timeout
 - **In-app updates** — checks GitHub releases, downloads and installs signed updates
-- **Prerequisites validation** — detects missing `aws-vault` and AWS CLI on launch
+- **Prerequisites validation** — detects missing dependencies on launch
 - **Keyboard shortcuts** — `Cmd/Ctrl + ,` for settings
 - **Accessible** — ARIA labels, focus trapping, keyboard navigation, screen reader support
 
 ## Prerequisites
 
-- [aws-vault](https://github.com/99designs/aws-vault) — AWS credential management
 - [AWS CLI](https://aws.amazon.com/cli/) — AWS API access
 - [Node.js](https://nodejs.org/) 22+ (CLI only)
 - AWS profiles configured in `~/.aws/config`
+
+The desktop app bundles the Session Manager Plugin. For the CLI, install it separately: [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
 
 ## Installation
 
@@ -27,12 +31,6 @@ Secure database tunneling to AWS RDS through SSM port forwarding via bastion hos
 ```bash
 brew tap yarka-guru/tap
 brew install --cask rds-ssm-connect
-```
-
-This installs the desktop app along with `aws-vault` and `awscli` dependencies. You also need the [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html):
-
-```bash
-brew install --cask session-manager-plugin
 ```
 
 Or download the `.dmg` directly from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
@@ -47,14 +45,9 @@ Or download the `.dmg` directly from [GitHub Releases](https://github.com/yarka-
 echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
 eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 
-# Install the app (includes aws-vault and awscli as dependencies)
+# Install the app
 brew tap yarka-guru/tap
 brew install yarka-guru/tap/rds-ssm-connect
-
-# Install Session Manager Plugin (ARM64)
-curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_arm64/session-manager-plugin.deb" -o session-manager-plugin.deb
-sudo dpkg -i session-manager-plugin.deb
-# For x86_64, replace ubuntu_arm64 with ubuntu_64bit
 
 # Make brew tools visible to the desktop app
 echo 'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"' | sudo tee /etc/profile.d/linuxbrew.sh
@@ -64,41 +57,27 @@ echo 'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"' | sudo tee /etc/profil
 #### Option B: Direct .deb install
 
 ```bash
-# 1. Download and install the app
+# 1. Download and install the app (check GitHub Releases for the latest version)
 # ARM64:
-wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_1.7.5_arm64.deb
-sudo dpkg -i RDS.SSM.Connect_1.7.5_arm64.deb
+wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.1_arm64.deb
+sudo dpkg -i RDS.SSM.Connect_2.0.1_arm64.deb
 # x86_64:
-# wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_1.7.5_amd64.deb
-# sudo dpkg -i RDS.SSM.Connect_1.7.5_amd64.deb
+# wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.1_amd64.deb
+# sudo dpkg -i RDS.SSM.Connect_2.0.1_amd64.deb
 
-# 2. Install aws-vault
-# ARM64:
-wget https://github.com/99designs/aws-vault/releases/latest/download/aws-vault-linux-arm64 -O aws-vault
-# x86_64:
-# wget https://github.com/99designs/aws-vault/releases/latest/download/aws-vault-linux-amd64 -O aws-vault
-chmod +x aws-vault && sudo mv aws-vault /usr/local/bin/
-
-# 3. Install AWS CLI
+# 2. Install AWS CLI
 # ARM64:
 curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o awscliv2.zip
 # x86_64:
 # curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
 unzip awscliv2.zip && sudo ./aws/install
-
-# 4. Install Session Manager Plugin
-# ARM64:
-curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_arm64/session-manager-plugin.deb" -o session-manager-plugin.deb
-# x86_64:
-# curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o session-manager-plugin.deb
-sudo dpkg -i session-manager-plugin.deb
 ```
 
 ### Windows
 
 Download the `.msi` or `.exe` installer from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
 
-Prerequisites must be installed separately: [aws-vault](https://github.com/99designs/aws-vault), [AWS CLI](https://aws.amazon.com/cli/), [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+AWS CLI must be installed separately: [AWS CLI](https://aws.amazon.com/cli/).
 
 ### CLI (all platforms)
 
@@ -106,11 +85,15 @@ Prerequisites must be installed separately: [aws-vault](https://github.com/99des
 npm install -g rds_ssm_connect
 ```
 
+The CLI also requires the [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+
 ## Usage
 
 ### Desktop App
 
 Launch the app, select a project and environment, then click **Connect**. Connection credentials are displayed inline with one-click copy buttons. Save connections for quick access later.
+
+Manage projects and AWS profiles in **Settings** (`Cmd/Ctrl + ,`).
 
 ### CLI
 
@@ -118,43 +101,84 @@ Launch the app, select a project and environment, then click **Connect**. Connec
 rds_ssm_connect
 ```
 
-1. Select a project (TLN or Covered)
-2. Select an environment (AWS profile)
-3. The tool retrieves credentials from Secrets Manager, finds a bastion instance, and starts SSM port forwarding
-4. Use the displayed connection string with your database client (`psql`, pgAdmin, DBeaver, etc.)
+1. On first run with no projects configured, an interactive wizard walks you through creating one
+2. Select a project
+3. Select an environment (AWS profile)
+4. SSO session is validated automatically (opens browser if needed)
+5. The tool retrieves credentials from Secrets Manager, finds a bastion instance, and starts SSM port forwarding
+6. Use the displayed connection details with your database client (`psql`, `mysql`, pgAdmin, DBeaver, etc.)
 
 The tunnel stays open until you press `Ctrl+C`.
 
 ## How It Works
 
 1. Reads AWS profiles from `~/.aws/config`
-2. Filters profiles based on the selected project
-3. Queries AWS Secrets Manager for RDS credentials (project-specific prefix)
-4. Finds a running bastion instance (tagged `Name=*bastion*`)
-5. Gets the RDS endpoint (cluster or instance depending on project)
-6. Starts an SSM port forwarding session with the correct local port
-7. Displays connection details (host, port, username, password, database)
+2. Loads project configurations from `~/.rds-ssm-connect/projects.json`
+3. Filters profiles based on the selected project's `profileFilter`
+4. Ensures AWS SSO session is valid (OIDC device authorization if needed)
+5. Queries AWS Secrets Manager for RDS credentials (project-specific `secretPrefix`)
+6. Finds a running bastion instance (tagged `Name=*bastion*`)
+7. Gets the RDS endpoint (cluster or instance depending on project `rdsType`)
+8. Starts an SSM port forwarding session with the correct local/remote ports
+9. Displays connection details (host, port, username, password, database)
 
 ### Error Recovery
 
-When a bastion instance appears running but SSM agent is disconnected (`TargetNotConnected`, exit code 254):
+**TargetNotConnected** — when a bastion instance appears running but SSM agent is disconnected (exit code 254):
 
 1. Terminates the disconnected instance
 2. Waits for ASG to launch a replacement (up to 20 retries, 15s intervals)
 3. Verifies the SSM agent is online
 4. Retries port forwarding (up to 2 attempts)
 
+**Auto-reconnect** — when an established session drops unexpectedly (idle timeout, network issue):
+
+1. Verifies AWS credentials are still valid (avoids opening SSO tabs when user is away)
+2. Re-discovers infrastructure (bastion may have been replaced by ASG)
+3. Reconnects on the same local port (up to 3 attempts with 3s delay)
+
+**Keepalive** — periodic TCP pings every 4 minutes prevent SSM from timing out idle connections.
+
 ## Project Configuration
 
-| | TLN (EMR) | Covered Healthcare |
-|---|---|---|
-| Region | us-east-2 | us-west-1 |
-| Database | emr | covered_db |
-| RDS type | Aurora cluster | RDS instance |
-| Secret prefix | `rds!cluster` | `rds!db` |
-| Port range | 5432–5452 | 5460–5461 |
+Projects are stored in `~/.rds-ssm-connect/projects.json` and can be managed through the desktop app's Settings UI or the CLI's first-run wizard.
 
-Port assignments are based on environment suffix mappings defined in `envPortMapping.js`.
+Each project defines:
+
+| Field | Description | Example |
+|---|---|---|
+| `name` | Display name | `"My Project"` |
+| `region` | AWS region | `"us-east-2"` |
+| `database` | Database name | `"mydb"` |
+| `secretPrefix` | Secrets Manager prefix | `"rds!cluster"` |
+| `rdsType` | `"cluster"` or `"instance"` | `"cluster"` |
+| `engine` | `"postgres"` or `"mysql"` | `"postgres"` |
+| `rdsPattern` | RDS identifier pattern | `"my-app-rds-aurora"` |
+| `profileFilter` | AWS profile prefix filter (optional) | `"my-app"` |
+| `envPortMapping` | Environment suffix to local port mapping | `{"-staging": "5433"}` |
+| `defaultPort` | Fallback local port | `"5432"` |
+
+Example `projects.json`:
+
+```json
+{
+  "my-project": {
+    "name": "My Project",
+    "region": "us-east-2",
+    "database": "mydb",
+    "secretPrefix": "rds!cluster",
+    "rdsType": "cluster",
+    "engine": "postgres",
+    "rdsPattern": "my-app-rds-aurora",
+    "profileFilter": null,
+    "envPortMapping": {
+      "-prod": "5432",
+      "-staging": "5433"
+    },
+    "defaultPort": "5432"
+  }
+}
+```
 
 ## Development
 
@@ -177,11 +201,18 @@ npm run build:gui     # Build Tauri desktop app
 ### Architecture
 
 ```
-connect.js              CLI entry point (shebang, runs standalone)
+connect.js              CLI entry point + core connection logic
 gui-adapter.js          IPC bridge — JSON stdin/stdout protocol for Tauri sidecar
-envPortMapping.js       Multi-project configuration (regions, ports, patterns)
+configLoader.js         Project config CRUD (~/.rds-ssm-connect/projects.json)
+src/
+  aws-clients.js        AWS SDK client factory (STS, EC2, RDS, SSM, Secrets Manager)
+  aws-operations.js     AWS operations (find bastion, get endpoint, get credentials, etc.)
+  credential-resolver.js  AWS credential chain resolution (SSO, profiles)
+  sso-login.js          AWS SSO OIDC device authorization flow
+  plugin-resolver.js    Locates session-manager-plugin binary
 src-tauri/
-  src/lib.rs            Tauri commands (connect, disconnect, save, update, etc.)
+  src/lib.rs            Tauri commands (connect, disconnect, saved connections, project
+                        config CRUD, AWS profile CRUD, updates, prerequisites check)
   tauri.conf.json       App config, plugins, window settings, bundling
 src/
   App.svelte            Main app shell (Svelte 5 with runes)
@@ -193,7 +224,7 @@ src/
     SavedConnections.svelte  Bookmarked connections list
     ActiveConnections.svelte  Live connection panels with credentials
     SessionStatus.svelte    Connection status indicator
-    Settings.svelte       AWS profile management (CRUD + raw config editor)
+    Settings.svelte       Project management + AWS profile CRUD + raw config editor
     PrerequisitesCheck.svelte  Missing dependency warnings
     UpdateBanner.svelte   In-app update notification
 ```
@@ -203,7 +234,7 @@ src/
 - **Frontend**: Svelte 5 (runes), Vite
 - **Desktop**: Tauri v2 (Rust)
 - **Backend**: Node.js sidecar bundled with esbuild + pkg
-- **AWS SDK**: v3 (EC2, RDS, SSM, Secrets Manager)
+- **AWS SDK**: v3 (STS, EC2, RDS, SSM, Secrets Manager, SSO OIDC)
 - **Linter**: Biome
 
 ## Publishing
