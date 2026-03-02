@@ -14,9 +14,10 @@ import {
 import { createAwsClients, destroyAwsClients } from './src/aws-clients.js'
 import * as ops from './src/aws-operations.js'
 import { findPluginBinary, spawnPlugin } from './src/plugin-resolver.js'
+import { ensureSsoSession } from './src/sso-login.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '1.8.3' }
+const packageJson = { name: 'rds_ssm_connect', version: '2.0.0' }
 
 // Event emitter for IPC communication
 const ipcEmitter = new EventEmitter()
@@ -962,6 +963,20 @@ async function main() {
       allEnvSuffixes.find((suffix) => ENV === suffix)
     const portNumber = envPortMapping[matchedSuffix] || defaultPort
 
+    // Ensure SSO session is valid (if SSO profile)
+    await ensureSsoSession(ENV, {
+      onEvent: (_event, data) => {
+        if (data?.message) console.log(`\u23F3 ${data.message}`)
+      },
+      onOpenUrl: (url) => {
+        console.log(`\n\uD83C\uDF10 Open this URL in your browser to authorize:\n   ${url}\n`)
+        // Try to open browser automatically
+        const { platform } = process
+        const cmd = platform === 'darwin' ? 'open' : platform === 'win32' ? 'start' : 'xdg-open'
+        try { spawnSync(cmd, [url], { stdio: 'ignore' }) } catch {}
+      },
+    })
+
     // Create SDK clients ONCE for this CLI session
     const clients = createAwsClients(ENV, region)
 
@@ -1021,9 +1036,10 @@ async function main() {
     } finally {
       destroyAwsClients(clients)
     }
-  } catch (_error) {
+  } catch (error) {
+    console.error(`\n\u274C ${error.message || error}`)
     setImmediate(() => {
-      throw new Error('Forcing exit due to unhandled error')
+      process.exit(1)
     })
   }
 }
