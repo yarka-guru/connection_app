@@ -355,12 +355,25 @@ async function processTarget(target) {
 async function main() {
   const args = process.argv.slice(2);
   const currentPlatformOnly = args.includes("--current-platform-only");
+  const tripleIndex = args.indexOf("--triple");
+  const tripleArg = tripleIndex !== -1 ? args[tripleIndex + 1] : null;
 
   // Ensure output directory exists
   mkdirSync(BINARIES_DIR, { recursive: true });
 
   let targets;
-  if (currentPlatformOnly) {
+  if (tripleArg) {
+    targets = TARGETS.filter((t) => t.triple === tripleArg);
+    if (targets.length === 0) {
+      console.error(`Error: Unknown triple "${tripleArg}".`);
+      console.error("Available triples:");
+      for (const t of TARGETS) {
+        console.error(`  - ${t.triple}`);
+      }
+      process.exit(1);
+    }
+    console.log(`Downloading for triple: ${tripleArg}\n`);
+  } else if (currentPlatformOnly) {
     targets = getTargetsForCurrentPlatform();
     if (targets.length === 0) {
       console.warn(

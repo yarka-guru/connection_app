@@ -77,6 +77,9 @@ jobs:
           npx @yao-pkg/pkg src-tauri/binaries/gui-adapter-bundle.cjs --target ${{ matrix.sidecar_target }} -o src-tauri/binaries/gui-adapter-${{ matrix.sidecar_triple }}
           rm src-tauri/binaries/gui-adapter-bundle.cjs
 
+      - name: Download session-manager-plugin
+        run: node scripts/download-ssm-plugin.js --triple ${{ matrix.sidecar_triple }}
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
