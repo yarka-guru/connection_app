@@ -216,18 +216,26 @@ function extractWindowsZip(archivePath, tmpDir) {
     }
   }
 
-  // The AWS Windows zip may contain a nested SessionManagerPlugin.zip — extract it
-  const innerZip = join(tmpDir, "SessionManagerPlugin.zip");
-  if (existsSync(innerZip)) {
-    const innerDir = join(tmpDir, "SessionManagerPlugin");
-    mkdirSync(innerDir, { recursive: true });
+  // The AWS Windows zip has nested archives:
+  //   outer.zip → SessionManagerPlugin.zip → package.zip → session-manager-plugin.exe
+  // Extract all nested zips we find.
+  function expandZip(zipPath, destDir) {
+    mkdirSync(destDir, { recursive: true });
     if (isWindows) {
       execSync(
-        `powershell -Command "Expand-Archive -Force -Path '${innerZip}' -DestinationPath '${innerDir}'"`,
+        `powershell -Command "Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${destDir}'"`,
         { stdio: "pipe" },
       );
     } else {
-      execSync(`unzip -o "${innerZip}" -d "${innerDir}"`, { stdio: "pipe" });
+      execSync(`unzip -o "${zipPath}" -d "${destDir}"`, { stdio: "pipe" });
+    }
+  }
+
+  for (const nestedName of ["SessionManagerPlugin.zip", "package.zip"]) {
+    const found = findFileRecursive(tmpDir, nestedName);
+    if (found) {
+      const destDir = join(tmpDir, nestedName.replace(".zip", "-extracted"));
+      expandZip(found, destDir);
     }
   }
 
