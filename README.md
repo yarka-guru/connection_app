@@ -56,11 +56,11 @@ echo 'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"' | sudo tee /etc/profil
 ```bash
 # Download and install the app (check GitHub Releases for the latest version)
 # ARM64:
-wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.1_arm64.deb
-sudo dpkg -i RDS.SSM.Connect_2.0.1_arm64.deb
+wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.2_arm64.deb
+sudo dpkg -i RDS.SSM.Connect_2.0.2_arm64.deb
 # x86_64:
-# wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.1_amd64.deb
-# sudo dpkg -i RDS.SSM.Connect_2.0.1_amd64.deb
+# wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.2_amd64.deb
+# sudo dpkg -i RDS.SSM.Connect_2.0.2_amd64.deb
 ```
 
 ### Windows

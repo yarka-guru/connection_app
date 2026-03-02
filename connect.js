@@ -17,7 +17,7 @@ import { findPluginBinary, spawnPlugin } from './src/plugin-resolver.js'
 import { ensureSsoSession } from './src/sso-login.js'
 
 // Package info for version checking
-const packageJson = { name: 'rds_ssm_connect', version: '2.0.1' }
+const packageJson = { name: 'rds_ssm_connect', version: '2.0.2' }
 
 // Event emitter for IPC communication
 const ipcEmitter = new EventEmitter()
