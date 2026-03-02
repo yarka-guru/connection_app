@@ -18,11 +18,9 @@ Secure database tunneling to AWS RDS through SSM port forwarding via bastion hos
 
 ## Prerequisites
 
-- [AWS CLI](https://aws.amazon.com/cli/) — AWS API access
 - [Node.js](https://nodejs.org/) 22+ (CLI only)
 - AWS profiles configured in `~/.aws/config`
-
-The desktop app bundles the Session Manager Plugin. For the CLI, install it separately: [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+- [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (bundled with desktop app; CLI requires separate install)
 
 ## Installation
 
@@ -57,27 +55,20 @@ echo 'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"' | sudo tee /etc/profil
 #### Option B: Direct .deb install
 
 ```bash
-# 1. Download and install the app (check GitHub Releases for the latest version)
+# Download and install the app (check GitHub Releases for the latest version)
 # ARM64:
 wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.1_arm64.deb
 sudo dpkg -i RDS.SSM.Connect_2.0.1_arm64.deb
 # x86_64:
 # wget https://github.com/yarka-guru/connection_app/releases/latest/download/RDS.SSM.Connect_2.0.1_amd64.deb
 # sudo dpkg -i RDS.SSM.Connect_2.0.1_amd64.deb
-
-# 2. Install AWS CLI
-# ARM64:
-curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o awscliv2.zip
-# x86_64:
-# curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
-unzip awscliv2.zip && sudo ./aws/install
 ```
 
 ### Windows
 
 Download the `.msi` or `.exe` installer from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
 
-AWS CLI must be installed separately: [AWS CLI](https://aws.amazon.com/cli/).
+No additional prerequisites — the app uses AWS SDK v3 natively.
 
 ### CLI (all platforms)
 
@@ -85,7 +76,7 @@ AWS CLI must be installed separately: [AWS CLI](https://aws.amazon.com/cli/).
 npm install -g rds_ssm_connect
 ```
 
-The CLI also requires the [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+The CLI requires the [Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) to be installed separately.
 
 ## Usage
 

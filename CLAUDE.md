@@ -109,10 +109,11 @@ rds_ssm_connect
 
 ## Prerequisites for Running
 
-- AWS CLI - Required for AWS API calls
 - Node.js (ES modules enabled via `"type": "module"` in package.json)
 - Properly configured `~/.aws/config` with named profiles
 - Session Manager Plugin (bundled in desktop app; CLI requires separate install)
+
+Note: aws-vault and AWS CLI are **not required** — the app uses AWS SDK v3 natively for all API calls and credential resolution.
 
 ## AWS Resource Naming Conventions
 
