@@ -57,24 +57,37 @@ export async function writeSsoToken(key, tokenData) {
   const filepath = getSsoTokenFilepath(key)
   const dir = path.dirname(filepath)
   await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(filepath, JSON.stringify(tokenData, null, 2), 'utf-8')
+  await fs.writeFile(filepath, JSON.stringify(tokenData, null, 2), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  })
 }
 
+// Cached OIDC client registration (valid ~90 days, keyed by region)
+const clientRegistrationCache = new Map()
+
 /**
- * Register an OIDC client with AWS SSO.
+ * Register an OIDC client with AWS SSO, or return cached registration.
  */
-export async function registerClient(ssoOidcClient) {
+export async function registerClient(ssoOidcClient, ssoRegion) {
+  const cached = clientRegistrationCache.get(ssoRegion)
+  if (cached && cached.clientSecretExpiresAt * 1000 > Date.now()) {
+    return cached
+  }
+
   const response = await ssoOidcClient.send(
     new RegisterClientCommand({
       clientName: CLIENT_NAME,
       clientType: CLIENT_TYPE,
     }),
   )
-  return {
+  const registration = {
     clientId: response.clientId,
     clientSecret: response.clientSecret,
     clientSecretExpiresAt: response.clientSecretExpiresAt,
   }
+  clientRegistrationCache.set(ssoRegion, registration)
+  return registration
 }
 
 /**
@@ -137,8 +150,6 @@ export async function pollForToken(
         expiresAt: new Date(
           Date.now() + response.expiresIn * 1000,
         ).toISOString(),
-        region: ssoOidcClient.config.region,
-        startUrl: undefined, // set by caller
       }
     } catch (err) {
       const errorName = err.name || err.constructor?.name || ''
@@ -178,7 +189,7 @@ export async function performSsoLogin(ssoStartUrl, ssoRegion, options = {}) {
   const ssoOidcClient = new SSOOIDCClient({ region: ssoRegion })
 
   onEvent?.('sso-status', { message: 'Registering SSO client...' })
-  const { clientId, clientSecret } = await registerClient(ssoOidcClient)
+  const { clientId, clientSecret } = await registerClient(ssoOidcClient, ssoRegion)
 
   onEvent?.('sso-status', { message: 'Starting device authorization...' })
   const deviceAuth = await startDeviceAuthorization(
@@ -206,7 +217,7 @@ export async function performSsoLogin(ssoStartUrl, ssoRegion, options = {}) {
     onEvent,
   )
 
-  // Add startUrl to token data for cache key identification
+  // Add metadata for cache key identification
   tokenData.startUrl = ssoStartUrl
   tokenData.region = ssoRegion
 

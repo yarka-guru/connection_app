@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it, mock } from 'node:test'
@@ -253,7 +253,7 @@ source_profile = default
         })),
       }
 
-      const result = await registerClient(mockClient)
+      const result = await registerClient(mockClient, 'us-east-1')
       assert.equal(result.clientId, 'test-client-id')
       assert.equal(result.clientSecret, 'test-client-secret')
       assert.equal(mockClient.send.mock.calls.length, 1)
@@ -300,7 +300,7 @@ source_profile = default
 
       let callCount = 0
       const mockClient = {
-        config: { region: 'us-east-1' },
+        config: {},
         send: mock.fn(async () => {
           callCount++
           if (callCount < 3) {
@@ -337,7 +337,7 @@ source_profile = default
       )
 
       const mockClient = {
-        config: { region: 'us-east-1' },
+        config: {},
         send: mock.fn(async () => {
           const err = new Error('Token expired')
           err.name = 'ExpiredTokenException'

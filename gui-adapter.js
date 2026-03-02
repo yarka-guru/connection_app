@@ -12,6 +12,7 @@
  * - connect: Connect to RDS through bastion (supports multiple simultaneous connections)
  * - disconnect: Disconnect a specific or all sessions
  * - disconnect-all: Disconnect all active sessions
+ * - sso-login: Perform AWS SSO login for a profile (OIDC device authorization)
  */
 
 import { randomUUID } from 'node:crypto'
