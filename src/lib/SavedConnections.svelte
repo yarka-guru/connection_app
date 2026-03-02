@@ -236,25 +236,25 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .card-icon {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, rgba(251, 191, 36, 0.2) 0%, rgba(245, 158, 11, 0.2) 100%);
+    background: linear-gradient(135deg, rgba(212, 168, 83, 0.2) 0%, rgba(180, 140, 70, 0.2) 100%);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #fbbf24;
+    color: #d4a853;
   }
 
   .card-title {
     font-size: 1rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .active-count {
     font-size: 0.75rem;
     font-weight: 500;
-    color: #34d399;
-    background: rgba(52, 211, 153, 0.1);
+    color: #7aab6d;
+    background: rgba(122, 171, 109, 0.1);
     padding: 4px 10px;
     border-radius: 12px;
   }
@@ -273,11 +273,11 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   }
 
   .connection-item.active {
-    border: 1px solid rgba(52, 211, 153, 0.2);
+    border: 1px solid rgba(122, 171, 109, 0.2);
   }
 
   .connection-item.connecting {
-    border: 1px solid rgba(99, 102, 241, 0.3);
+    border: 1px solid rgba(212, 168, 83, 0.3);
   }
 
   .connection-header {
@@ -303,9 +303,9 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: block;
     width: 8px;
     height: 8px;
-    background: #34d399;
+    background: #7aab6d;
     border-radius: 50%;
-    box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 8px rgba(122, 171, 109, 0.5);
     animation: pulse 2s ease-in-out infinite;
     will-change: opacity;
   }
@@ -332,7 +332,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .connection-name {
     font-size: 0.95rem;
     font-weight: 500;
-    color: #e4e4e7;
+    color: #d5ddd3;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -341,13 +341,13 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .connection-port {
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85rem;
-    color: #34d399;
+    color: #7aab6d;
     font-weight: 500;
   }
 
   .connection-meta {
     font-size: 0.75rem;
-    color: #a5b4fc;
+    color: #e2c87a;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -355,7 +355,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .connection-last-used {
     font-size: 0.7rem;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .connection-actions {
@@ -371,19 +371,19 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     align-items: center;
     justify-content: center;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
   }
 
   .btn-connect {
-    color: #34d399;
+    color: #7aab6d;
   }
 
   .btn-connect:hover {
-    background: rgba(52, 211, 153, 0.1);
-    border-color: rgba(52, 211, 153, 0.3);
+    background: rgba(122, 171, 109, 0.1);
+    border-color: rgba(122, 171, 109, 0.3);
   }
 
   .btn-connect:active {
@@ -391,32 +391,32 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   }
 
   .btn-delete {
-    color: #71717a;
+    color: #6b7d6a;
   }
 
   .btn-delete:hover {
-    color: #f87171;
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.3);
+    color: #d4836b;
+    background: rgba(201, 97, 74, 0.1);
+    border-color: rgba(201, 97, 74, 0.3);
   }
 
   .btn-disconnect {
-    color: #f87171;
+    color: #d4836b;
   }
 
   .btn-disconnect:hover {
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(201, 97, 74, 0.1);
+    border-color: rgba(201, 97, 74, 0.3);
   }
 
   .btn-expand {
-    color: #71717a;
+    color: #6b7d6a;
     border: none;
   }
 
   .btn-expand:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 
   .btn-expand svg {
@@ -437,8 +437,8 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: block;
     width: 8px;
     height: 8px;
-    border: 1.5px solid rgba(99, 102, 241, 0.3);
-    border-top-color: #6366f1;
+    border: 1.5px solid rgba(212, 168, 83, 0.3);
+    border-top-color: #d4a853;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -446,7 +446,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .connecting-text {
     font-size: 0.75rem;
-    color: #a5b4fc;
+    color: #e2c87a;
     animation: fadeIn 0.3s ease-out;
   }
 
@@ -454,8 +454,8 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 1.5px solid rgba(52, 211, 153, 0.3);
-    border-top-color: #34d399;
+    border: 1.5px solid rgba(122, 171, 109, 0.3);
+    border-top-color: #7aab6d;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -503,7 +503,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     width: 70px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #9e9ea7;
+    color: #8a9488;
     text-transform: uppercase;
     flex-shrink: 0;
   }
@@ -512,7 +512,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     flex: 1;
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.8rem;
-    color: #a5b4fc;
+    color: #e2c87a;
     background: transparent;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -520,7 +520,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   }
 
   .detail-value.password {
-    color: #fbbf24;
+    color: #d4a853;
     letter-spacing: 0.1em;
   }
 </style>

@@ -131,18 +131,18 @@ function handleConnectClick() {
   .card-icon {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%);
+    background: linear-gradient(135deg, rgba(212, 168, 83, 0.2) 0%, rgba(122, 171, 109, 0.2) 100%);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #a5b4fc;
+    color: #e2c87a;
   }
 
   .card-title {
     font-size: 1rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .form-fields {
@@ -166,7 +166,7 @@ function handleConnectClick() {
   .label-text {
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a1a1aa;
+    color: #9baa98;
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
@@ -178,25 +178,25 @@ function handleConnectClick() {
   select {
     width: 100%;
     appearance: none;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(200, 220, 195, 0.05);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 12px;
     padding: 14px 44px 14px 16px;
     font-size: 0.95rem;
-    color: #e4e4e7;
+    color: #d5ddd3;
     cursor: pointer;
     transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
   select:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.15);
+    background: rgba(200, 220, 195, 0.08);
+    border-color: rgba(200, 220, 195, 0.15);
   }
 
   select:focus {
     outline: none;
-    border-color: #6366f1;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    border-color: #d4a853;
+    box-shadow: 0 0 0 3px rgba(212, 168, 83, 0.15);
   }
 
   select:disabled {
@@ -205,8 +205,8 @@ function handleConnectClick() {
   }
 
   select option {
-    background: #1a1a2e;
-    color: #e4e4e7;
+    background: #1a2b1f;
+    color: #d5ddd3;
     padding: 12px;
   }
 
@@ -215,7 +215,7 @@ function handleConnectClick() {
     right: 14px;
     top: 50%;
     transform: translateY(-50%);
-    color: #71717a;
+    color: #6b7d6a;
     pointer-events: none;
   }
 
@@ -239,14 +239,14 @@ function handleConnectClick() {
   }
 
   .btn-connect {
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
     color: white;
-    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 15px rgba(212, 168, 83, 0.3);
   }
 
   .btn-connect:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+    box-shadow: 0 6px 20px rgba(212, 168, 83, 0.4);
   }
 
   .btn-connect:active:not(:disabled) {

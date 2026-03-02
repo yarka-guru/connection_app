@@ -656,7 +656,7 @@ onDestroy(() => {
   }
 
   .modal-content {
-    background: rgba(26, 26, 46, 0.85);
+    background: rgba(26, 43, 31, 0.85);
     -webkit-backdrop-filter: var(--glass-blur-heavy);
     backdrop-filter: var(--glass-blur-heavy);
     border: 1px solid var(--glass-border);
@@ -687,13 +687,13 @@ onDestroy(() => {
     margin: 0;
     font-size: 1.25rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .close-btn {
     background: none;
     border: none;
-    color: #71717a;
+    color: #6b7d6a;
     cursor: pointer;
     padding: 4px;
     border-radius: 6px;
@@ -701,14 +701,14 @@ onDestroy(() => {
   }
 
   .close-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #e4e4e7;
+    background: rgba(200, 220, 195, 0.1);
+    color: #d5ddd3;
   }
 
   .tabs {
     display: flex;
     gap: 4px;
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(200, 220, 195, 0.03);
     padding: 4px;
     border-radius: 10px;
     margin-bottom: 16px;
@@ -719,7 +719,7 @@ onDestroy(() => {
     padding: 10px 16px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #71717a;
+    color: #6b7d6a;
     background: none;
     border: none;
     border-radius: 8px;
@@ -728,13 +728,13 @@ onDestroy(() => {
   }
 
   .tab:hover {
-    color: #a1a1aa;
+    color: #9baa98;
     background: var(--glass-bg-hover);
   }
 
   .tab.active {
-    background: rgba(99, 102, 241, 0.15);
-    color: #a5b4fc;
+    background: rgba(212, 168, 83, 0.15);
+    color: #e2c87a;
   }
 
   .message {
@@ -745,15 +745,15 @@ onDestroy(() => {
   }
 
   .message.error {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    background: rgba(201, 97, 74, 0.1);
+    color: #d4836b;
+    border: 1px solid rgba(201, 97, 74, 0.2);
   }
 
   .message.success {
-    background: rgba(34, 197, 94, 0.1);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.2);
+    background: rgba(122, 171, 109, 0.1);
+    color: #8bbd7a;
+    border: 1px solid rgba(122, 171, 109, 0.2);
   }
 
   .tab-content {
@@ -767,7 +767,7 @@ onDestroy(() => {
     align-items: center;
     justify-content: center;
     height: 200px;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .profiles-header {
@@ -779,7 +779,7 @@ onDestroy(() => {
 
   .profiles-path {
     font-size: 0.75rem;
-    color: #8b8b95;
+    color: #7d8f7a;
     font-family: ui-monospace, monospace;
   }
 
@@ -790,16 +790,16 @@ onDestroy(() => {
     padding: 8px 14px;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a5b4fc;
-    background: rgba(99, 102, 241, 0.1);
-    border: 1px solid rgba(99, 102, 241, 0.2);
+    color: #e2c87a;
+    background: rgba(212, 168, 83, 0.1);
+    border: 1px solid rgba(212, 168, 83, 0.2);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .btn-add:hover {
-    background: rgba(99, 102, 241, 0.15);
+    background: rgba(212, 168, 83, 0.15);
   }
 
   .btn-add:active {
@@ -809,7 +809,7 @@ onDestroy(() => {
   .empty-state {
     text-align: center;
     padding: 40px 20px;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .empty-state p {
@@ -818,7 +818,7 @@ onDestroy(() => {
 
   .empty-state .hint {
     font-size: 0.875rem;
-    color: #8b8b95;
+    color: #7d8f7a;
   }
 
   .profiles-list {
@@ -843,7 +843,7 @@ onDestroy(() => {
 
   .profile-name {
     font-weight: 500;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .profile-actions {
@@ -855,20 +855,20 @@ onDestroy(() => {
     padding: 6px;
     background: none;
     border: none;
-    color: #71717a;
+    color: #6b7d6a;
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-icon:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.1);
+    color: #9baa98;
   }
 
   .btn-icon.delete:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
+    background: rgba(201, 97, 74, 0.1);
+    color: #d4836b;
   }
 
   .inline-confirm {
@@ -881,7 +881,7 @@ onDestroy(() => {
 
   .inline-confirm span {
     font-size: 0.8rem;
-    color: #f87171;
+    color: #d4836b;
   }
 
   .inline-confirm-actions {
@@ -894,7 +894,7 @@ onDestroy(() => {
     font-size: 0.75rem;
     font-weight: 600;
     color: white;
-    background: #ef4444;
+    background: #c9614a;
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -902,23 +902,23 @@ onDestroy(() => {
   }
 
   .btn-inline-confirm:hover {
-    background: #dc2626;
+    background: #b0503c;
   }
 
   .btn-inline-cancel {
     padding: 4px 10px;
     font-size: 0.75rem;
     font-weight: 500;
-    color: #9e9ea7;
+    color: #8a9488;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .btn-inline-cancel:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(200, 220, 195, 0.05);
   }
 
   .profile-details {
@@ -929,8 +929,8 @@ onDestroy(() => {
 
   .detail {
     font-size: 0.75rem;
-    color: #9e9ea7;
-    background: rgba(255, 255, 255, 0.05);
+    color: #8a9488;
+    background: rgba(200, 220, 195, 0.05);
     padding: 4px 8px;
     border-radius: 4px;
   }
@@ -945,18 +945,18 @@ onDestroy(() => {
     flex: 1;
     min-height: 280px;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 10px;
     padding: 14px;
     font-family: ui-monospace, monospace;
     font-size: 0.8rem;
-    color: #e4e4e7;
+    color: #d5ddd3;
     resize: none;
     outline: none;
   }
 
   .raw-editor:focus {
-    border-color: #6366f1;
+    border-color: #d4a853;
   }
 
   .raw-actions {
@@ -970,7 +970,7 @@ onDestroy(() => {
     font-size: 0.875rem;
     font-weight: 500;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -979,7 +979,7 @@ onDestroy(() => {
 
   .btn-save:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
   }
 
   .btn-save:active:not(:disabled) {
@@ -1003,7 +1003,7 @@ onDestroy(() => {
   }
 
   .edit-modal {
-    background: rgba(30, 30, 50, 0.9);
+    background: rgba(28, 40, 30, 0.9);
     -webkit-backdrop-filter: var(--glass-blur-heavy);
     backdrop-filter: var(--glass-blur-heavy);
     border: 1px solid var(--glass-border);
@@ -1030,7 +1030,7 @@ onDestroy(() => {
   .edit-modal h3 {
     margin: 0 0 20px;
     font-size: 1.1rem;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .form-group {
@@ -1041,7 +1041,7 @@ onDestroy(() => {
     display: block;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a1a1aa;
+    color: #9baa98;
     margin-bottom: 8px;
   }
 
@@ -1050,11 +1050,11 @@ onDestroy(() => {
   .form-group select {
     width: 100%;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 8px;
     padding: 10px 12px;
     font-size: 0.875rem;
-    color: #e4e4e7;
+    color: #d5ddd3;
     outline: none;
   }
 
@@ -1070,7 +1070,7 @@ onDestroy(() => {
   .form-group input:focus,
   .form-group textarea:focus,
   .form-group select:focus {
-    border-color: #6366f1;
+    border-color: #d4a853;
   }
 
   .form-group input:disabled {
@@ -1088,7 +1088,7 @@ onDestroy(() => {
   .field-hint {
     display: block;
     font-size: 0.7rem;
-    color: #8b8b95;
+    color: #7d8f7a;
     margin-top: 4px;
   }
 
@@ -1115,23 +1115,23 @@ onDestroy(() => {
   .port-mappings-label {
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a1a1aa;
+    color: #9baa98;
   }
 
   .btn-add-small {
     padding: 4px 10px;
     font-size: 0.75rem;
     font-weight: 500;
-    color: #a5b4fc;
-    background: rgba(99, 102, 241, 0.1);
-    border: 1px solid rgba(99, 102, 241, 0.2);
+    color: #e2c87a;
+    background: rgba(212, 168, 83, 0.1);
+    border: 1px solid rgba(212, 168, 83, 0.2);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .btn-add-small:hover {
-    background: rgba(99, 102, 241, 0.15);
+    background: rgba(212, 168, 83, 0.15);
   }
 
   .port-mapping-row {
@@ -1144,23 +1144,23 @@ onDestroy(() => {
   .port-mapping-row input {
     flex: 1;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 6px;
     padding: 8px 10px;
     font-size: 0.8rem;
-    color: #e4e4e7;
+    color: #d5ddd3;
     outline: none;
   }
 
   .port-mapping-row input:focus {
-    border-color: #6366f1;
+    border-color: #d4a853;
   }
 
   .btn-remove {
     padding: 6px;
     background: none;
     border: none;
-    color: #71717a;
+    color: #6b7d6a;
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
@@ -1168,8 +1168,8 @@ onDestroy(() => {
   }
 
   .btn-remove:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
+    background: rgba(201, 97, 74, 0.1);
+    color: #d4836b;
   }
 
   .edit-actions {
@@ -1183,17 +1183,17 @@ onDestroy(() => {
     padding: 10px 20px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #71717a;
+    color: #6b7d6a;
     background: none;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 
   .btn-cancel:active {

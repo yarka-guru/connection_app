@@ -138,7 +138,7 @@ function handleHeaderKeydown(e, connectionId) {
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(16, 185, 129, 0.3);
+    border: 1px solid rgba(100, 155, 90, 0.3);
     border-radius: 20px;
     padding: 24px;
     box-shadow: var(--glass-inner-glow);
@@ -160,12 +160,12 @@ function handleHeaderKeydown(e, connectionId) {
   .card-icon {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, rgba(52, 211, 153, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%);
+    background: linear-gradient(135deg, rgba(122, 171, 109, 0.2) 0%, rgba(100, 155, 90, 0.2) 100%);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #34d399;
+    color: #7aab6d;
     animation: pulse 2s ease-in-out infinite;
     will-change: opacity;
   }
@@ -178,24 +178,24 @@ function handleHeaderKeydown(e, connectionId) {
   .card-title {
     font-size: 1rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .btn-disconnect-all {
     padding: 8px 14px;
     font-size: 0.75rem;
     font-weight: 500;
-    color: #f87171;
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: #d4836b;
+    background: rgba(201, 97, 74, 0.1);
+    border: 1px solid rgba(201, 97, 74, 0.2);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s;
   }
 
   .btn-disconnect-all:hover {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(201, 97, 74, 0.15);
+    border-color: rgba(201, 97, 74, 0.3);
   }
 
   .btn-disconnect-all:active {
@@ -238,9 +238,9 @@ function handleHeaderKeydown(e, connectionId) {
     display: block;
     width: 8px;
     height: 8px;
-    background: #34d399;
+    background: #7aab6d;
     border-radius: 50%;
-    box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 8px rgba(122, 171, 109, 0.5);
   }
 
   .connection-info {
@@ -254,18 +254,18 @@ function handleHeaderKeydown(e, connectionId) {
   .connection-name {
     font-size: 0.9rem;
     font-weight: 500;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .connection-port {
-    color: #34d399;
+    color: #7aab6d;
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85rem;
   }
 
   .connection-meta {
     font-size: 0.75rem;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .connection-actions {
@@ -287,12 +287,12 @@ function handleHeaderKeydown(e, connectionId) {
   }
 
   .btn-expand {
-    color: #71717a;
+    color: #6b7d6a;
   }
 
   .btn-expand:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 
   .btn-expand svg {
@@ -304,12 +304,12 @@ function handleHeaderKeydown(e, connectionId) {
   }
 
   .btn-disconnect {
-    color: #71717a;
+    color: #6b7d6a;
   }
 
   .btn-disconnect:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
+    background: rgba(201, 97, 74, 0.1);
+    color: #d4836b;
   }
 
   .connection-details {
@@ -345,7 +345,7 @@ function handleHeaderKeydown(e, connectionId) {
     width: 70px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #9e9ea7;
+    color: #8a9488;
     text-transform: uppercase;
     flex-shrink: 0;
   }
@@ -354,7 +354,7 @@ function handleHeaderKeydown(e, connectionId) {
     flex: 1;
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.8rem;
-    color: #a5b4fc;
+    color: #e2c87a;
     background: transparent;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -362,7 +362,7 @@ function handleHeaderKeydown(e, connectionId) {
   }
 
   .detail-value.password {
-    color: #fbbf24;
+    color: #d4a853;
     letter-spacing: 0.1em;
   }
 </style>

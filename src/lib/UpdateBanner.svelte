@@ -56,7 +56,7 @@ function handleDismiss() {
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(99, 102, 241, 0.3);
+    border: 1px solid rgba(212, 168, 83, 0.3);
     border-radius: 14px;
     box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
@@ -76,20 +76,20 @@ function handleDismiss() {
   .update-icon {
     width: 32px;
     height: 32px;
-    background: rgba(99, 102, 241, 0.2);
+    background: rgba(212, 168, 83, 0.2);
     border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #a5b4fc;
+    color: #e2c87a;
     flex-shrink: 0;
   }
 
   .spinner {
     width: 16px;
     height: 16px;
-    border: 2px solid rgba(165, 180, 252, 0.3);
-    border-top-color: #a5b4fc;
+    border: 2px solid rgba(226, 200, 122, 0.3);
+    border-top-color: #e2c87a;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -108,16 +108,16 @@ function handleDismiss() {
 
   .update-message {
     font-size: 0.875rem;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .update-message strong {
-    color: #a5b4fc;
+    color: #e2c87a;
   }
 
   .current-version {
     font-size: 0.7rem;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .update-actions {
@@ -132,7 +132,7 @@ function handleDismiss() {
     font-size: 0.8rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -141,7 +141,7 @@ function handleDismiss() {
 
   .btn-install:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
   }
 
   .btn-install:active {
@@ -156,14 +156,14 @@ function handleDismiss() {
     justify-content: center;
     background: transparent;
     border: none;
-    color: #71717a;
+    color: #6b7d6a;
     cursor: pointer;
     border-radius: 6px;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-dismiss:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 </style>

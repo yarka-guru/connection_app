@@ -644,8 +644,8 @@ const isAlreadySaved = $derived(
         <circle cx="24" cy="20" r="3" fill="white"/>
         <defs>
           <linearGradient id="gradient-loading" x1="0" y1="0" x2="32" y2="32">
-            <stop stop-color="#6366f1"/>
-            <stop offset="1" stop-color="#8b5cf6"/>
+            <stop stop-color="#d4a853"/>
+            <stop offset="1" stop-color="#7aab6d"/>
           </linearGradient>
         </defs>
       </svg>
@@ -667,8 +667,8 @@ const isAlreadySaved = $derived(
           <circle cx="24" cy="20" r="3" fill="white"/>
           <defs>
             <linearGradient id="gradient-setup" x1="0" y1="0" x2="32" y2="32">
-              <stop stop-color="#6366f1"/>
-              <stop offset="1" stop-color="#8b5cf6"/>
+              <stop stop-color="#d4a853"/>
+              <stop offset="1" stop-color="#7aab6d"/>
             </linearGradient>
           </defs>
         </svg>
@@ -737,8 +737,8 @@ const isAlreadySaved = $derived(
             <circle cx="24" cy="20" r="3" fill="white"/>
             <defs>
               <linearGradient id="gradient" x1="0" y1="0" x2="32" y2="32">
-                <stop stop-color="#6366f1"/>
-                <stop offset="1" stop-color="#8b5cf6"/>
+                <stop stop-color="#d4a853"/>
+                <stop offset="1" stop-color="#7aab6d"/>
               </linearGradient>
             </defs>
           </svg>
@@ -876,13 +876,13 @@ const isAlreadySaved = $derived(
 
 <style>
   :global(:root) {
-    --glass-bg: rgba(255, 255, 255, 0.04);
-    --glass-bg-hover: rgba(255, 255, 255, 0.07);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-border-hover: rgba(255, 255, 255, 0.14);
+    --glass-bg: rgba(200, 220, 195, 0.04);
+    --glass-bg-hover: rgba(200, 220, 195, 0.07);
+    --glass-border: rgba(122, 171, 109, 0.08);
+    --glass-border-hover: rgba(122, 171, 109, 0.14);
     --glass-blur: blur(16px) saturate(1.8);
     --glass-blur-heavy: blur(32px) saturate(1.8);
-    --glass-inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --glass-inner-glow: inset 0 1px 0 rgba(200, 220, 195, 0.06);
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     --press-scale: scale(0.97);
     --transition-fast: 0.15s ease;
@@ -891,8 +891,8 @@ const isAlreadySaved = $derived(
 
   @media (prefers-reduced-transparency) {
     :global(:root) {
-      --glass-bg: rgba(30, 30, 50, 0.95);
-      --glass-bg-hover: rgba(40, 40, 60, 0.95);
+      --glass-bg: rgba(26, 43, 31, 0.95);
+      --glass-bg-hover: rgba(32, 52, 36, 0.95);
       --glass-blur: none;
       --glass-blur-heavy: none;
     }
@@ -913,9 +913,9 @@ const isAlreadySaved = $derived(
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
-    background: linear-gradient(145deg, #0f0f1a 0%, #1a1a2e 50%, #16162a 100%);
+    background: linear-gradient(145deg, #141e17 0%, #1a2b1f 50%, #182a1d 100%);
     min-height: 100vh;
-    color: #e4e4e7;
+    color: #d5ddd3;
     -webkit-font-smoothing: antialiased;
   }
 
@@ -936,8 +936,8 @@ const isAlreadySaved = $derived(
   .loading-spinner {
     width: 24px;
     height: 24px;
-    border: 2px solid rgba(99, 102, 241, 0.2);
-    border-top-color: #6366f1;
+    border: 2px solid rgba(212, 168, 83, 0.2);
+    border-top-color: #d4a853;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -945,13 +945,13 @@ const isAlreadySaved = $derived(
 
   .loading-text {
     font-size: 0.875rem;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .init-error-text {
     margin: 8px 0 0;
     font-size: 0.8rem;
-    color: #fca5a5;
+    color: #e0a08a;
     text-align: center;
     max-width: 360px;
     line-height: 1.5;
@@ -964,17 +964,17 @@ const isAlreadySaved = $derived(
     font-size: 0.875rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
     border: none;
     border-radius: 10px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
   }
 
   .btn-retry:hover {
     transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+    box-shadow: 0 6px 16px rgba(212, 168, 83, 0.4);
   }
 
   .btn-retry:active {
@@ -1004,7 +1004,7 @@ const isAlreadySaved = $derived(
     margin: 0;
     font-size: 1.5rem;
     font-weight: 600;
-    background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+    background: linear-gradient(135deg, #fff 0%, #e2c87a 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -1013,7 +1013,7 @@ const isAlreadySaved = $derived(
   .header-text p {
     margin: 4px 0 0;
     font-size: 0.875rem;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .main-content {
@@ -1030,7 +1030,7 @@ const isAlreadySaved = $derived(
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(251, 191, 36, 0.2);
+    border: 1px solid rgba(212, 168, 83, 0.2);
     border-radius: 12px;
     box-shadow: var(--glass-inner-glow);
     animation: fadeIn 0.3s ease-out;
@@ -1038,7 +1038,7 @@ const isAlreadySaved = $derived(
 
   .save-label {
     font-size: 0.875rem;
-    color: #fbbf24;
+    color: #d4a853;
     font-weight: 500;
   }
 
@@ -1046,21 +1046,21 @@ const isAlreadySaved = $derived(
     width: 100%;
     padding: 10px 14px;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 8px;
-    color: #e4e4e7;
+    color: #d5ddd3;
     font-size: 0.9rem;
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
   }
 
   .save-input:focus {
-    border-color: #fbbf24;
-    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+    border-color: #d4a853;
+    box-shadow: 0 0 0 2px rgba(212, 168, 83, 0.2);
   }
 
   .save-input::placeholder {
-    color: #9e9ea7;
+    color: #8a9488;
   }
 
   .save-prompt-actions {
@@ -1072,8 +1072,8 @@ const isAlreadySaved = $derived(
     padding: 6px 14px;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #1a1a2e;
-    background: #fbbf24;
+    color: #1a2b1f;
+    background: #d4a853;
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -1081,7 +1081,7 @@ const isAlreadySaved = $derived(
   }
 
   .btn-save:hover {
-    background: #fcd34d;
+    background: #e2c87a;
   }
 
   .btn-save:active {
@@ -1092,17 +1092,17 @@ const isAlreadySaved = $derived(
     padding: 6px 14px;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #71717a;
+    color: #6b7d6a;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-dismiss-save:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 
   .error-toast {
@@ -1113,7 +1113,7 @@ const isAlreadySaved = $derived(
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    border: 1px solid rgba(201, 97, 74, 0.2);
     border-radius: 16px;
     box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
@@ -1140,7 +1140,7 @@ const isAlreadySaved = $derived(
   }
 
   .error-icon {
-    color: #f87171;
+    color: #d4836b;
     flex-shrink: 0;
     margin-top: 2px;
   }
@@ -1149,14 +1149,14 @@ const isAlreadySaved = $derived(
     flex: 1;
     margin: 0;
     font-size: 0.875rem;
-    color: #fca5a5;
+    color: #e0a08a;
     line-height: 1.5;
   }
 
   .dismiss-btn {
     background: transparent;
     border: none;
-    color: #71717a;
+    color: #6b7d6a;
     cursor: pointer;
     padding: 4px;
     border-radius: 6px;
@@ -1167,8 +1167,8 @@ const isAlreadySaved = $derived(
   }
 
   .dismiss-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.1);
+    color: #9baa98;
   }
 
   .app-footer {
@@ -1181,7 +1181,7 @@ const isAlreadySaved = $derived(
 
   .app-footer > span:first-child {
     font-size: 0.75rem;
-    color: #8b8b95;
+    color: #7d8f7a;
   }
 
   .footer-actions {
@@ -1193,9 +1193,9 @@ const isAlreadySaved = $derived(
   .settings-btn {
     padding: 6px;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(122, 171, 109, 0.08);
     border-radius: 6px;
-    color: #71717a;
+    color: #6b7d6a;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
     display: flex;
@@ -1204,9 +1204,9 @@ const isAlreadySaved = $derived(
   }
 
   .settings-btn:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(200, 220, 195, 0.05);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #a1a1aa;
+    color: #9baa98;
   }
 
   .settings-btn:active {
@@ -1217,18 +1217,18 @@ const isAlreadySaved = $derived(
     padding: 6px 12px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #71717a;
+    color: #6b7d6a;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(122, 171, 109, 0.08);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
   }
 
   .check-updates-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(200, 220, 195, 0.05);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #a1a1aa;
+    color: #9baa98;
   }
 
   .check-updates-btn:active:not(:disabled) {
@@ -1245,7 +1245,7 @@ const isAlreadySaved = $derived(
     width: 10px;
     height: 10px;
     border: 1.5px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #a1a1aa;
+    border-top-color: #9baa98;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-right: 4px;
@@ -1253,7 +1253,7 @@ const isAlreadySaved = $derived(
 
   .update-message {
     font-size: 0.75rem;
-    color: #10b981;
+    color: #7aab6d;
     animation: fadeIn 0.3s ease-out;
   }
 
@@ -1285,13 +1285,13 @@ const isAlreadySaved = $derived(
     margin: 0;
     font-size: 1.25rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .setup-description {
     margin: 0;
     font-size: 0.9rem;
-    color: #9e9ea7;
+    color: #8a9488;
     line-height: 1.5;
   }
 
@@ -1299,8 +1299,8 @@ const isAlreadySaved = $derived(
   .setup-hint code {
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85em;
-    color: #a5b4fc;
-    background: rgba(99, 102, 241, 0.15);
+    color: #e2c87a;
+    background: rgba(212, 168, 83, 0.15);
     padding: 1px 5px;
     border-radius: 4px;
   }
@@ -1308,7 +1308,7 @@ const isAlreadySaved = $derived(
   .setup-hint {
     margin: 0;
     font-size: 0.8rem;
-    color: #71717a;
+    color: #6b7d6a;
     line-height: 1.5;
   }
 
@@ -1318,12 +1318,12 @@ const isAlreadySaved = $derived(
     font-size: 0.9rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
     border: none;
     border-radius: 12px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 16px rgba(212, 168, 83, 0.3);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1331,7 +1331,7 @@ const isAlreadySaved = $derived(
 
   .btn-grant:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+    box-shadow: 0 6px 20px rgba(212, 168, 83, 0.4);
   }
 
   .btn-grant:active:not(:disabled) {
@@ -1356,7 +1356,7 @@ const isAlreadySaved = $derived(
   .setup-error {
     margin: 0;
     font-size: 0.8rem;
-    color: #fca5a5;
+    color: #e0a08a;
     line-height: 1.5;
     max-width: 100%;
     word-break: break-word;
@@ -1365,7 +1365,7 @@ const isAlreadySaved = $derived(
   .setup-success {
     margin: 0;
     font-size: 0.8rem;
-    color: #10b981;
+    color: #7aab6d;
     line-height: 1.5;
   }
 
@@ -1380,17 +1380,17 @@ const isAlreadySaved = $derived(
     padding: 12px 24px;
     font-size: 0.9rem;
     font-weight: 500;
-    color: #71717a;
+    color: #6b7d6a;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 12px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-skip:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 
   .btn-skip:disabled {

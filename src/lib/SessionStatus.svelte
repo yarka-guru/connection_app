@@ -4,23 +4,23 @@ const { connectionStatus = 'disconnected', statusMessage = '' } = $props()
 const STATUS_CONFIGS = {
   disconnected: {
     label: 'Ready',
-    color: '#71717a',
-    bgColor: 'rgba(113, 113, 122, 0.1)',
-    borderColor: 'rgba(113, 113, 122, 0.2)',
+    color: '#6b7d6a',
+    bgColor: 'rgba(107, 125, 106, 0.1)',
+    borderColor: 'rgba(107, 125, 106, 0.2)',
     icon: 'circle',
   },
   connecting: {
     label: 'Connecting',
-    color: '#fbbf24',
-    bgColor: 'rgba(251, 191, 36, 0.1)',
-    borderColor: 'rgba(251, 191, 36, 0.2)',
+    color: '#d4a853',
+    bgColor: 'rgba(212, 168, 83, 0.1)',
+    borderColor: 'rgba(212, 168, 83, 0.2)',
     icon: 'loading',
   },
   connected: {
     label: 'Connected',
-    color: '#34d399',
-    bgColor: 'rgba(52, 211, 153, 0.1)',
-    borderColor: 'rgba(52, 211, 153, 0.2)',
+    color: '#7aab6d',
+    bgColor: 'rgba(122, 171, 109, 0.1)',
+    borderColor: 'rgba(122, 171, 109, 0.2)',
     icon: 'check',
   },
 }
@@ -103,6 +103,6 @@ const statusConfig = $derived(STATUS_CONFIGS[connectionStatus])
   .status-detail {
     margin: 0;
     font-size: 0.8rem;
-    color: #9e9ea7;
+    color: #8a9488;
   }
 </style>

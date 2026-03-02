@@ -57,7 +57,7 @@ function handleKeydown(e) {
   }
 
   .confirm-dialog {
-    background: rgba(26, 26, 46, 0.85);
+    background: rgba(26, 43, 31, 0.85);
     -webkit-backdrop-filter: var(--glass-blur-heavy);
     backdrop-filter: var(--glass-blur-heavy);
     border: 1px solid var(--glass-border);
@@ -78,13 +78,13 @@ function handleKeydown(e) {
     margin: 0 0 8px;
     font-size: 1.1rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: #d5ddd3;
   }
 
   .confirm-message {
     margin: 0 0 20px;
     font-size: 0.875rem;
-    color: #9e9ea7;
+    color: #8a9488;
     line-height: 1.5;
   }
 
@@ -98,17 +98,17 @@ function handleKeydown(e) {
     padding: 10px 18px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #71717a;
+    color: #6b7d6a;
     background: none;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 220, 195, 0.1);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(200, 220, 195, 0.05);
+    color: #9baa98;
   }
 
   .btn-cancel:active {
@@ -120,7 +120,7 @@ function handleKeydown(e) {
     font-size: 0.875rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -129,7 +129,7 @@ function handleKeydown(e) {
 
   .btn-confirm:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
   }
 
   .btn-confirm:active {
@@ -137,11 +137,11 @@ function handleKeydown(e) {
   }
 
   .btn-confirm.destructive {
-    background: #ef4444;
+    background: #c9614a;
   }
 
   .btn-confirm.destructive:hover {
-    background: #dc2626;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+    background: #b0503c;
+    box-shadow: 0 4px 12px rgba(201, 97, 74, 0.3);
   }
 </style>
