@@ -191,10 +191,15 @@ async fn ensure_sidecar(
                                 }
                             }
                             // Intercept sso-open-url events: open the URL in the default browser
+                            // Only allow https:// URLs to prevent arbitrary URL injection
                             if json.get("event") == Some(&serde_json::json!("sso-open-url")) {
                                 if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
-                                    use tauri_plugin_opener::OpenerExt;
-                                    let _ = app_handle_clone.opener().open_url(url, None::<&str>);
+                                    if url.starts_with("https://") {
+                                        use tauri_plugin_opener::OpenerExt;
+                                        let _ = app_handle_clone.opener().open_url(url, None::<&str>);
+                                    } else {
+                                        eprintln!("Blocked non-HTTPS SSO URL: {}", url);
+                                    }
                                 }
                             }
 
@@ -867,6 +872,10 @@ async fn get_current_version() -> Result<String, String> {
 
 #[tauri::command]
 async fn open_url(app_handle: AppHandle, url: String) -> Result<(), String> {
+    // Only allow https:// URLs to prevent arbitrary URL/scheme injection
+    if !url.starts_with("https://") {
+        return Err("Only HTTPS URLs are allowed".to_string());
+    }
     use tauri_plugin_opener::OpenerExt;
     app_handle
         .opener()

@@ -623,7 +623,6 @@ async function connect(projectKey, profile, options = {}) {
     instanceId: currentInstanceId,
   }
 
-  emit('credentials', connectionInfo)
   emit('status', { message: 'Starting port forwarding...' })
 
   // Auto-reconnect session management loop.

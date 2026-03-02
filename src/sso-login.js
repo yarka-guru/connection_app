@@ -56,7 +56,7 @@ export function isSsoTokenValid(token) {
 export async function writeSsoToken(key, tokenData) {
   const filepath = getSsoTokenFilepath(key)
   const dir = path.dirname(filepath)
-  await fs.mkdir(dir, { recursive: true })
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 })
   await fs.writeFile(filepath, JSON.stringify(tokenData, null, 2), {
     encoding: 'utf-8',
     mode: 0o600,
@@ -199,8 +199,13 @@ export async function performSsoLogin(ssoStartUrl, ssoRegion, options = {}) {
     ssoStartUrl,
   )
 
-  // Signal to open browser
+  // Signal to open browser — only allow HTTPS URLs
   const urlToOpen = deviceAuth.verificationUriComplete || deviceAuth.verificationUri
+  if (!urlToOpen || !urlToOpen.startsWith('https://')) {
+    throw new Error(
+      `SSO returned an invalid verification URL: ${urlToOpen || '(empty)'}`,
+    )
+  }
   onEvent?.('sso-status', {
     message: 'Waiting for SSO authorization in browser...',
   })

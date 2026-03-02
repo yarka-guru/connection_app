@@ -21,7 +21,7 @@ export async function parseAwsConfig() {
     return {};
   }
 
-  const profiles = {};
+  const profiles = Object.create(null);
   let currentProfile = null;
 
   for (const rawLine of content.split(/\r?\n/)) {
@@ -38,7 +38,7 @@ export async function parseAwsConfig() {
       }
       currentProfile = sectionName;
       if (!profiles[currentProfile]) {
-        profiles[currentProfile] = {};
+        profiles[currentProfile] = Object.create(null);
       }
       continue;
     }
