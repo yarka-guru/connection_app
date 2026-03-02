@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RDS SSM Connect",
-  "version": "1.8.6",
+  "version": "2.0.0",
   "identifier": "com.rds-ssm-connect.desktop",
   "build": {
     "beforeDevCommand": "npm run dev:vite",
@@ -36,7 +36,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/gui-adapter"
+      "binaries/gui-adapter",
+      "binaries/session-manager-plugin"
     ]
   },
   "plugins": {

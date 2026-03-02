@@ -18,6 +18,11 @@
           "name": "binaries/gui-adapter",
           "sidecar": true,
           "args": true
+        },
+        {
+          "name": "binaries/session-manager-plugin",
+          "sidecar": true,
+          "args": true
         }
       ]
     }

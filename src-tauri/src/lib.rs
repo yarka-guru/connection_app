@@ -124,7 +124,7 @@ async fn ensure_sidecar(
     let pending = state_guard.pending.clone();
 
     // Spawn sidecar using Tauri shell plugin
-    // Pass through all environment variables to ensure aws-vault and AWS CLI are accessible
+    // Pass through AWS env vars and PATH so the SDK and session-manager-plugin work
     let mut sidecar_command = app_handle
         .shell()
         .sidecar("gui-adapter")
@@ -139,14 +139,14 @@ async fn ensure_sidecar(
     );
     sidecar_command = sidecar_command.env("PATH", extended_path);
 
-    // Pass through important environment variables
-    // Exclude AWS_VAULT to avoid "running in existing subshell" error
+    // Pass through AWS env vars (for SDK credential resolution) and shell basics.
+    // Clear AWS_VAULT so the SDK uses its own credential chain instead of
+    // inheriting aws-vault's sub-shell environment.
     for (key, value) in std::env::vars() {
         if (key.starts_with("AWS_") && key != "AWS_VAULT") || key == "HOME" || key == "USER" || key == "SHELL" {
             sidecar_command = sidecar_command.env(&key, value);
         }
     }
-    // Explicitly clear AWS_VAULT to ensure clean environment
     sidecar_command = sidecar_command.env("AWS_VAULT", "");
 
     let (mut event_rx, child) = sidecar_command
@@ -190,6 +190,19 @@ async fn ensure_sidecar(
                                     let _ = tx.send(json.clone());
                                 }
                             }
+                            // Intercept sso-open-url events: open the URL in the default browser
+                            // Only allow https:// URLs to prevent arbitrary URL injection
+                            if json.get("event") == Some(&serde_json::json!("sso-open-url")) {
+                                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                                    if url.starts_with("https://") {
+                                        use tauri_plugin_opener::OpenerExt;
+                                        let _ = app_handle_clone.opener().open_url(url, None::<&str>);
+                                    } else {
+                                        eprintln!("Blocked non-HTTPS SSO URL: {}", url);
+                                    }
+                                }
+                            }
+
                             // Forward all messages (responses + events) to the frontend
                             let _ = app_handle_clone.emit("sidecar-event", json);
                         }
@@ -599,6 +612,31 @@ async fn get_used_ports() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+async fn sso_login(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
+    profile: String,
+) -> Result<(), String> {
+    let response = send_command_and_wait(
+        &app_handle,
+        &state,
+        "sso-login",
+        serde_json::json!({ "profile": profile }),
+        600000, // 10 minutes for SSO authorization
+    )
+    .await?;
+
+    if response.get("type") == Some(&serde_json::json!("error")) {
+        return Err(response["message"]
+            .as_str()
+            .unwrap_or("SSO login failed")
+            .to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn connect(
     app_handle: AppHandle,
     state: tauri::State<'_, Arc<TokioMutex<SidecarState>>>,
@@ -614,6 +652,7 @@ async fn connect(
         guard.values().map(|c| c.local_port.clone()).collect()
     };
 
+    // 720s timeout: up to 600s for SSO login + 120s for connection
     let response = send_command_and_wait(
         &app_handle,
         &state,
@@ -624,7 +663,7 @@ async fn connect(
             "localPort": local_port,
             "usedPorts": used_ports
         }),
-        120000,
+        720000,
     )
     .await?;
 
@@ -822,6 +861,7 @@ async fn install_update(app_handle: AppHandle) -> Result<(), String> {
 
     app_handle.restart();
 
+    #[allow(unreachable_code)]
     Ok(())
 }
 
@@ -832,6 +872,10 @@ async fn get_current_version() -> Result<String, String> {
 
 #[tauri::command]
 async fn open_url(app_handle: AppHandle, url: String) -> Result<(), String> {
+    // Only allow https:// URLs to prevent arbitrary URL/scheme injection
+    if !url.starts_with("https://") {
+        return Err("Only HTTPS URLs are allowed".to_string());
+    }
     use tauri_plugin_opener::OpenerExt;
     app_handle
         .opener()
@@ -927,105 +971,63 @@ async fn check_prerequisites() -> Result<PrerequisitesResult, String> {
             None
         }
 
-        // OS-agnostic install command helper
-        fn install_command_for(macos_cmd: &str, _linux_hint: &str) -> Option<String> {
-            if cfg!(target_os = "macos") {
-                Some(macos_cmd.to_string())
-            } else if cfg!(target_os = "linux") {
-                Some(_linux_hint.to_string())
-            } else if cfg!(target_os = "windows") {
-                None // Windows users should follow the install URL
-            } else {
-                None
-            }
-        }
-
         let mut prerequisites = Vec::new();
 
-        // Check aws-vault
-        let aws_vault = match find_command("aws-vault", &search_paths) {
-            Some(path) => match Command::new(&path).arg("--version").output() {
-                Ok(output) if output.status.success() => PrerequisiteStatus {
-                    name: "aws-vault".to_string(),
-                    installed: true,
-                    version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-                    install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-                    install_command: install_command_for("brew install aws-vault", "See install URL for Linux packages"),
-                },
-                _ => PrerequisiteStatus {
-                    name: "aws-vault".to_string(),
-                    installed: false,
-                    version: None,
-                    install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-                    install_command: install_command_for("brew install aws-vault", "See install URL for Linux packages"),
-                },
-            },
-            None => PrerequisiteStatus {
-                name: "aws-vault".to_string(),
-                installed: false,
-                version: None,
-                install_url: "https://github.com/99designs/aws-vault#installing".to_string(),
-                install_command: install_command_for("brew install aws-vault", "See install URL for Linux packages"),
-            },
-        };
-        prerequisites.push(aws_vault);
+        // aws-vault and AWS CLI are no longer required — the app uses
+        // AWS SDK v3 natively for all API calls and credential resolution.
+        // Only the Session Manager Plugin is still needed for port forwarding.
 
-        // Check AWS CLI
-        let aws_cli = match find_command("aws", &search_paths) {
-            Some(path) => match Command::new(&path).arg("--version").output() {
-                Ok(output) if output.status.success() => {
-                    let version_str = String::from_utf8_lossy(&output.stdout);
-                    PrerequisiteStatus {
-                        name: "AWS CLI".to_string(),
-                        installed: true,
-                        version: Some(version_str.split_whitespace().take(1).collect()),
-                        install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
-                        install_command: install_command_for("brew install awscli", "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install"),
-                    }
-                }
-                _ => PrerequisiteStatus {
-                    name: "AWS CLI".to_string(),
-                    installed: false,
-                    version: None,
-                    install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
-                    install_command: install_command_for("brew install awscli", "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install"),
-                },
-            },
-            None => PrerequisiteStatus {
-                name: "AWS CLI".to_string(),
-                installed: false,
-                version: None,
-                install_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html".to_string(),
-                install_command: install_command_for("brew install awscli", "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install"),
-            },
-        };
-        prerequisites.push(aws_cli);
+        // Check Session Manager Plugin — also check the app bundle directory
+        // (Tauri places externalBin entries next to the main binary at runtime)
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
 
-        // Check Session Manager Plugin
-        let ssm_plugin = match find_command("session-manager-plugin", &search_paths) {
-            Some(path) => match Command::new(&path).arg("--version").output() {
-                Ok(output) if output.status.success() => PrerequisiteStatus {
-                    name: "Session Manager Plugin".to_string(),
-                    installed: true,
-                    version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
-                    install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
-                    install_command: None,
-                },
-                _ => PrerequisiteStatus {
-                    name: "Session Manager Plugin".to_string(),
-                    installed: false,
-                    version: None,
-                    install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
-                    install_command: None,
-                },
-            },
-            None => PrerequisiteStatus {
+        let bundled_plugin = exe_dir.as_ref().and_then(|dir| {
+            let candidate = dir.join("session-manager-plugin");
+            if candidate.exists() { Some(candidate) } else { None }
+        });
+
+        let ssm_plugin = if let Some(ref bundled_path) = bundled_plugin {
+            // Plugin is bundled with the app
+            let version = Command::new(bundled_path).arg("--version").output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            PrerequisiteStatus {
                 name: "Session Manager Plugin".to_string(),
-                installed: false,
-                version: None,
+                installed: true,
+                version: version.or_else(|| Some("bundled".to_string())),
                 install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
                 install_command: None,
-            },
+            }
+        } else {
+            // Not bundled — check system PATH and known paths
+            match find_command("session-manager-plugin", &search_paths) {
+                Some(path) => match Command::new(&path).arg("--version").output() {
+                    Ok(output) if output.status.success() => PrerequisiteStatus {
+                        name: "Session Manager Plugin".to_string(),
+                        installed: true,
+                        version: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+                        install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                        install_command: None,
+                    },
+                    _ => PrerequisiteStatus {
+                        name: "Session Manager Plugin".to_string(),
+                        installed: false,
+                        version: None,
+                        install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                        install_command: None,
+                    },
+                },
+                None => PrerequisiteStatus {
+                    name: "Session Manager Plugin".to_string(),
+                    installed: false,
+                    version: None,
+                    install_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html".to_string(),
+                    install_command: None,
+                },
+            }
         };
         prerequisites.push(ssm_plugin);
 
@@ -1339,6 +1341,7 @@ pub fn run() {
             // Connection commands
             list_projects,
             list_profiles,
+            sso_login,
             connect,
             disconnect,
             disconnect_all,

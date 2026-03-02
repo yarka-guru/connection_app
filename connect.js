@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 
-import { exec, spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import {
   loadProjectConfigs,
   saveProjectConfig,
   validateProjectConfig,
 } from './configLoader.js'
+import { createAwsClients, destroyAwsClients } from './src/aws-clients.js'
+import * as ops from './src/aws-operations.js'
+import { findPluginBinary, spawnPlugin } from './src/plugin-resolver.js'
 
 // Package info for version checking
 const packageJson = { name: 'rds_ssm_connect', version: '1.8.3' }
-
-const execAsync = promisify(exec)
 
 // Event emitter for IPC communication
 const ipcEmitter = new EventEmitter()
@@ -116,7 +116,7 @@ function getDescendantPids(pid) {
   return descendants
 }
 
-// Kill entire process tree: shell → aws-vault → aws → session-manager-plugin.
+// Kill entire process tree: shell -> aws-vault -> aws -> session-manager-plugin.
 // Uses three strategies because descendants may escape to different process
 // groups (aws-vault / AWS CLI behavior on macOS).
 function killProcessTree(child) {
@@ -127,7 +127,7 @@ function killProcessTree(child) {
   const descendants = getDescendantPids(rootPid)
   const allPids = [rootPid, ...descendants]
 
-  // Strategy 1: Process group kill (fast, atomic — works when all share PGID)
+  // Strategy 1: Process group kill (fast, atomic -- works when all share PGID)
   try { process.kill(-rootPid, 'SIGTERM') } catch (_err) {}
 
   // Strategy 2: Individual SIGTERM (handles descendants in different groups)
@@ -170,31 +170,17 @@ async function readAwsConfig() {
   }
 }
 
-async function runCommand(command) {
-  try {
-    const { stdout } = await execAsync(command)
-    return stdout.trim()
-  } catch (_error) {
-    return null
-  }
-}
-
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// Pre-flight credential check. Uses a short timeout so that if aws-vault
-// needs to open a browser for SSO re-auth (which blocks indefinitely), the
-// command is killed before any browser tab appears.
+// Pre-flight credential check using AWS SDK.
 async function checkCredentialsValid(profile, region) {
+  const clients = createAwsClients(profile, region)
   try {
-    await execAsync(
-      `aws-vault exec ${profile} -- aws sts get-caller-identity --region ${region}`,
-      { timeout: RETRY_CONFIG.CREDENTIAL_CHECK_TIMEOUT_MS },
-    )
-    return { valid: true }
-  } catch (_error) {
-    return { valid: false }
+    return await ops.checkCredentialsValid(clients)
+  } finally {
+    destroyAwsClients(clients)
   }
 }
 
@@ -215,8 +201,12 @@ function startKeepalive(localPort) {
 }
 
 async function terminateBastionInstance(ENV, instanceId, region) {
-  const terminateCommand = `aws-vault exec ${ENV} -- aws ec2 terminate-instances --region ${region} --instance-ids ${instanceId}`
-  await runCommand(terminateCommand)
+  const clients = createAwsClients(ENV, region)
+  try {
+    await ops.terminateBastionInstance(clients, instanceId)
+  } finally {
+    destroyAwsClients(clients)
+  }
 }
 
 async function waitForNewBastionInstance(
@@ -226,29 +216,12 @@ async function waitForNewBastionInstance(
   maxRetries = RETRY_CONFIG.BASTION_WAIT_MAX_RETRIES,
   retryDelay = RETRY_CONFIG.BASTION_WAIT_RETRY_DELAY_MS,
 ) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
-    const newInstanceId = await runCommand(instanceIdCommand)
-
-    if (
-      newInstanceId &&
-      newInstanceId !== oldInstanceId &&
-      newInstanceId !== 'None'
-    ) {
-      // Verify SSM agent is ready
-      const isReady = await waitForSSMAgentReady(ENV, newInstanceId, region)
-      if (isReady) {
-        return newInstanceId
-      } else {
-      }
-    }
-
-    if (attempt < maxRetries) {
-      await sleep(retryDelay)
-    }
+  const clients = createAwsClients(ENV, region)
+  try {
+    return await ops.waitForNewBastionInstance(clients, oldInstanceId, maxRetries, retryDelay)
+  } finally {
+    destroyAwsClients(clients)
   }
-
-  return null
 }
 
 async function waitForSSMAgentReady(
@@ -258,21 +231,12 @@ async function waitForSSMAgentReady(
   maxRetries = 10,
   retryDelay = 3000,
 ) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const ssmStatusCommand = `aws-vault exec ${ENV} -- aws ssm describe-instance-information --region ${region} --filters "Key=InstanceIds,Values=${instanceId}" --query "InstanceInformationList[0].PingStatus" --output text`
-    const status = await runCommand(ssmStatusCommand)
-
-    if (status === 'Online') {
-      // Additional wait for agent to stabilize
-      await sleep(RETRY_CONFIG.SSM_AGENT_READY_WAIT_MS)
-      return true
-    }
-
-    if (attempt < maxRetries) {
-      await sleep(retryDelay)
-    }
+  const clients = createAwsClients(ENV, region)
+  try {
+    return await ops.waitForSSMAgentReady(clients, instanceId, maxRetries, retryDelay, RETRY_CONFIG.SSM_AGENT_READY_WAIT_MS)
+  } finally {
+    destroyAwsClients(clients)
   }
-  return false
 }
 
 function monitorPortForwardingSession(child) {
@@ -314,7 +278,7 @@ function monitorPortForwardingSession(child) {
 }
 
 async function handleTargetNotConnectedError(
-  ENV,
+  clients,
   instanceId,
   rdsEndpoint,
   portNumber,
@@ -324,17 +288,20 @@ async function handleTargetNotConnectedError(
   maxRetries,
   onChild,
 ) {
-  // Terminate the disconnected instance
-  await terminateBastionInstance(ENV, instanceId, region)
+  await ops.terminateBastionInstance(clients, instanceId)
 
-  // Wait for new instance to be ready
-  const newInstanceId = await waitForNewBastionInstance(ENV, instanceId, region)
+  const newInstanceId = await ops.waitForNewBastionInstance(
+    clients,
+    instanceId,
+    RETRY_CONFIG.BASTION_WAIT_MAX_RETRIES,
+    RETRY_CONFIG.BASTION_WAIT_RETRY_DELAY_MS,
+  )
 
   if (!newInstanceId) {
     throw new Error('Failed to find new bastion instance after waiting.')
   }
   return await startPortForwardingWithConfig(
-    ENV,
+    clients,
     newInstanceId,
     rdsEndpoint,
     portNumber,
@@ -346,29 +313,44 @@ async function handleTargetNotConnectedError(
   )
 }
 
-function executePortForwardingCommand(
-  ENV,
+async function executePortForwardingCommand(
+  clients,
   instanceId,
   rdsEndpoint,
   portNumber,
   remotePort,
   region,
 ) {
-  const portForwardingCommand = `aws-vault exec ${ENV} -- aws ssm start-session --region ${region} --target ${instanceId} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters "host=${rdsEndpoint},portNumber='${remotePort}',localPortNumber='${portNumber}'" --cli-connect-timeout 0`
-  const child = spawn(portForwardingCommand, {
-    shell: true,
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  // Find plugin binary
+  const pluginPath = findPluginBinary()
+  if (!pluginPath) {
+    throw new Error(
+      'session-manager-plugin not found. Install it from: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html'
+    )
+  }
 
-  // Register child process for cleanup
+  // Start session via SDK
+  const sessionRequest = {
+    Target: instanceId,
+    DocumentName: 'AWS-StartPortForwardingSessionToRemoteHost',
+    Parameters: {
+      host: [rdsEndpoint],
+      portNumber: [String(remotePort)],
+      localPortNumber: [String(portNumber)],
+    },
+  }
+  const sessionResponse = await ops.startSession(clients, instanceId, rdsEndpoint, remotePort, portNumber)
+
+  // Spawn plugin binary directly (no shell: true)
+  const child = spawnPlugin(pluginPath, sessionResponse, region, sessionRequest)
+
+  // Register for cleanup
   activeChildProcesses.push(child)
-
   return child
 }
 
 async function startPortForwardingWithConfig(
-  ENV,
+  clients,
   instanceId,
   rdsEndpoint,
   portNumber,
@@ -378,76 +360,54 @@ async function startPortForwardingWithConfig(
   maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
   onChild,
 ) {
-  return new Promise((resolve, reject) => {
-    const child = executePortForwardingCommand(
-      ENV,
-      instanceId,
-      rdsEndpoint,
-      portNumber,
-      remotePort,
-      region,
-    )
-    // Notify caller of the new child (used for per-connection tracking).
-    // If the connection was already disconnected, the callback kills this
-    // child immediately so it doesn't linger as an orphan.
-    if (onChild) onChild(child)
+  return new Promise(async (resolve, reject) => {
+    try {
+      const child = await executePortForwardingCommand(
+        clients, instanceId, rdsEndpoint, portNumber, remotePort, region,
+      )
+      // Notify caller of the new child (used for per-connection tracking).
+      // If the connection was already disconnected, the callback kills this
+      // child immediately so it doesn't linger as an orphan.
+      if (onChild) onChild(child)
 
-    const sessionState = monitorPortForwardingSession(child)
+      const sessionState = monitorPortForwardingSession(child)
 
-    child.on('close', async (code) => {
-      // Remove from active processes
-      activeChildProcesses = activeChildProcesses.filter((p) => p !== child)
+      child.on('close', async (code) => {
+        // Remove from active processes
+        activeChildProcesses = activeChildProcesses.filter((p) => p !== child)
 
-      try {
-        // Handle TargetNotConnected error with retry
-        if (
-          code === 254 &&
-          sessionState.targetNotConnectedError &&
-          retryCount < maxRetries
-        ) {
-          await handleTargetNotConnectedError(
-            ENV,
-            instanceId,
-            rdsEndpoint,
-            portNumber,
-            remotePort,
-            region,
-            retryCount,
-            maxRetries,
-            onChild,
-          )
-          resolve()
-        } else if (code !== 0) {
-          reject(new Error(`Port forwarding failed with code ${code}`))
-        } else {
-          resolve()
+        try {
+          // Handle TargetNotConnected error with retry
+          if (
+            code === 254 &&
+            sessionState.targetNotConnectedError &&
+            retryCount < maxRetries
+          ) {
+            await handleTargetNotConnectedError(
+              clients,
+              instanceId,
+              rdsEndpoint,
+              portNumber,
+              remotePort,
+              region,
+              retryCount,
+              maxRetries,
+              onChild,
+            )
+            resolve()
+          } else if (code !== 0) {
+            reject(new Error(`Port forwarding failed with code ${code}`))
+          } else {
+            resolve()
+          }
+        } catch (error) {
+          reject(error)
         }
-      } catch (error) {
-        reject(error)
-      }
-    })
+      })
+    } catch (error) {
+      reject(error)
+    }
   })
-}
-
-// Legacy function for backward compatibility
-async function _startPortForwarding(
-  ENV,
-  instanceId,
-  rdsEndpoint,
-  portNumber,
-  retryCount = 0,
-  maxRetries = RETRY_CONFIG.PORT_FORWARDING_MAX_RETRIES,
-) {
-  return startPortForwardingWithConfig(
-    ENV,
-    instanceId,
-    rdsEndpoint,
-    portNumber,
-    '5432',
-    'us-east-2',
-    retryCount,
-    maxRetries,
-  )
 }
 
 // Validation patterns for security
@@ -459,30 +419,25 @@ function getDefaultPortForEngine(projectConfig) {
   return projectConfig.engine === 'mysql' ? '3306' : '5432'
 }
 
-async function getRdsEndpoint(ENV, projectConfig) {
+async function getRdsEndpoint(profile, projectConfig) {
   const { region, rdsType, rdsPattern } = projectConfig
-
-  if (rdsType === 'cluster') {
-    // Aurora cluster lookup
-    const rdsEndpointCommand = `aws-vault exec ${ENV} -- aws rds describe-db-clusters --region ${region} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '${rdsPattern}')].Endpoint | [0]" --output text`
-    return await runCommand(rdsEndpointCommand)
-  } else {
-    // Single RDS instance lookup
-    const rdsEndpointCommand = `aws-vault exec ${ENV} -- aws rds describe-db-instances --region ${region} --query "DBInstances[?DBInstanceStatus=='available' && contains(DBInstanceIdentifier, '${rdsPattern}')].Endpoint.Address | [0]" --output text`
-    return await runCommand(rdsEndpointCommand)
+  const clients = createAwsClients(profile, region)
+  try {
+    return await ops.getRdsEndpoint(clients, rdsType, rdsPattern)
+  } finally {
+    destroyAwsClients(clients)
   }
 }
 
-async function getRdsPort(ENV, projectConfig) {
+async function getRdsPort(profile, projectConfig) {
   const { region, rdsType, rdsPattern } = projectConfig
   const fallbackPort = getDefaultPortForEngine(projectConfig)
-
-  if (rdsType === 'cluster') {
-    const portCommand = `aws-vault exec ${ENV} -- aws rds describe-db-clusters --region ${region} --query "DBClusters[?Status=='available' && ends_with(DBClusterIdentifier, '${rdsPattern}')].Port | [0]" --output text`
-    return (await runCommand(portCommand)) || fallbackPort
-  } else {
-    const portCommand = `aws-vault exec ${ENV} -- aws rds describe-db-instances --region ${region} --query "DBInstances[?DBInstanceStatus=='available' && contains(DBInstanceIdentifier, '${rdsPattern}')].Endpoint.Port | [0]" --output text`
-    return (await runCommand(portCommand)) || fallbackPort
+  const clients = createAwsClients(profile, region)
+  try {
+    const port = await ops.getRdsPort(clients, rdsType, rdsPattern, fallbackPort)
+    return String(port)
+  } finally {
+    destroyAwsClients(clients)
   }
 }
 
@@ -530,57 +485,24 @@ function getLocalPort(ENV, projectConfig) {
 }
 
 // Get RDS credentials from Secrets Manager
-async function getConnectionCredentials(ENV, projectConfig) {
+async function getConnectionCredentials(profile, projectConfig) {
   const { region, secretPrefix, database } = projectConfig
-
-  const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?contains(Name, '${secretPrefix}')].Name | [0]" --output text`
-  const SECRET_NAME = await runCommand(secretsListCommand)
-
-  if (!SECRET_NAME || SECRET_NAME === 'None') {
-    throw new Error(
-      `No secret found with name containing '${secretPrefix}'.`,
-    )
-  }
-
-  const secretsGetCommand = `aws-vault exec ${ENV} -- aws secretsmanager get-secret-value --region ${region} --secret-id "${SECRET_NAME}" --query SecretString --output text`
-  const secretString = await runCommand(secretsGetCommand)
-
-  if (!secretString) {
-    throw new Error('Failed to retrieve secret value from Secrets Manager.')
-  }
-
-  let credentials
+  const clients = createAwsClients(profile, region)
   try {
-    credentials = JSON.parse(secretString)
-    if (!credentials.username || !credentials.password) {
-      throw new Error('Missing username or password in credentials')
-    }
-  } catch (error) {
-    throw new Error(
-      `Failed to parse credentials from Secrets Manager: ${error.message}`,
-    )
-  }
-
-  return {
-    username: credentials.username,
-    password: credentials.password,
-    database,
-    secretName: SECRET_NAME,
+    return await ops.getConnectionCredentials(clients, secretPrefix, database)
+  } finally {
+    destroyAwsClients(clients)
   }
 }
 
 // Find running bastion instance
-async function findBastionInstance(ENV, region) {
-  const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
-  const instanceId = await runCommand(instanceIdCommand)
-
-  if (!instanceId || instanceId === 'None') {
-    throw new Error(
-      'Failed to find a running instance with tag Name=*bastion*.',
-    )
+async function findBastionInstance(profile, region) {
+  const clients = createAwsClients(profile, region)
+  try {
+    return await ops.findBastionInstance(clients)
+  } finally {
+    destroyAwsClients(clients)
   }
-
-  return instanceId
 }
 
 // Get available projects based on AWS profiles
@@ -639,6 +561,11 @@ async function connect(projectKey, profile, options = {}) {
   // Use provided localPort or fall back to computed port from profile
   const localPort = options.localPort || getLocalPort(profile, projectConfig)
 
+  // Create SDK clients ONCE for this connection
+  const clients = createAwsClients(profile, region, {
+    mfaPrompt: options.mfaPrompt,
+  })
+
   let manualDisconnect = false
   let stopKeepalive = null
   let currentChild = null // per-connection child tracking
@@ -663,17 +590,17 @@ async function connect(projectKey, profile, options = {}) {
   }
 
   emit('status', { message: 'Getting credentials...' })
-  const credentials = await getConnectionCredentials(profile, projectConfig)
+  const credentials = await ops.getConnectionCredentials(clients, projectConfig.secretPrefix, database)
 
   emit('status', { message: 'Finding bastion instance...' })
-  let currentInstanceId = await findBastionInstance(profile, region)
+  let currentInstanceId = await ops.findBastionInstance(clients)
 
   if (!INSTANCE_ID_PATTERN.test(currentInstanceId)) {
     throw new Error(`Invalid instance ID format: ${currentInstanceId}`)
   }
 
   emit('status', { message: 'Getting RDS endpoint...' })
-  let currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+  let currentRdsEndpoint = await ops.getRdsEndpoint(clients, projectConfig.rdsType, projectConfig.rdsPattern)
 
   if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
     throw new Error('Failed to find the RDS endpoint.')
@@ -684,7 +611,7 @@ async function connect(projectKey, profile, options = {}) {
   }
 
   emit('status', { message: 'Getting RDS port...' })
-  const rdsPort = await getRdsPort(profile, projectConfig)
+  const rdsPort = String(await ops.getRdsPort(clients, projectConfig.rdsType, projectConfig.rdsPattern, getDefaultPortForEngine(projectConfig)))
 
   const connectionInfo = {
     host: 'localhost',
@@ -696,7 +623,6 @@ async function connect(projectKey, profile, options = {}) {
     instanceId: currentInstanceId,
   }
 
-  emit('credentials', connectionInfo)
   emit('status', { message: 'Starting port forwarding...' })
 
   // Auto-reconnect session management loop.
@@ -710,7 +636,7 @@ async function connect(projectKey, profile, options = {}) {
         stopKeepalive = startKeepalive(localPort)
 
         await startPortForwardingWithConfig(
-          profile,
+          clients,
           currentInstanceId,
           currentRdsEndpoint,
           localPort,
@@ -721,13 +647,13 @@ async function connect(projectKey, profile, options = {}) {
           onChild,
         )
 
-        // Session ended — clean up keepalive
+        // Session ended -- clean up keepalive
         stopKeepalive?.()
         stopKeepalive = null
 
         if (manualDisconnect) break
 
-        // Unexpected disconnect (idle timeout, network issue) — auto-reconnect
+        // Unexpected disconnect (idle timeout, network issue) -- auto-reconnect
         reconnectCount++
         if (reconnectCount > RETRY_CONFIG.AUTO_RECONNECT_MAX_RETRIES) {
           throw new Error('Maximum auto-reconnection attempts reached.')
@@ -743,7 +669,7 @@ async function connect(projectKey, profile, options = {}) {
         // Verify credentials are still valid before retrying.
         // Avoids opening browser SSO tabs when the user is away.
         emit('status', { message: 'Checking credentials...' })
-        const credCheck = await checkCredentialsValid(profile, region)
+        const credCheck = await ops.checkCredentialsValid(clients)
         if (!credCheck.valid) {
           emit('status', {
             message:
@@ -754,10 +680,10 @@ async function connect(projectKey, profile, options = {}) {
 
         // Re-discover infrastructure (bastion may have been replaced by ASG)
         emit('status', { message: 'Finding bastion instance...' })
-        currentInstanceId = await findBastionInstance(profile, region)
+        currentInstanceId = await ops.findBastionInstance(clients)
 
         emit('status', { message: 'Getting RDS endpoint...' })
-        currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+        currentRdsEndpoint = await ops.getRdsEndpoint(clients, projectConfig.rdsType, projectConfig.rdsPattern)
 
         if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
           throw new Error(
@@ -785,7 +711,7 @@ async function connect(projectKey, profile, options = {}) {
         if (manualDisconnect) break
 
         // Verify credentials before retrying (same check as happy path)
-        const credCheckOnError = await checkCredentialsValid(profile, region)
+        const credCheckOnError = await ops.checkCredentialsValid(clients)
         if (!credCheckOnError.valid) {
           emit('status', {
             message:
@@ -795,8 +721,8 @@ async function connect(projectKey, profile, options = {}) {
         }
 
         try {
-          currentInstanceId = await findBastionInstance(profile, region)
-          currentRdsEndpoint = await getRdsEndpoint(profile, projectConfig)
+          currentInstanceId = await ops.findBastionInstance(clients)
+          currentRdsEndpoint = await ops.getRdsEndpoint(clients, projectConfig.rdsType, projectConfig.rdsPattern)
           if (!currentRdsEndpoint || currentRdsEndpoint === 'None') {
             throw new Error('Failed to find RDS endpoint')
           }
@@ -805,6 +731,9 @@ async function connect(projectKey, profile, options = {}) {
         }
       }
     }
+
+    // Clean up clients when done
+    destroyAwsClients(clients)
   })()
 
   // Return connection control object
@@ -995,7 +924,7 @@ async function main() {
     }
 
     const projectConfig = PROJECT_CONFIGS[projectKey]
-    const { region, secretPrefix, envPortMapping, defaultPort } = projectConfig
+    const { region, envPortMapping, defaultPort } = projectConfig
 
     // Step 2: Get profiles for selected project
     const ENVS = getProfilesForProject(
@@ -1020,7 +949,7 @@ async function main() {
     const ENV = envAnswer.ENV
 
     if (!PROFILE_SAFE_PATTERN.test(ENV)) {
-      console.error('❌ Invalid profile name:', ENV)
+      console.error('Invalid profile name:', ENV)
       return
     }
 
@@ -1033,89 +962,65 @@ async function main() {
       allEnvSuffixes.find((suffix) => ENV === suffix)
     const portNumber = envPortMapping[matchedSuffix] || defaultPort
 
-    // Get RDS credentials from Secrets Manager
-    console.log('\n⏳ Getting credentials...')
-    const secretsListCommand = `aws-vault exec ${ENV} -- aws secretsmanager list-secrets --region ${region} --query "SecretList[?contains(Name, '${secretPrefix}')].Name | [0]" --output text`
-    const SECRET_NAME = await runCommand(secretsListCommand)
+    // Create SDK clients ONCE for this CLI session
+    const clients = createAwsClients(ENV, region)
 
-    if (!SECRET_NAME || SECRET_NAME === 'None') {
-      console.error('❌ No secret found with prefix:', secretPrefix)
-      return
-    }
-
-    const secretsGetCommand = `aws-vault exec ${ENV} -- aws secretsmanager get-secret-value --region ${region} --secret-id "${SECRET_NAME}" --query SecretString --output text`
-    const secretString = await runCommand(secretsGetCommand)
-
-    if (!secretString) {
-      console.error('❌ Failed to retrieve secret value')
-      return
-    }
-
-    let CREDENTIALS
     try {
-      CREDENTIALS = JSON.parse(secretString)
-      if (!CREDENTIALS.username || !CREDENTIALS.password) {
-        throw new Error('Missing username or password in credentials')
+      // Get RDS credentials from Secrets Manager
+      console.log('\n\u23F3 Getting credentials...')
+      const CREDENTIALS = await ops.getConnectionCredentials(clients, projectConfig.secretPrefix, projectConfig.database)
+
+      // Find bastion instance
+      console.log('\u23F3 Finding bastion instance...')
+      const INSTANCE_ID = await ops.findBastionInstance(clients)
+
+      if (!INSTANCE_ID_PATTERN.test(INSTANCE_ID)) {
+        console.error('Invalid instance ID format:', INSTANCE_ID)
+        return
       }
-    } catch (_error) {
-      console.error('❌ Failed to parse credentials')
-      return
+
+      // Get RDS endpoint
+      console.log('\u23F3 Getting RDS endpoint...')
+      const RDS_ENDPOINT = await ops.getRdsEndpoint(clients, projectConfig.rdsType, projectConfig.rdsPattern)
+
+      if (!RDS_ENDPOINT || RDS_ENDPOINT === 'None') {
+        console.error('Failed to find RDS endpoint')
+        return
+      }
+
+      if (!HOSTNAME_PATTERN.test(RDS_ENDPOINT)) {
+        console.error('Invalid RDS endpoint format:', RDS_ENDPOINT)
+        return
+      }
+
+      // Get RDS port (remote port)
+      const rdsPort = String(await ops.getRdsPort(clients, projectConfig.rdsType, projectConfig.rdsPattern, getDefaultPortForEngine(projectConfig)))
+
+      // Print connection details
+      console.log('\n\u2705 Connection details:')
+      console.log(`   Host:     localhost`)
+      console.log(`   Port:     ${portNumber}`)
+      console.log(`   Username: ${CREDENTIALS.username}`)
+      // Copy password to clipboard without logging it in clear text
+      const pw = CREDENTIALS.password
+      const pwLen = pw.length
+      const copied = copyToClipboard(pw)
+      console.log(`   Password: ${'*'.repeat(pwLen)}${copied ? ' (copied to clipboard)' : ''}`)
+      console.log(`   Database: ${projectConfig.database}`)
+      console.log(`\n\u23F3 Starting port forwarding...`)
+      console.log('   Press Ctrl+C to disconnect\n')
+
+      await startPortForwardingWithConfig(
+        clients,
+        INSTANCE_ID,
+        RDS_ENDPOINT,
+        portNumber,
+        rdsPort,
+        region,
+      )
+    } finally {
+      destroyAwsClients(clients)
     }
-
-    // Find bastion instance
-    console.log('⏳ Finding bastion instance...')
-    const instanceIdCommand = `aws-vault exec ${ENV} -- aws ec2 describe-instances --region ${region} --filters "Name=tag:Name,Values='*bastion*'" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].[InstanceId] | [0][0]" --output text`
-    const INSTANCE_ID = await runCommand(instanceIdCommand)
-
-    if (!INSTANCE_ID || INSTANCE_ID === 'None') {
-      console.error('❌ No running bastion instance found')
-      return
-    }
-
-    if (!INSTANCE_ID_PATTERN.test(INSTANCE_ID)) {
-      console.error('❌ Invalid instance ID format:', INSTANCE_ID)
-      return
-    }
-
-    // Get RDS endpoint
-    console.log('⏳ Getting RDS endpoint...')
-    const RDS_ENDPOINT = await getRdsEndpoint(ENV, projectConfig)
-
-    if (!RDS_ENDPOINT || RDS_ENDPOINT === 'None') {
-      console.error('❌ Failed to find RDS endpoint')
-      return
-    }
-
-    if (!HOSTNAME_PATTERN.test(RDS_ENDPOINT)) {
-      console.error('❌ Invalid RDS endpoint format:', RDS_ENDPOINT)
-      return
-    }
-
-    // Get RDS port (remote port)
-    const rdsPort = await getRdsPort(ENV, projectConfig)
-
-    // Print connection details
-    console.log('\n✅ Connection details:')
-    console.log(`   Host:     localhost`)
-    console.log(`   Port:     ${portNumber}`)
-    console.log(`   Username: ${CREDENTIALS.username}`)
-    // Copy password to clipboard without logging it in clear text
-    const pw = CREDENTIALS.password
-    const pwLen = pw.length
-    const copied = copyToClipboard(pw)
-    console.log(`   Password: ${'*'.repeat(pwLen)}${copied ? ' (copied to clipboard)' : ''}`)
-    console.log(`   Database: ${projectConfig.database}`)
-    console.log(`\n⏳ Starting port forwarding...`)
-    console.log('   Press Ctrl+C to disconnect\n')
-
-    await startPortForwardingWithConfig(
-      ENV,
-      INSTANCE_ID,
-      RDS_ENDPOINT,
-      portNumber,
-      rdsPort,
-      region,
-    )
   } catch (_error) {
     setImmediate(() => {
       throw new Error('Forcing exit due to unhandled error')
