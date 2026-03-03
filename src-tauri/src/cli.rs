@@ -279,7 +279,7 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
     });
 
     // Run native port forwarding
-    start_native_port_forwarding(stream_url, token_value, port_num, cancel).await?;
+    start_native_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
 
     eprintln!("  \u{1F44B} Disconnected.\n");
 

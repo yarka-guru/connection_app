@@ -16,6 +16,10 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub struct SsmDataChannel {
     pub ws: WsStream,
     pub agent_version: String,
+    /// Next outgoing sequence number (after handshake consumed some).
+    pub outgoing_seq: i64,
+    /// Next expected incoming sequence number (after handshake consumed some).
+    pub expected_incoming_seq: i64,
 }
 
 /// Connect to SSM WebSocket, authenticate, and complete the handshake.
@@ -44,8 +48,13 @@ pub async fn open_data_channel(
         .map_err(|e| format!("Failed to send OpenDataChannelInput: {}", e))?;
 
     // Step 3: Handshake — wait for HandshakeRequest from agent
+    // Track sequence numbers: the agent uses a single counter for all outgoing messages,
+    // and the client uses a single counter for all outgoing messages. These continue
+    // from the handshake into data forwarding (they are NOT reset).
     let mut agent_version = String::new();
     let mut handshake_complete = false;
+    let mut client_seq: i64 = 0; // our outgoing sequence counter
+    let mut expected_server_seq: i64 = 0; // what we expect from the agent next
 
     while !handshake_complete {
         let ws_msg = ws
@@ -67,6 +76,9 @@ pub async fn open_data_channel(
                             .await
                             .map_err(|e| format!("Failed to send ack: {}", e))?;
 
+                        // Advance expected server sequence (agent uses single counter)
+                        expected_server_seq += 1;
+
                         match msg.payload_type {
                             PAYLOAD_HANDSHAKE_REQUEST => {
                                 let request: HandshakeRequestPayload =
@@ -75,13 +87,14 @@ pub async fn open_data_channel(
                                     })?;
                                 agent_version = request.agent_version.clone();
 
-                                // Send HandshakeResponse
-                                let response = build_handshake_response(&request, 0);
+                                // Send HandshakeResponse using current client seq
+                                let response = build_handshake_response(&request, client_seq);
                                 ws.send(Message::Binary(response.serialize().into()))
                                     .await
                                     .map_err(|e| {
                                         format!("Failed to send HandshakeResponse: {}", e)
                                     })?;
+                                client_seq += 1;
                             }
                             PAYLOAD_HANDSHAKE_COMPLETE => {
                                 if let Ok(complete) =
@@ -117,8 +130,15 @@ pub async fn open_data_channel(
         }
     }
 
+    log::info!(
+        "Post-handshake seq: outgoing={}, expected_incoming={}",
+        client_seq, expected_server_seq
+    );
+
     Ok(SsmDataChannel {
         ws,
         agent_version,
+        outgoing_seq: client_seq,
+        expected_incoming_seq: expected_server_seq,
     })
 }

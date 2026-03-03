@@ -286,12 +286,12 @@ pub fn build_acknowledge(original: &AgentMessage) -> AgentMessage {
 }
 
 /// Build an input_stream_data message carrying TCP data.
-pub fn build_data_message(data: &[u8], sequence_number: i64, is_first: bool) -> AgentMessage {
-    let flags = if is_first { FLAG_SYN } else { FLAG_DATA };
+/// The Go session-manager-plugin always sends Flags=0 for outgoing data messages.
+pub fn build_data_message(data: &[u8], sequence_number: i64) -> AgentMessage {
     AgentMessage::new(
         INPUT_STREAM_DATA,
         sequence_number,
-        flags,
+        FLAG_DATA,
         PAYLOAD_OUTPUT,
         data.to_vec(),
     )
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn serialize_deserialize_roundtrip() {
         let payload = b"hello world".to_vec();
-        let msg = AgentMessage::new(INPUT_STREAM_DATA, 42, FLAG_SYN, PAYLOAD_OUTPUT, payload.clone());
+        let msg = AgentMessage::new(INPUT_STREAM_DATA, 42, FLAG_DATA, PAYLOAD_OUTPUT, payload.clone());
 
         let bytes = msg.serialize();
         assert_eq!(bytes.len(), TOTAL_HEADER_SIZE + payload.len());
@@ -410,7 +410,7 @@ mod tests {
         assert_eq!(decoded.message_type, INPUT_STREAM_DATA);
         assert_eq!(decoded.schema_version, SCHEMA_VERSION);
         assert_eq!(decoded.sequence_number, 42);
-        assert_eq!(decoded.flags, FLAG_SYN);
+        assert_eq!(decoded.flags, FLAG_DATA);
         assert_eq!(decoded.message_id, msg.message_id);
         assert_eq!(decoded.payload_type, PAYLOAD_OUTPUT);
         assert_eq!(decoded.payload, payload);

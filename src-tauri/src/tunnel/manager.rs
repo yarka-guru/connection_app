@@ -236,6 +236,9 @@ impl TunnelManager {
             guard.insert(connection_id.clone(), connection);
         }
 
+        // Channel to signal when the tunnel is actually ready
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
         // Spawn background task for port forwarding lifecycle
         let app_handle = self.app_handle.clone();
         let connections = self.connections.clone();
@@ -253,6 +256,7 @@ impl TunnelManager {
                 &rds_port,
                 &project_config,
                 cancel_token,
+                Some(ready_tx),
             )
             .await;
 
@@ -292,7 +296,36 @@ impl TunnelManager {
         });
 
         self.emit_status("Starting port forwarding...", Some(&connection_id));
-        Ok((connection_id, connection_info))
+
+        // Wait for the tunnel to actually be ready (TCP listener bound)
+        match tokio::time::timeout(tokio::time::Duration::from_secs(30), ready_rx).await {
+            Ok(Ok(Ok(()))) => {
+                // Tunnel is ready
+                Ok((connection_id, connection_info))
+            }
+            Ok(Ok(Err(e))) => {
+                // Tunnel failed to start
+                let mut guard = self.connections.lock().await;
+                guard.remove(&connection_id);
+                Err(AppError::Tunnel(e))
+            }
+            Ok(Err(_)) => {
+                // Channel dropped — tunnel task failed before signaling
+                let mut guard = self.connections.lock().await;
+                guard.remove(&connection_id);
+                Err(AppError::Tunnel(
+                    "Tunnel failed to start (channel dropped)".to_string(),
+                ))
+            }
+            Err(_) => {
+                // Timeout
+                let mut guard = self.connections.lock().await;
+                guard.remove(&connection_id);
+                Err(AppError::Tunnel(
+                    "Tunnel startup timed out after 30 seconds".to_string(),
+                ))
+            }
+        }
     }
 
     /// Disconnect a specific connection.
@@ -346,10 +379,12 @@ async fn run_tunnel_lifecycle(
     rds_port: &str,
     project_config: &ProjectConfig,
     cancel_token: CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
     let mut current_instance_id = initial_instance_id.to_string();
     let mut current_rds_endpoint = initial_rds_endpoint.to_string();
     let mut reconnect_count: u32 = 0;
+    let mut ready_tx = ready_tx;
 
     loop {
         if cancel_token.is_cancelled() {
@@ -364,7 +399,7 @@ async fn run_tunnel_lifecycle(
             run_keepalive(keepalive_port, keepalive_child).await;
         });
 
-        // Start port forwarding
+        // Start port forwarding (pass ready_tx only on first attempt)
         let result = start_port_forwarding_with_retry(
             clients,
             &current_instance_id,
@@ -373,6 +408,7 @@ async fn run_tunnel_lifecycle(
             rds_port,
             &project_config.region,
             &cancel_token,
+            ready_tx.take(),
         )
         .await;
 
@@ -521,9 +557,11 @@ async fn start_port_forwarding_with_retry(
     remote_port: &str,
     region: &str,
     cancel_token: &CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
     let mut current_instance_id = instance_id.to_string();
     let mut retry_count: u32 = 0;
+    let mut ready_tx = ready_tx;
 
     loop {
         let result = execute_port_forwarding(
@@ -534,6 +572,7 @@ async fn start_port_forwarding_with_retry(
             remote_port,
             region,
             cancel_token,
+            ready_tx.take(),
         )
         .await;
 
@@ -585,6 +624,7 @@ async fn execute_port_forwarding(
     remote_port: &str,
     _region: &str,
     cancel_token: &CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), PortForwardError> {
     // Start SSM session via AWS API
     let session_response = operations::start_session(
@@ -617,6 +657,7 @@ async fn execute_port_forwarding(
         token_value,
         port_num,
         cancel_child,
+        ready_tx,
     )
     .await;
 

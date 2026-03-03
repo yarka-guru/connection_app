@@ -42,6 +42,7 @@ pub async fn start_native_port_forwarding(
     token_value: String,
     local_port: u16,
     cancel: tokio_util::sync::CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), String> {
     // Open data channel (WebSocket + handshake)
     let channel = open_data_channel(&stream_url, &token_value).await?;
@@ -49,6 +50,10 @@ pub async fn start_native_port_forwarding(
         "SSM data channel open, agent version: {}",
         channel.agent_version
     );
+
+    // Extract sequence numbers before moving ws
+    let initial_outgoing_seq = channel.outgoing_seq;
+    let initial_incoming_seq = channel.expected_incoming_seq;
 
     // Split the WebSocket into read/write halves
     let (ws_write_half, ws_read_half) = channel.ws.split();
@@ -62,17 +67,25 @@ pub async fn start_native_port_forwarding(
         .map_err(|e| format!("Failed to bind port {}: {}", local_port, e))?;
     log::info!("Listening on 127.0.0.1:{}", local_port);
 
-    // Shared state
-    let outgoing_seq = Arc::new(AtomicI64::new(0));
-    let expected_incoming_seq = Arc::new(AtomicI64::new(0));
+    // Signal that the tunnel is ready for connections
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(Ok(()));
+    }
+
+    // Shared state — sequence numbers continue from where the handshake left off.
+    // The handshake consumed some sequence numbers on both sides:
+    //   - outgoing: HandshakeResponse used seq 0 → next outgoing = 1
+    //   - incoming: HandshakeRequest was seq 0, HandshakeComplete was seq 1 → next expected = 2
+    let outgoing_seq = Arc::new(AtomicI64::new(initial_outgoing_seq));
+    let expected_incoming_seq = Arc::new(AtomicI64::new(initial_incoming_seq));
     let session_active = Arc::new(AtomicBool::new(true));
     let tcp_connected = Arc::new(AtomicBool::new(false));
 
     // Outgoing buffer for retransmission
     let outgoing_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, OutgoingEntry>::new()));
 
-    // Incoming out-of-order buffer
-    let incoming_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, Vec<u8>>::new()));
+    // Incoming out-of-order buffer: seq → (payload_type, payload)
+    let incoming_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, (u32, Vec<u8>)>::new()));
 
     // Channel for passing received data to the TCP write side
     let (tcp_data_tx, mut tcp_data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
@@ -209,55 +222,78 @@ pub async fn start_native_port_forwarding(
                             let _ = ws_w.send(Message::Binary(ack.serialize().into())).await;
                             drop(ws_w);
 
-                            match agent_msg.payload_type {
-                                PAYLOAD_OUTPUT => {
-                                    if !tcp_connected_ws.load(Ordering::Relaxed) {
-                                        continue;
-                                    }
-                                    let seq = agent_msg.sequence_number;
-                                    let expected = expected_seq.load(Ordering::Relaxed);
-
-                                    if seq == expected {
-                                        // In-order: deliver immediately
-                                        let _ = tcp_data_tx.send(agent_msg.payload).await;
-                                        expected_seq.store(expected + 1, Ordering::Relaxed);
-
-                                        // Drain buffered
-                                        let mut next = expected + 1;
-                                        let mut buf = incoming_buf.lock().await;
-                                        while let Some(data) = buf.remove(&next) {
-                                            let _ = tcp_data_tx.send(data).await;
-                                            next += 1;
-                                        }
-                                        expected_seq.store(next, Ordering::Relaxed);
-                                    } else if seq > expected {
-                                        // Out-of-order: buffer
-                                        let mut buf = incoming_buf.lock().await;
-                                        buf.insert(seq, agent_msg.payload);
-                                    }
-                                    // seq < expected: duplicate, drop silently
-                                }
-                                PAYLOAD_FLAG => {
-                                    if agent_msg.payload.len() >= 4 {
-                                        let flag_value =
-                                            BigEndian::read_u32(&agent_msg.payload[..4]);
-                                        match flag_value {
-                                            FLAG_DISCONNECT_TO_PORT => {
-                                                log::info!("Agent disconnected from remote port");
-                                                tcp_connected_ws.store(false, Ordering::Relaxed);
-                                            }
-                                            FLAG_CONNECT_TO_PORT_ERROR => {
-                                                log::error!(
-                                                    "Agent failed to connect to remote port"
-                                                );
-                                                session_active_ws.store(false, Ordering::Relaxed);
-                                            }
-                                            _ => {}
+                            // Track sequence numbers for ALL payload types (the agent
+                            // uses a single counter for output, flag, etc.)
+                            let seq = agent_msg.sequence_number;
+                            let expected = expected_seq.load(Ordering::Relaxed);
+                            if seq == expected {
+                                // In-order: process and advance
+                                match agent_msg.payload_type {
+                                    PAYLOAD_OUTPUT => {
+                                        if tcp_connected_ws.load(Ordering::Relaxed) {
+                                            let _ = tcp_data_tx.send(agent_msg.payload).await;
                                         }
                                     }
+                                    PAYLOAD_FLAG => {
+                                        if agent_msg.payload.len() >= 4 {
+                                            let flag_value =
+                                                BigEndian::read_u32(&agent_msg.payload[..4]);
+                                            match flag_value {
+                                                FLAG_DISCONNECT_TO_PORT => {
+                                                    log::info!("Agent disconnected from remote port");
+                                                    tcp_connected_ws.store(false, Ordering::Relaxed);
+                                                }
+                                                FLAG_CONNECT_TO_PORT_ERROR => {
+                                                    log::error!(
+                                                        "Agent failed to connect to remote port"
+                                                    );
+                                                    session_active_ws.store(false, Ordering::Relaxed);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
+                                expected_seq.store(expected + 1, Ordering::Relaxed);
+
+                                // Drain buffered in-order messages
+                                let mut next = expected + 1;
+                                let mut ibuf = incoming_buf.lock().await;
+                                while let Some((pt, data)) = ibuf.remove(&next) {
+                                    match pt {
+                                        PAYLOAD_OUTPUT => {
+                                            if tcp_connected_ws.load(Ordering::Relaxed) {
+                                                let _ = tcp_data_tx.send(data).await;
+                                            }
+                                        }
+                                        PAYLOAD_FLAG => {
+                                            if data.len() >= 4 {
+                                                let flag_value = BigEndian::read_u32(&data[..4]);
+                                                match flag_value {
+                                                    FLAG_DISCONNECT_TO_PORT => {
+                                                        log::info!("Agent disconnected from remote port");
+                                                        tcp_connected_ws.store(false, Ordering::Relaxed);
+                                                    }
+                                                    FLAG_CONNECT_TO_PORT_ERROR => {
+                                                        log::error!("Agent failed to connect to remote port");
+                                                        session_active_ws.store(false, Ordering::Relaxed);
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    next += 1;
+                                }
+                                expected_seq.store(next, Ordering::Relaxed);
+                            } else if seq > expected {
+                                // Out-of-order: buffer with payload type
+                                let mut ibuf = incoming_buf.lock().await;
+                                ibuf.insert(seq, (agent_msg.payload_type, agent_msg.payload));
                             }
+                            // seq < expected: duplicate, drop silently
                         }
                         "acknowledge" => {
                             // Process ack: remove from outgoing buffer, update RTT
@@ -322,12 +358,15 @@ pub async fn start_native_port_forwarding(
             _ = cancel.cancelled() => break,
         };
 
-        log::info!("TCP client connected on port {}", local_port);
-        tcp_connected.store(true, Ordering::Relaxed);
+        // Disable Nagle's algorithm — critical for database protocols that
+        // rely on prompt delivery of small packets (e.g. PostgreSQL 1-byte SSL response).
+        let _ = tcp_stream.set_nodelay(true);
 
-        // Reset incoming sequence for new TCP connection
-        expected_incoming_seq.store(0, Ordering::Relaxed);
-        incoming_buffer.lock().await.clear();
+        // Drain any stale data left in the channel from the previous TCP connection
+        // (response data in-flight when the previous client disconnected).
+        while tcp_data_rx.try_recv().is_ok() {}
+
+        tcp_connected.store(true, Ordering::Relaxed);
 
         let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
 
@@ -391,8 +430,7 @@ pub async fn start_native_port_forwarding(
             };
 
             let seq = outgoing_seq_tcp.fetch_add(1, Ordering::Relaxed);
-            let is_first = seq == 0;
-            let msg = build_data_message(&buf[..n], seq, is_first);
+            let msg = build_data_message(&buf[..n], seq);
             let serialized = msg.serialize();
 
             // Add to outgoing buffer for retransmission tracking
@@ -432,10 +470,6 @@ pub async fn start_native_port_forwarding(
             let (_tx, rx) = tokio::sync::mpsc::channel(1024);
             rx
         });
-
-        // Reset outgoing sequence for next TCP connection
-        outgoing_seq.store(0, Ordering::Relaxed);
-        outgoing_buffer.lock().await.clear();
 
         log::info!("TCP client disconnected, waiting for new connection");
     }
