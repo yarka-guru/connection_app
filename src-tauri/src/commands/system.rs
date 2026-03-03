@@ -5,12 +5,13 @@ use crate::tunnel::manager::TunnelManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 pub type AwsDirState = Arc<std::sync::RwLock<Option<AwsDirAccess>>>;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GITHUB_REPO: &str = "https://github.com/yarka-guru/connection_app";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateInfo {
@@ -33,12 +34,15 @@ pub async fn check_for_updates(app_handle: AppHandle) -> Result<UpdateInfo, AppE
         .map_err(|e| AppError::General(format!("Failed to get updater: {}", e)))?;
 
     match updater.check().await {
-        Ok(Some(update)) => Ok(UpdateInfo {
-            update_available: true,
-            current_version: CURRENT_VERSION.to_string(),
-            latest_version: Some(update.version.clone()),
-            download_url: None,
-        }),
+        Ok(Some(update)) => {
+            let download_url = format!("{}/releases/tag/v{}", GITHUB_REPO, update.version);
+            Ok(UpdateInfo {
+                update_available: true,
+                current_version: CURRENT_VERSION.to_string(),
+                latest_version: Some(update.version.clone()),
+                download_url: Some(download_url),
+            })
+        }
         Ok(None) => Ok(UpdateInfo {
             update_available: false,
             current_version: CURRENT_VERSION.to_string(),
@@ -57,6 +61,38 @@ pub async fn check_for_updates(app_handle: AppHandle) -> Result<UpdateInfo, AppE
     }
 }
 
+#[cfg(target_os = "linux")]
+fn try_privileged_install(bytes: &[u8]) -> Result<(), AppError> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| AppError::General(format!("Cannot determine exe path: {}", e)))?;
+
+    let tmp_path = std::env::temp_dir().join("rds-ssm-connect-update");
+    std::fs::write(&tmp_path, bytes)
+        .map_err(|e| AppError::General(format!("Failed to write temp file: {}", e)))?;
+
+    let status = std::process::Command::new("pkexec")
+        .args([
+            "cp",
+            &tmp_path.to_string_lossy(),
+            &current_exe.to_string_lossy(),
+        ])
+        .status();
+
+    let _ = std::fs::remove_file(&tmp_path);
+
+    match status {
+        Ok(s) if s.success() => {
+            let _ = std::process::Command::new("pkexec")
+                .args(["chmod", "+x", &current_exe.to_string_lossy()])
+                .status();
+            Ok(())
+        }
+        _ => Err(AppError::General(
+            "Privileged install cancelled or failed. Try downloading manually.".to_string(),
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn install_update(app_handle: AppHandle) -> Result<(), AppError> {
     use tauri_plugin_updater::UpdaterExt;
@@ -71,23 +107,50 @@ pub async fn install_update(app_handle: AppHandle) -> Result<(), AppError> {
         .map_err(|e| AppError::General(format!("Failed to check for updates: {}", e)))?
         .ok_or_else(|| AppError::General("No update available".to_string()))?;
 
-    let mut downloaded = 0;
-    update
-        .download_and_install(
-            |chunk_length, content_length| {
-                downloaded += chunk_length;
-                if let Some(total) = content_length {
-                    eprintln!("Downloaded {} of {} bytes", downloaded, total);
-                }
+    // Download with progress events
+    let app = app_handle.clone();
+    let mut downloaded: u64 = 0;
+    let bytes = update
+        .download(
+            move |chunk_length, content_length| {
+                downloaded += chunk_length as u64;
+                let _ = app.emit(
+                    "update-progress",
+                    serde_json::json!({
+                        "phase": "downloading",
+                        "downloaded": downloaded,
+                        "total": content_length,
+                    }),
+                );
             },
-            || {
-                eprintln!("Download complete, installing...");
-            },
+            || {},
         )
         .await
-        .map_err(|e| AppError::General(format!("Failed to download/install update: {}", e)))?;
+        .map_err(|e| AppError::General(format!("Failed to download update: {}", e)))?;
 
-    app_handle.restart();
+    let _ = app_handle.emit(
+        "update-progress",
+        serde_json::json!({ "phase": "installing" }),
+    );
+
+    match update.install(&bytes) {
+        Ok(()) => {
+            app_handle.restart();
+        }
+        Err(e) => {
+            #[cfg(target_os = "linux")]
+            {
+                log::warn!("Standard install failed ({}), trying pkexec fallback", e);
+                if try_privileged_install(&bytes).is_ok() {
+                    app_handle.restart();
+                }
+            }
+            return Err(AppError::General(format!(
+                "Install failed: {}. Try downloading manually from the releases page.",
+                e
+            )));
+        }
+    }
 
     #[allow(unreachable_code)]
     Ok(())
