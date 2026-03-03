@@ -770,6 +770,7 @@ const isAlreadySaved = $derived(
           {updateProgress}
           {updateError}
           downloadUrl={updateInfo?.downloadUrl}
+          installMethod={updateInfo?.installMethod}
           onInstall={handleInstallUpdate}
           onDismiss={handleDismissUpdate}
           onManualDownload={handleManualDownload}

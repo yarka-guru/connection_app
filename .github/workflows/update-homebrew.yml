@@ -91,21 +91,21 @@ jobs:
       - name: Update Linux formula
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
-          cat > homebrew-tap/Formula/rds-ssm-connect.rb << FORMULA
+          cat > homebrew-tap/Formula/rds-ssm-connect.rb << 'FORMULA'
           class RdsSsmConnect < Formula
             desc "Secure database tunneling via AWS SSM"
             homepage "https://github.com/yarka-guru/connection_app"
-            version "${VERSION}"
+            version "PLACEHOLDER_VERSION"
             license "MIT"
 
             on_linux do
               on_intel do
                 url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/RDS.SSM.Connect_#{version}_amd64.deb"
-                sha256 "${{ steps.hashes.outputs.AMD64_DEB_SHA }}"
+                sha256 "PLACEHOLDER_AMD64_SHA"
               end
               on_arm do
                 url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/RDS.SSM.Connect_#{version}_arm64.deb"
-                sha256 "${{ steps.hashes.outputs.ARM64_DEB_SHA }}"
+                sha256 "PLACEHOLDER_ARM64_SHA"
               end
             end
 
@@ -118,6 +118,35 @@ jobs:
               share.install Dir["extract/usr/share/*"] if Dir.exist?("extract/usr/share")
             end
 
+            def post_install
+              # Link .desktop file so Linux desktop environments find the app
+              desktop_src = share/"applications/RDS SSM Connect.desktop"
+              if desktop_src.exist?
+                desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
+                desktop_dir.mkpath
+                cp desktop_src, desktop_dir/"rds-ssm-connect.desktop"
+              end
+
+              # Link icons
+              icon_src = share/"icons/hicolor"
+              if icon_src.exist?
+                icon_dest = Pathname.new(File.expand_path("~/.local/share/icons/hicolor"))
+                icon_src.glob("*/apps/rds-ssm-connect.png").each do |icon|
+                  size_dir = icon_dest/icon.parent.parent.basename/"apps"
+                  size_dir.mkpath
+                  cp icon, size_dir/"rds-ssm-connect.png"
+                end
+              end
+            end
+
+            def post_uninstall
+              desktop_file = Pathname.new(File.expand_path("~/.local/share/applications/rds-ssm-connect.desktop"))
+              desktop_file.unlink if desktop_file.exist?
+
+              icon_base = Pathname.new(File.expand_path("~/.local/share/icons/hicolor"))
+              Pathname.glob(icon_base/"*/apps/rds-ssm-connect.png").each(&:unlink)
+            end
+
             def caveats
               <<~EOS
                 Ensure your AWS profiles are configured in ~/.aws/config
@@ -128,6 +157,10 @@ jobs:
             end
           end
           FORMULA
+          # Replace placeholders with actual values
+          sed -i "s/PLACEHOLDER_VERSION/${VERSION}/" homebrew-tap/Formula/rds-ssm-connect.rb
+          sed -i "s/PLACEHOLDER_AMD64_SHA/${{ steps.hashes.outputs.AMD64_DEB_SHA }}/" homebrew-tap/Formula/rds-ssm-connect.rb
+          sed -i "s/PLACEHOLDER_ARM64_SHA/${{ steps.hashes.outputs.ARM64_DEB_SHA }}/" homebrew-tap/Formula/rds-ssm-connect.rb
 
       - name: Update README
         run: |

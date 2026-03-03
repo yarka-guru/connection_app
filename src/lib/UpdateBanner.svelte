@@ -5,10 +5,19 @@ const {
   updateProgress = null,
   updateError = null,
   downloadUrl = null,
+  installMethod = 'native',
   onInstall,
   onDismiss,
   onManualDownload,
 } = $props()
+
+const installButtonText = $derived(
+  installMethod === 'homebrew'
+    ? 'Upgrade via Homebrew'
+    : installMethod === 'deb'
+      ? 'Install & Restart'
+      : 'Install & Restart',
+)
 
 const progressPercent = $derived(
   updateProgress?.downloaded && updateProgress?.total
@@ -67,7 +76,9 @@ function handleManualDownload() {
       {/if}
     </div>
     <div class="update-text">
-      {#if isUpdating && updateProgress?.phase === 'installing'}
+      {#if isUpdating && updateProgress?.phase === 'updating'}
+        <span class="update-message">Upgrading via Homebrew...</span>
+      {:else if isUpdating && updateProgress?.phase === 'installing'}
         <span class="update-message">Installing update...</span>
       {:else if isUpdating}
         <span class="update-message">
@@ -94,7 +105,7 @@ function handleManualDownload() {
     <div class="update-actions">
       {#if !isUpdating}
         <button class="btn-install" onclick={handleInstall}>
-          Install & Restart
+          {installButtonText}
         </button>
         <button class="btn-dismiss" onclick={handleDismiss} aria-label="Dismiss update notification">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

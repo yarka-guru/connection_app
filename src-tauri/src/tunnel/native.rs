@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message;
 
 /// WebSocket ping interval (5 minutes, per protocol spec).
@@ -89,9 +88,6 @@ pub async fn start_native_port_forwarding(
 
     // Channel for passing received data to the TCP write side
     let (tcp_data_tx, mut tcp_data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
-
-    // Notify when TCP client connects
-    let _tcp_connect_notify = Arc::new(Notify::new());
 
     // RTT tracking for retransmission timeout
     let retransmit_timeout_ms = Arc::new(AtomicI64::new(DEFAULT_RETRANSMIT_TIMEOUT_MS as i64));
@@ -370,10 +366,14 @@ pub async fn start_native_port_forwarding(
 
         let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
 
+        // Per-connection cancel token — used to stop the write task when the read side disconnects
+        let tcp_conn_cancel = tokio_util::sync::CancellationToken::new();
+
         // TCP write task: drain data from WebSocket reader
         let session_active_tw = session_active.clone();
         let cancel_tw = cancel.clone();
         let tcp_connected_tw = tcp_connected.clone();
+        let tcp_conn_cancel_tw = tcp_conn_cancel.clone();
         let tcp_write_handle = tokio::spawn(async move {
             loop {
                 if cancel_tw.is_cancelled() || !session_active_tw.load(Ordering::Relaxed) {
@@ -392,6 +392,7 @@ pub async fn start_native_port_forwarding(
                         }
                     }
                     _ = cancel_tw.cancelled() => break,
+                    _ = tcp_conn_cancel_tw.cancelled() => break,
                 }
             }
             // Return the receiver so we can reuse it for the next TCP connection
@@ -457,7 +458,9 @@ pub async fn start_native_port_forwarding(
             }
         }
 
-        // TCP client disconnected — send DisconnectToPort flag
+        // TCP client disconnected — stop the write task and send DisconnectToPort flag
+        tcp_conn_cancel.cancel();
+
         if session_active.load(Ordering::Relaxed) && !cancel.is_cancelled() {
             let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
             let flag_msg = build_flag_message(FLAG_DISCONNECT_TO_PORT, seq, false);
