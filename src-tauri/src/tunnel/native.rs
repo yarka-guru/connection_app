@@ -25,6 +25,12 @@ const RETRANSMIT_CHECK_INTERVAL_MS: u64 = 100;
 /// Default retransmission timeout (ms).
 const DEFAULT_RETRANSMIT_TIMEOUT_MS: u64 = 200;
 
+/// Default RTT estimate (ms).
+const DEFAULT_ROUND_TRIP_TIME_MS: u64 = 100;
+
+/// Clock granularity for Jacobson/Karels RTO calculation (ms).
+const CLOCK_GRANULARITY_MS: i64 = 10;
+
 /// Max retransmission timeout (ms).
 const MAX_RETRANSMIT_TIMEOUT_MS: u64 = 1000;
 
@@ -33,6 +39,38 @@ struct OutgoingEntry {
     message: Vec<u8>,
     sent_at: std::time::Instant,
     retransmit_count: u32,
+}
+
+/// Jacobson/Karels RTT estimator — tracks smoothed RTT and RTT variance
+/// to compute retransmission timeout, matching the Go session-manager-plugin.
+struct RttEstimator {
+    /// Smoothed round-trip time (ms).
+    srtt: i64,
+    /// Round-trip time variation (ms).
+    rttvar: i64,
+}
+
+impl RttEstimator {
+    fn new() -> Self {
+        Self {
+            srtt: DEFAULT_ROUND_TRIP_TIME_MS as i64,
+            rttvar: 0,
+        }
+    }
+
+    /// Update the estimator with a new RTT sample and return the new RTO.
+    /// Formula (RFC 6298 / Jacobson-Karels):
+    ///   RTTVAR = (1 - 1/4) * RTTVAR + 1/4 * |SRTT - sample|
+    ///   SRTT   = (1 - 1/8) * SRTT   + 1/8 * sample
+    ///   RTO    = SRTT + max(G, 4 * RTTVAR)
+    fn update(&mut self, sample_ms: i64) -> i64 {
+        let diff = (self.srtt - sample_ms).abs();
+        self.rttvar = (self.rttvar * 3 / 4) + (diff / 4);
+        self.srtt = (self.srtt * 7 / 8) + (sample_ms / 8);
+        let rto = self.srtt + (CLOCK_GRANULARITY_MS).max(4 * self.rttvar);
+        rto.max(DEFAULT_RETRANSMIT_TIMEOUT_MS as i64)
+            .min(MAX_RETRANSMIT_TIMEOUT_MS as i64)
+    }
 }
 
 /// Native port forwarding session — replaces session-manager-plugin.
@@ -89,8 +127,8 @@ pub async fn start_native_port_forwarding(
     // Channel for passing received data to the TCP write side
     let (tcp_data_tx, mut tcp_data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
 
-    // RTT tracking for retransmission timeout
-    let retransmit_timeout_ms = Arc::new(AtomicI64::new(DEFAULT_RETRANSMIT_TIMEOUT_MS as i64));
+    // RTT tracking for retransmission timeout (Jacobson/Karels algorithm)
+    let rtt_estimator = Arc::new(tokio::sync::Mutex::new(RttEstimator::new()));
 
     // --- Task 1: WebSocket ping keepalive ---
     let ws_write_ping = ws_write.clone();
@@ -120,7 +158,7 @@ pub async fn start_native_port_forwarding(
     let ws_write_rt = ws_write.clone();
     let cancel_rt = cancel.clone();
     let session_active_rt = session_active.clone();
-    let retransmit_timeout_rt = retransmit_timeout_ms.clone();
+    let rtt_estimator_rt = rtt_estimator.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
             RETRANSMIT_CHECK_INTERVAL_MS,
@@ -131,8 +169,12 @@ pub async fn start_native_port_forwarding(
                 break;
             }
 
+            let current_rto = {
+                let est = rtt_estimator_rt.lock().await;
+                est.srtt + (CLOCK_GRANULARITY_MS).max(4 * est.rttvar)
+            };
             let timeout = tokio::time::Duration::from_millis(
-                retransmit_timeout_rt.load(Ordering::Relaxed) as u64,
+                (current_rto.max(DEFAULT_RETRANSMIT_TIMEOUT_MS as i64).min(MAX_RETRANSMIT_TIMEOUT_MS as i64)) as u64,
             );
             let mut buf = outgoing_buffer_rt.lock().await;
             let mut to_resend = vec![];
@@ -172,7 +214,7 @@ pub async fn start_native_port_forwarding(
     let expected_seq = expected_incoming_seq.clone();
     let incoming_buf = incoming_buffer.clone();
     let outgoing_buf_ack = outgoing_buffer.clone();
-    let retransmit_timeout_ack = retransmit_timeout_ms.clone();
+    let rtt_estimator_ack = rtt_estimator.clone();
     let tcp_connected_ws = tcp_connected.clone();
 
     tokio::spawn(async move {
@@ -302,18 +344,14 @@ pub async fn start_native_port_forwarding(
                                 {
                                     let mut buf = outgoing_buf_ack.lock().await;
                                     if let Some(entry) = buf.remove(&seq) {
-                                        // Update RTT estimate (simple EWMA)
-                                        let rtt_sample =
-                                            entry.sent_at.elapsed().as_millis() as i64;
-                                        let current_timeout =
-                                            retransmit_timeout_ack.load(Ordering::Relaxed);
-                                        let new_timeout = (current_timeout * 7 / 8)
-                                            + (rtt_sample / 8)
-                                            + 10;
-                                        let clamped = new_timeout
-                                            .max(DEFAULT_RETRANSMIT_TIMEOUT_MS as i64)
-                                            .min(MAX_RETRANSMIT_TIMEOUT_MS as i64);
-                                        retransmit_timeout_ack.store(clamped, Ordering::Relaxed);
+                                        // Only use first-transmission samples for RTT
+                                        // (Karn's algorithm: skip retransmitted packets)
+                                        if entry.retransmit_count == 0 {
+                                            let rtt_sample =
+                                                entry.sent_at.elapsed().as_millis() as i64;
+                                            let mut est = rtt_estimator_ack.lock().await;
+                                            est.update(rtt_sample);
+                                        }
                                     }
                                 }
                             }
@@ -464,8 +502,23 @@ pub async fn start_native_port_forwarding(
         if session_active.load(Ordering::Relaxed) && !cancel.is_cancelled() {
             let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
             let flag_msg = build_flag_message(FLAG_DISCONNECT_TO_PORT, seq, false);
+            let serialized = flag_msg.serialize();
+
+            // Track in outgoing buffer for retransmission
+            {
+                let mut ob = outgoing_buffer.lock().await;
+                ob.insert(
+                    seq,
+                    OutgoingEntry {
+                        message: serialized.clone(),
+                        sent_at: std::time::Instant::now(),
+                        retransmit_count: 0,
+                    },
+                );
+            }
+
             let mut ws = ws_write.lock().await;
-            let _ = ws.send(Message::Binary(flag_msg.serialize().into())).await;
+            let _ = ws.send(Message::Binary(serialized.into())).await;
         }
 
         // Wait for TCP write task and recover the receiver
@@ -479,10 +532,25 @@ pub async fn start_native_port_forwarding(
 
     // Terminate session
     if session_active.load(Ordering::Relaxed) {
-        let seq = outgoing_seq.load(Ordering::Relaxed);
+        let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
         let term_msg = build_flag_message(FLAG_TERMINATE_SESSION, seq, true);
+        let serialized = term_msg.serialize();
+
+        // Track in outgoing buffer for retransmission
+        {
+            let mut ob = outgoing_buffer.lock().await;
+            ob.insert(
+                seq,
+                OutgoingEntry {
+                    message: serialized.clone(),
+                    sent_at: std::time::Instant::now(),
+                    retransmit_count: 0,
+                },
+            );
+        }
+
         let mut ws = ws_write.lock().await;
-        let _ = ws.send(Message::Binary(term_msg.serialize().into())).await;
+        let _ = ws.send(Message::Binary(serialized.into())).await;
         let _ = ws.close().await;
     }
 
