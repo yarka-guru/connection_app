@@ -1,6 +1,7 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
+import { applyTheme, themes } from './lib/themes.js'
 import SavedConnections from './lib/SavedConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
@@ -35,6 +36,7 @@ let showCloseConfirm = $state(false)
 let isCheckingUpdates = $state(false)
 let updateCheckMessage = $state('')
 
+let currentTheme = $state('forest')
 let showSettings = $state(false)
 let showSetupScreen = $state(false)
 let setupError = $state('')
@@ -126,6 +128,17 @@ async function initApp() {
     errorMessage = `Failed to load Tauri API: ${err}`
     loadingProjects = false
     return
+  }
+
+  // Load saved theme
+  try {
+    const saved = localStorage.getItem('theme')
+    if (saved && themes[saved]) {
+      currentTheme = saved
+      applyTheme(saved)
+    }
+  } catch (_err) {
+    // Non-fatal: use default theme
   }
 
   // Check sandbox status — if sandboxed and no AWS access, show setup screen
@@ -627,6 +640,16 @@ function dismissSavePrompt() {
   showSavePrompt = false
 }
 
+function handleThemeChange(themeName) {
+  currentTheme = themeName
+  applyTheme(themeName)
+  try {
+    localStorage.setItem('theme', themeName)
+  } catch (_err) {
+    // Non-fatal
+  }
+}
+
 // Computed: check if the selected project/profile is already saved
 const isAlreadySaved = $derived(
   savedConnections.some(
@@ -869,6 +892,8 @@ const isAlreadySaved = $derived(
         onClose={() => showSettings = false}
         {invoke}
         onProjectsChanged={refreshProjects}
+        {currentTheme}
+        onThemeChange={handleThemeChange}
       />
     {/if}
   {/if}
@@ -876,6 +901,29 @@ const isAlreadySaved = $derived(
 
 <style>
   :global(:root) {
+    --bg-primary: #141e17;
+    --bg-secondary: #1a2b1f;
+    --bg-tertiary: #182a1d;
+    --bg-card: rgba(26, 43, 31, 0.85);
+    --bg-card-inner: rgba(28, 40, 30, 0.9);
+    --accent-primary: #d4a853;
+    --accent-primary-light: #e2c87a;
+    --accent-primary-rgb: 212, 168, 83;
+    --accent-secondary: #7aab6d;
+    --accent-secondary-rgb: 122, 171, 109;
+    --text-primary: #d5ddd3;
+    --text-secondary: #8a9488;
+    --text-muted: #6b7d6a;
+    --text-hover: #9baa98;
+    --text-inactive: #7d8f7a;
+    --color-error: #c9614a;
+    --color-error-dark: #b0503c;
+    --color-error-soft: #d4836b;
+    --color-error-light: #e0a08a;
+    --color-error-rgb: 201, 97, 74;
+    --color-success: #7aab6d;
+    --color-success-soft: #8bbd7a;
+    --glass-rgb: 200, 220, 195;
     --glass-bg: rgba(200, 220, 195, 0.04);
     --glass-bg-hover: rgba(200, 220, 195, 0.07);
     --glass-border: rgba(122, 171, 109, 0.08);
@@ -884,6 +932,8 @@ const isAlreadySaved = $derived(
     --glass-blur-heavy: blur(32px) saturate(1.8);
     --glass-inner-glow: inset 0 1px 0 rgba(200, 220, 195, 0.06);
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    --bg-button-gradient: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
+    --bg-button-gradient-shadow: rgba(212, 168, 83, 0.3);
     --press-scale: scale(0.97);
     --transition-fast: 0.15s ease;
     --transition-normal: 0.2s ease;
@@ -913,9 +963,9 @@ const isAlreadySaved = $derived(
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
-    background: linear-gradient(145deg, #141e17 0%, #1a2b1f 50%, #182a1d 100%);
+    background: linear-gradient(145deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--bg-tertiary) 100%);
     min-height: 100vh;
-    color: #d5ddd3;
+    color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
   }
 
@@ -936,8 +986,8 @@ const isAlreadySaved = $derived(
   .loading-spinner {
     width: 24px;
     height: 24px;
-    border: 2px solid rgba(212, 168, 83, 0.2);
-    border-top-color: #d4a853;
+    border: 2px solid rgba(var(--accent-primary-rgb), 0.2);
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -945,13 +995,13 @@ const isAlreadySaved = $derived(
 
   .loading-text {
     font-size: 0.875rem;
-    color: #8a9488;
+    color: var(--text-secondary);
   }
 
   .init-error-text {
     margin: 8px 0 0;
     font-size: 0.8rem;
-    color: #e0a08a;
+    color: var(--color-error-light);
     text-align: center;
     max-width: 360px;
     line-height: 1.5;
@@ -964,17 +1014,17 @@ const isAlreadySaved = $derived(
     font-size: 0.875rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
+    background: var(--bg-button-gradient);
     border: none;
     border-radius: 10px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
-    box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
+    box-shadow: 0 4px 12px var(--bg-button-gradient-shadow);
   }
 
   .btn-retry:hover {
     transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(212, 168, 83, 0.4);
+    box-shadow: 0 6px 16px rgba(var(--accent-primary-rgb), 0.4);
   }
 
   .btn-retry:active {
@@ -1004,7 +1054,7 @@ const isAlreadySaved = $derived(
     margin: 0;
     font-size: 1.5rem;
     font-weight: 600;
-    background: linear-gradient(135deg, #fff 0%, #e2c87a 100%);
+    background: linear-gradient(135deg, #fff 0%, var(--accent-primary-light) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -1013,7 +1063,7 @@ const isAlreadySaved = $derived(
   .header-text p {
     margin: 4px 0 0;
     font-size: 0.875rem;
-    color: #8a9488;
+    color: var(--text-secondary);
   }
 
   .main-content {
@@ -1030,7 +1080,7 @@ const isAlreadySaved = $derived(
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(212, 168, 83, 0.2);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
     border-radius: 12px;
     box-shadow: var(--glass-inner-glow);
     animation: fadeIn 0.3s ease-out;
@@ -1038,7 +1088,7 @@ const isAlreadySaved = $derived(
 
   .save-label {
     font-size: 0.875rem;
-    color: #d4a853;
+    color: var(--accent-primary);
     font-weight: 500;
   }
 
@@ -1046,21 +1096,21 @@ const isAlreadySaved = $derived(
     width: 100%;
     padding: 10px 14px;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(200, 220, 195, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
-    color: #d5ddd3;
+    color: var(--text-primary);
     font-size: 0.9rem;
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
   }
 
   .save-input:focus {
-    border-color: #d4a853;
-    box-shadow: 0 0 0 2px rgba(212, 168, 83, 0.2);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.2);
   }
 
   .save-input::placeholder {
-    color: #8a9488;
+    color: var(--text-secondary);
   }
 
   .save-prompt-actions {
@@ -1072,8 +1122,8 @@ const isAlreadySaved = $derived(
     padding: 6px 14px;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #1a2b1f;
-    background: #d4a853;
+    color: var(--bg-secondary);
+    background: var(--accent-primary);
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -1081,7 +1131,7 @@ const isAlreadySaved = $derived(
   }
 
   .btn-save:hover {
-    background: #e2c87a;
+    background: var(--accent-primary-light);
   }
 
   .btn-save:active {
@@ -1092,17 +1142,17 @@ const isAlreadySaved = $derived(
     padding: 6px 14px;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #6b7d6a;
+    color: var(--text-muted);
     background: transparent;
-    border: 1px solid rgba(200, 220, 195, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-dismiss-save:hover {
-    background: rgba(200, 220, 195, 0.05);
-    color: #9baa98;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .error-toast {
@@ -1113,7 +1163,7 @@ const isAlreadySaved = $derived(
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(201, 97, 74, 0.2);
+    border: 1px solid rgba(var(--color-error-rgb), 0.2);
     border-radius: 16px;
     box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
@@ -1140,7 +1190,7 @@ const isAlreadySaved = $derived(
   }
 
   .error-icon {
-    color: #d4836b;
+    color: var(--color-error-soft);
     flex-shrink: 0;
     margin-top: 2px;
   }
@@ -1149,14 +1199,14 @@ const isAlreadySaved = $derived(
     flex: 1;
     margin: 0;
     font-size: 0.875rem;
-    color: #e0a08a;
+    color: var(--color-error-light);
     line-height: 1.5;
   }
 
   .dismiss-btn {
     background: transparent;
     border: none;
-    color: #6b7d6a;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 4px;
     border-radius: 6px;
@@ -1167,8 +1217,8 @@ const isAlreadySaved = $derived(
   }
 
   .dismiss-btn:hover {
-    background: rgba(200, 220, 195, 0.1);
-    color: #9baa98;
+    background: rgba(var(--glass-rgb), 0.1);
+    color: var(--text-hover);
   }
 
   .app-footer {
@@ -1181,7 +1231,7 @@ const isAlreadySaved = $derived(
 
   .app-footer > span:first-child {
     font-size: 0.75rem;
-    color: #7d8f7a;
+    color: var(--text-inactive);
   }
 
   .footer-actions {
@@ -1193,9 +1243,9 @@ const isAlreadySaved = $derived(
   .settings-btn {
     padding: 6px;
     background: transparent;
-    border: 1px solid rgba(122, 171, 109, 0.08);
+    border: 1px solid var(--glass-border);
     border-radius: 6px;
-    color: #6b7d6a;
+    color: var(--text-muted);
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
     display: flex;
@@ -1204,9 +1254,9 @@ const isAlreadySaved = $derived(
   }
 
   .settings-btn:hover {
-    background: rgba(200, 220, 195, 0.05);
+    background: rgba(var(--glass-rgb), 0.05);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #9baa98;
+    color: var(--text-hover);
   }
 
   .settings-btn:active {
@@ -1217,18 +1267,18 @@ const isAlreadySaved = $derived(
     padding: 6px 12px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #6b7d6a;
+    color: var(--text-muted);
     background: transparent;
-    border: 1px solid rgba(122, 171, 109, 0.08);
+    border: 1px solid var(--glass-border);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
   }
 
   .check-updates-btn:hover:not(:disabled) {
-    background: rgba(200, 220, 195, 0.05);
+    background: rgba(var(--glass-rgb), 0.05);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #9baa98;
+    color: var(--text-hover);
   }
 
   .check-updates-btn:active:not(:disabled) {
@@ -1245,7 +1295,7 @@ const isAlreadySaved = $derived(
     width: 10px;
     height: 10px;
     border: 1.5px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #9baa98;
+    border-top-color: var(--text-hover);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-right: 4px;
@@ -1253,7 +1303,7 @@ const isAlreadySaved = $derived(
 
   .update-message {
     font-size: 0.75rem;
-    color: #7aab6d;
+    color: var(--accent-secondary);
     animation: fadeIn 0.3s ease-out;
   }
 
@@ -1285,13 +1335,13 @@ const isAlreadySaved = $derived(
     margin: 0;
     font-size: 1.25rem;
     font-weight: 600;
-    color: #d5ddd3;
+    color: var(--text-primary);
   }
 
   .setup-description {
     margin: 0;
     font-size: 0.9rem;
-    color: #8a9488;
+    color: var(--text-secondary);
     line-height: 1.5;
   }
 
@@ -1299,8 +1349,8 @@ const isAlreadySaved = $derived(
   .setup-hint code {
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85em;
-    color: #e2c87a;
-    background: rgba(212, 168, 83, 0.15);
+    color: var(--accent-primary-light);
+    background: rgba(var(--accent-primary-rgb), 0.15);
     padding: 1px 5px;
     border-radius: 4px;
   }
@@ -1308,7 +1358,7 @@ const isAlreadySaved = $derived(
   .setup-hint {
     margin: 0;
     font-size: 0.8rem;
-    color: #6b7d6a;
+    color: var(--text-muted);
     line-height: 1.5;
   }
 
@@ -1318,12 +1368,12 @@ const isAlreadySaved = $derived(
     font-size: 0.9rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
+    background: var(--bg-button-gradient);
     border: none;
     border-radius: 12px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
-    box-shadow: 0 4px 16px rgba(212, 168, 83, 0.3);
+    box-shadow: 0 4px 16px var(--bg-button-gradient-shadow);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1331,7 +1381,7 @@ const isAlreadySaved = $derived(
 
   .btn-grant:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 6px 20px rgba(212, 168, 83, 0.4);
+    box-shadow: 0 6px 20px rgba(var(--accent-primary-rgb), 0.4);
   }
 
   .btn-grant:active:not(:disabled) {
@@ -1356,7 +1406,7 @@ const isAlreadySaved = $derived(
   .setup-error {
     margin: 0;
     font-size: 0.8rem;
-    color: #e0a08a;
+    color: var(--color-error-light);
     line-height: 1.5;
     max-width: 100%;
     word-break: break-word;
@@ -1365,7 +1415,7 @@ const isAlreadySaved = $derived(
   .setup-success {
     margin: 0;
     font-size: 0.8rem;
-    color: #7aab6d;
+    color: var(--accent-secondary);
     line-height: 1.5;
   }
 
@@ -1380,17 +1430,17 @@ const isAlreadySaved = $derived(
     padding: 12px 24px;
     font-size: 0.9rem;
     font-weight: 500;
-    color: #6b7d6a;
+    color: var(--text-muted);
     background: transparent;
-    border: 1px solid rgba(200, 220, 195, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 12px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-skip:hover:not(:disabled) {
-    background: rgba(200, 220, 195, 0.05);
-    color: #9baa98;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .btn-skip:disabled {

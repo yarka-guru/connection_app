@@ -56,7 +56,7 @@ function handleDismiss() {
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(212, 168, 83, 0.3);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
     border-radius: 14px;
     box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
@@ -76,20 +76,20 @@ function handleDismiss() {
   .update-icon {
     width: 32px;
     height: 32px;
-    background: rgba(212, 168, 83, 0.2);
+    background: rgba(var(--accent-primary-rgb), 0.2);
     border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #e2c87a;
+    color: var(--accent-primary-light);
     flex-shrink: 0;
   }
 
   .spinner {
     width: 16px;
     height: 16px;
-    border: 2px solid rgba(226, 200, 122, 0.3);
-    border-top-color: #e2c87a;
+    border: 2px solid rgba(var(--accent-primary-rgb), 0.3);
+    border-top-color: var(--accent-primary-light);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -108,16 +108,16 @@ function handleDismiss() {
 
   .update-message {
     font-size: 0.875rem;
-    color: #d5ddd3;
+    color: var(--text-primary);
   }
 
   .update-message strong {
-    color: #e2c87a;
+    color: var(--accent-primary-light);
   }
 
   .current-version {
     font-size: 0.7rem;
-    color: #8a9488;
+    color: var(--text-secondary);
   }
 
   .update-actions {
@@ -132,7 +132,7 @@ function handleDismiss() {
     font-size: 0.8rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
+    background: var(--bg-button-gradient);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -141,7 +141,7 @@ function handleDismiss() {
 
   .btn-install:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
+    box-shadow: 0 4px 12px var(--bg-button-gradient-shadow);
   }
 
   .btn-install:active {
@@ -156,14 +156,14 @@ function handleDismiss() {
     justify-content: center;
     background: transparent;
     border: none;
-    color: #6b7d6a;
+    color: var(--text-muted);
     cursor: pointer;
     border-radius: 6px;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-dismiss:hover {
-    background: rgba(200, 220, 195, 0.05);
-    color: #9baa98;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 </style>

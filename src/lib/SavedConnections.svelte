@@ -236,25 +236,25 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .card-icon {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, rgba(212, 168, 83, 0.2) 0%, rgba(180, 140, 70, 0.2) 100%);
+    background: linear-gradient(135deg, rgba(var(--accent-primary-rgb), 0.2) 0%, rgba(var(--accent-primary-rgb), 0.15) 100%);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #d4a853;
+    color: var(--accent-primary);
   }
 
   .card-title {
     font-size: 1rem;
     font-weight: 600;
-    color: #d5ddd3;
+    color: var(--text-primary);
   }
 
   .active-count {
     font-size: 0.75rem;
     font-weight: 500;
-    color: #7aab6d;
-    background: rgba(122, 171, 109, 0.1);
+    color: var(--accent-secondary);
+    background: rgba(var(--accent-secondary-rgb), 0.1);
     padding: 4px 10px;
     border-radius: 12px;
   }
@@ -273,11 +273,11 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   }
 
   .connection-item.active {
-    border: 1px solid rgba(122, 171, 109, 0.2);
+    border: 1px solid rgba(var(--accent-secondary-rgb), 0.2);
   }
 
   .connection-item.connecting {
-    border: 1px solid rgba(212, 168, 83, 0.3);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
   }
 
   .connection-header {
@@ -303,9 +303,9 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: block;
     width: 8px;
     height: 8px;
-    background: #7aab6d;
+    background: var(--accent-secondary);
     border-radius: 50%;
-    box-shadow: 0 0 8px rgba(122, 171, 109, 0.5);
+    box-shadow: 0 0 8px rgba(var(--accent-secondary-rgb), 0.5);
     animation: pulse 2s ease-in-out infinite;
     will-change: opacity;
   }
@@ -332,7 +332,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .connection-name {
     font-size: 0.95rem;
     font-weight: 500;
-    color: #d5ddd3;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -341,13 +341,13 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   .connection-port {
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85rem;
-    color: #7aab6d;
+    color: var(--accent-secondary);
     font-weight: 500;
   }
 
   .connection-meta {
     font-size: 0.75rem;
-    color: #e2c87a;
+    color: var(--accent-primary-light);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -355,7 +355,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .connection-last-used {
     font-size: 0.7rem;
-    color: #8a9488;
+    color: var(--text-secondary);
   }
 
   .connection-actions {
@@ -371,19 +371,19 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     align-items: center;
     justify-content: center;
     background: transparent;
-    border: 1px solid rgba(200, 220, 195, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
   }
 
   .btn-connect {
-    color: #7aab6d;
+    color: var(--accent-secondary);
   }
 
   .btn-connect:hover {
-    background: rgba(122, 171, 109, 0.1);
-    border-color: rgba(122, 171, 109, 0.3);
+    background: rgba(var(--accent-secondary-rgb), 0.1);
+    border-color: rgba(var(--accent-secondary-rgb), 0.3);
   }
 
   .btn-connect:active {
@@ -391,32 +391,32 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   }
 
   .btn-delete {
-    color: #6b7d6a;
+    color: var(--text-muted);
   }
 
   .btn-delete:hover {
-    color: #d4836b;
-    background: rgba(201, 97, 74, 0.1);
-    border-color: rgba(201, 97, 74, 0.3);
+    color: var(--color-error-soft);
+    background: rgba(var(--color-error-rgb), 0.1);
+    border-color: rgba(var(--color-error-rgb), 0.3);
   }
 
   .btn-disconnect {
-    color: #d4836b;
+    color: var(--color-error-soft);
   }
 
   .btn-disconnect:hover {
-    background: rgba(201, 97, 74, 0.1);
-    border-color: rgba(201, 97, 74, 0.3);
+    background: rgba(var(--color-error-rgb), 0.1);
+    border-color: rgba(var(--color-error-rgb), 0.3);
   }
 
   .btn-expand {
-    color: #6b7d6a;
+    color: var(--text-muted);
     border: none;
   }
 
   .btn-expand:hover {
-    background: rgba(200, 220, 195, 0.05);
-    color: #9baa98;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .btn-expand svg {
@@ -437,8 +437,8 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: block;
     width: 8px;
     height: 8px;
-    border: 1.5px solid rgba(212, 168, 83, 0.3);
-    border-top-color: #d4a853;
+    border: 1.5px solid rgba(var(--accent-primary-rgb), 0.3);
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -446,7 +446,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .connecting-text {
     font-size: 0.75rem;
-    color: #e2c87a;
+    color: var(--accent-primary-light);
     animation: fadeIn 0.3s ease-out;
   }
 
@@ -454,8 +454,8 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 1.5px solid rgba(122, 171, 109, 0.3);
-    border-top-color: #7aab6d;
+    border: 1.5px solid rgba(var(--accent-secondary-rgb), 0.3);
+    border-top-color: var(--accent-secondary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -503,7 +503,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     width: 70px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #8a9488;
+    color: var(--text-secondary);
     text-transform: uppercase;
     flex-shrink: 0;
   }
@@ -512,7 +512,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     flex: 1;
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.8rem;
-    color: #e2c87a;
+    color: var(--accent-primary-light);
     background: transparent;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -520,7 +520,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
   }
 
   .detail-value.password {
-    color: #d4a853;
+    color: var(--accent-primary);
     letter-spacing: 0.1em;
   }
 </style>

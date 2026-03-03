@@ -58,18 +58,18 @@ onDestroy(() => {
     background: transparent;
     border: none;
     border-radius: 4px;
-    color: #6b7d6a;
+    color: var(--text-muted);
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
     flex-shrink: 0;
   }
 
   .copy-btn:hover {
-    background: rgba(200, 220, 195, 0.05);
-    color: #9baa98;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .copy-btn.copied {
-    color: #7aab6d;
+    color: var(--accent-secondary);
   }
 </style>
