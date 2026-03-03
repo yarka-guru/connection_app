@@ -1,5 +1,20 @@
 <script>
-const { updateInfo = null, isUpdating = false, onInstall, onDismiss } = $props()
+const {
+  updateInfo = null,
+  isUpdating = false,
+  updateProgress = null,
+  updateError = null,
+  downloadUrl = null,
+  onInstall,
+  onDismiss,
+  onManualDownload,
+} = $props()
+
+const progressPercent = $derived(
+  updateProgress?.downloaded && updateProgress?.total
+    ? Math.round((updateProgress.downloaded / updateProgress.total) * 100)
+    : null,
+)
 
 function handleInstall() {
   onInstall?.()
@@ -8,9 +23,38 @@ function handleInstall() {
 function handleDismiss() {
   onDismiss?.()
 }
+
+function handleManualDownload() {
+  onManualDownload?.()
+}
 </script>
 
-{#if updateInfo?.updateAvailable}
+{#if updateError}
+  <div class="update-banner update-banner--error">
+    <div class="update-icon update-icon--error">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <circle cx="9" cy="9" r="8" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M9 5v5M9 12.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="update-text">
+      <span class="update-message update-message--error">Update failed</span>
+      <span class="error-detail">{updateError}</span>
+    </div>
+    <div class="update-actions">
+      {#if downloadUrl}
+        <button class="btn-manual" onclick={handleManualDownload}>
+          Download Manually
+        </button>
+      {/if}
+      <button class="btn-dismiss" onclick={handleDismiss} aria-label="Dismiss update notification">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+{:else if updateInfo?.updateAvailable}
   <div class="update-banner">
     <div class="update-icon">
       {#if isUpdating}
@@ -23,8 +67,23 @@ function handleDismiss() {
       {/if}
     </div>
     <div class="update-text">
-      {#if isUpdating}
-        <span class="update-message">Downloading update...</span>
+      {#if isUpdating && updateProgress?.phase === 'installing'}
+        <span class="update-message">Installing update...</span>
+      {:else if isUpdating}
+        <span class="update-message">
+          Downloading update...
+          {#if progressPercent !== null}
+            <strong>{progressPercent}%</strong>
+          {/if}
+        </span>
+        {#if updateProgress?.total}
+          <div class="progress-bar-track">
+            <div
+              class="progress-bar-fill"
+              style="width: {progressPercent ?? 0}%"
+            ></div>
+          </div>
+        {/if}
       {:else}
         <span class="update-message">
           Update available: <strong>v{updateInfo.latestVersion}</strong>
@@ -62,6 +121,10 @@ function handleDismiss() {
     animation: slideIn 0.3s ease-out;
   }
 
+  .update-banner--error {
+    border-color: rgba(var(--color-error-rgb), 0.3);
+  }
+
   @keyframes slideIn {
     from {
       opacity: 0;
@@ -85,6 +148,11 @@ function handleDismiss() {
     flex-shrink: 0;
   }
 
+  .update-icon--error {
+    background: rgba(var(--color-error-rgb), 0.2);
+    color: var(--color-error-soft);
+  }
+
   .spinner {
     width: 16px;
     height: 16px;
@@ -102,7 +170,7 @@ function handleDismiss() {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     min-width: 0;
   }
 
@@ -115,9 +183,35 @@ function handleDismiss() {
     color: var(--accent-primary-light);
   }
 
+  .update-message--error {
+    color: var(--color-error-light);
+    font-weight: 600;
+  }
+
+  .error-detail {
+    font-size: 0.75rem;
+    color: var(--color-error-soft);
+    line-height: 1.4;
+  }
+
   .current-version {
     font-size: 0.7rem;
     color: var(--text-secondary);
+  }
+
+  .progress-bar-track {
+    width: 100%;
+    height: 4px;
+    background: rgba(var(--accent-primary-rgb), 0.15);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: var(--accent-primary);
+    border-radius: 2px;
+    transition: width 0.3s ease;
   }
 
   .update-actions {
@@ -145,6 +239,28 @@ function handleDismiss() {
   }
 
   .btn-install:active {
+    transform: var(--press-scale);
+  }
+
+  .btn-manual {
+    padding: 8px 16px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: rgba(var(--glass-rgb), 0.08);
+    border: 1px solid rgba(var(--glass-rgb), 0.15);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+    white-space: nowrap;
+  }
+
+  .btn-manual:hover {
+    background: rgba(var(--glass-rgb), 0.12);
+    border-color: rgba(var(--glass-rgb), 0.25);
+  }
+
+  .btn-manual:active {
     transform: var(--press-scale);
   }
 

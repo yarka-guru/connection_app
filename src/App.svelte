@@ -35,6 +35,8 @@ let showDeleteConfirm = $state(null)
 let showCloseConfirm = $state(false)
 let isCheckingUpdates = $state(false)
 let updateCheckMessage = $state('')
+let updateProgress = $state(null)
+let updateError = $state(null)
 
 let currentTheme = $state('forest')
 let showSettings = $state(false)
@@ -57,6 +59,7 @@ let unlistenStatus = null
 let unlistenDisconnected = null
 let unlistenConnectionError = null
 let unlistenCloseRequested = null
+let unlistenUpdateProgress = null
 
 // Global keyboard shortcuts
 function handleGlobalKeydown(e) {
@@ -195,6 +198,10 @@ async function initApp() {
     connectingId = null
   }).then((fn) => { unlistenConnectionError = fn })
 
+  listen('update-progress', (ev) => {
+    updateProgress = ev.payload
+  }).then((fn) => { unlistenUpdateProgress = fn })
+
   // Load saved data + version with timeout
   try {
     const [savedResult, versionResult] = await withTimeout(
@@ -329,6 +336,10 @@ async function continueAfterSetup() {
     connectingId = null
   }).then((fn) => { unlistenConnectionError = fn })
 
+  listen('update-progress', (ev) => {
+    updateProgress = ev.payload
+  }).then((fn) => { unlistenUpdateProgress = fn })
+
   // Load saved data + version
   try {
     const [savedResult, versionResult] = await withTimeout(
@@ -364,6 +375,7 @@ onDestroy(() => {
   unlistenDisconnected?.()
   unlistenConnectionError?.()
   unlistenCloseRequested?.()
+  unlistenUpdateProgress?.()
 })
 
 async function confirmClose() {
@@ -604,23 +616,31 @@ async function handleInstallUpdate() {
   if (!updateInfo?.updateAvailable || isUpdating) return
 
   isUpdating = true
-  statusMessage = 'Downloading update...'
+  updateError = null
+  updateProgress = null
 
   try {
     await invoke('install_update')
     // App should auto-restart and never reach here, but just in case:
     isUpdating = false
     showUpdateBanner = false
-    statusMessage = 'Update installed successfully.'
   } catch (err) {
-    errorMessage = `Update failed: ${err}`
+    updateError = `${err}`
     isUpdating = false
-    statusMessage = ''
+    updateProgress = null
+  }
+}
+
+function handleManualDownload() {
+  if (updateInfo?.downloadUrl) {
+    invoke?.('open_url', { url: updateInfo.downloadUrl })
   }
 }
 
 function handleDismissUpdate() {
   showUpdateBanner = false
+  updateError = null
+  updateProgress = null
 }
 
 function handleProjectChange(newProject) {
@@ -743,12 +763,16 @@ const isAlreadySaved = $derived(
     </div>
   {:else}
     <div class="app-container">
-      {#if showUpdateBanner && updateInfo?.updateAvailable}
+      {#if (showUpdateBanner && updateInfo?.updateAvailable) || updateError}
         <UpdateBanner
           {updateInfo}
           {isUpdating}
+          {updateProgress}
+          {updateError}
+          downloadUrl={updateInfo?.downloadUrl}
           onInstall={handleInstallUpdate}
           onDismiss={handleDismissUpdate}
+          onManualDownload={handleManualDownload}
         />
       {/if}
 
