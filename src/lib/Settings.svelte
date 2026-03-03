@@ -1,8 +1,9 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { trapFocus, safeTimeout } from './utils.js'
+import { themes, themeNames } from './themes.js'
 
-const { onClose, invoke, onProjectsChanged } = $props()
+const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange } = $props()
 
 let activeTab = $state('projects')
 let awsProfiles = $state([])
@@ -342,6 +343,13 @@ onDestroy(() => {
       >
         Raw Config
       </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'appearance'}
+        onclick={() => activeTab = 'appearance'}
+      >
+        Appearance
+      </button>
     </div>
 
     {#if error}
@@ -477,7 +485,7 @@ onDestroy(() => {
             </div>
           {/if}
         </div>
-      {:else}
+      {:else if activeTab === 'raw'}
         <div class="raw-tab">
           <textarea
             class="raw-editor"
@@ -489,6 +497,26 @@ onDestroy(() => {
             <button class="btn-save" onclick={saveRawConfig} disabled={saving}>
               {saving ? 'Saving...' : 'Save Config'}
             </button>
+          </div>
+        </div>
+      {:else if activeTab === 'appearance'}
+        <div class="appearance-tab">
+          <div class="theme-grid">
+            {#each themeNames as key}
+              {@const theme = themes[key]}
+              <button
+                class="theme-card"
+                class:selected={currentTheme === key}
+                onclick={() => onThemeChange?.(key)}
+              >
+                <div class="theme-swatches">
+                  <span class="swatch" style="background: {theme.vars['--bg-primary']}"></span>
+                  <span class="swatch" style="background: {theme.vars['--accent-primary']}"></span>
+                  <span class="swatch" style="background: {theme.vars['--accent-secondary']}"></span>
+                </div>
+                <span class="theme-name">{theme.name}</span>
+              </button>
+            {/each}
           </div>
         </div>
       {/if}
@@ -656,7 +684,7 @@ onDestroy(() => {
   }
 
   .modal-content {
-    background: rgba(26, 26, 46, 0.85);
+    background: var(--bg-card);
     -webkit-backdrop-filter: var(--glass-blur-heavy);
     backdrop-filter: var(--glass-blur-heavy);
     border: 1px solid var(--glass-border);
@@ -687,13 +715,13 @@ onDestroy(() => {
     margin: 0;
     font-size: 1.25rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: var(--text-primary);
   }
 
   .close-btn {
     background: none;
     border: none;
-    color: #71717a;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 4px;
     border-radius: 6px;
@@ -701,14 +729,14 @@ onDestroy(() => {
   }
 
   .close-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #e4e4e7;
+    background: rgba(var(--glass-rgb), 0.1);
+    color: var(--text-primary);
   }
 
   .tabs {
     display: flex;
     gap: 4px;
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(var(--glass-rgb), 0.03);
     padding: 4px;
     border-radius: 10px;
     margin-bottom: 16px;
@@ -719,7 +747,7 @@ onDestroy(() => {
     padding: 10px 16px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #71717a;
+    color: var(--text-muted);
     background: none;
     border: none;
     border-radius: 8px;
@@ -728,13 +756,13 @@ onDestroy(() => {
   }
 
   .tab:hover {
-    color: #a1a1aa;
+    color: var(--text-hover);
     background: var(--glass-bg-hover);
   }
 
   .tab.active {
-    background: rgba(99, 102, 241, 0.15);
-    color: #a5b4fc;
+    background: rgba(var(--accent-primary-rgb), 0.15);
+    color: var(--accent-primary-light);
   }
 
   .message {
@@ -745,15 +773,15 @@ onDestroy(() => {
   }
 
   .message.error {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    background: rgba(var(--color-error-rgb), 0.1);
+    color: var(--color-error-soft);
+    border: 1px solid rgba(var(--color-error-rgb), 0.2);
   }
 
   .message.success {
-    background: rgba(34, 197, 94, 0.1);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.2);
+    background: rgba(var(--accent-secondary-rgb), 0.1);
+    color: var(--color-success-soft);
+    border: 1px solid rgba(var(--accent-secondary-rgb), 0.2);
   }
 
   .tab-content {
@@ -767,7 +795,7 @@ onDestroy(() => {
     align-items: center;
     justify-content: center;
     height: 200px;
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 
   .profiles-header {
@@ -779,7 +807,7 @@ onDestroy(() => {
 
   .profiles-path {
     font-size: 0.75rem;
-    color: #8b8b95;
+    color: var(--text-inactive);
     font-family: ui-monospace, monospace;
   }
 
@@ -790,16 +818,16 @@ onDestroy(() => {
     padding: 8px 14px;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a5b4fc;
-    background: rgba(99, 102, 241, 0.1);
-    border: 1px solid rgba(99, 102, 241, 0.2);
+    color: var(--accent-primary-light);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .btn-add:hover {
-    background: rgba(99, 102, 241, 0.15);
+    background: rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .btn-add:active {
@@ -809,7 +837,7 @@ onDestroy(() => {
   .empty-state {
     text-align: center;
     padding: 40px 20px;
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 
   .empty-state p {
@@ -818,7 +846,7 @@ onDestroy(() => {
 
   .empty-state .hint {
     font-size: 0.875rem;
-    color: #8b8b95;
+    color: var(--text-inactive);
   }
 
   .profiles-list {
@@ -843,7 +871,7 @@ onDestroy(() => {
 
   .profile-name {
     font-weight: 500;
-    color: #e4e4e7;
+    color: var(--text-primary);
   }
 
   .profile-actions {
@@ -855,20 +883,20 @@ onDestroy(() => {
     padding: 6px;
     background: none;
     border: none;
-    color: #71717a;
+    color: var(--text-muted);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-icon:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #a1a1aa;
+    background: rgba(var(--glass-rgb), 0.1);
+    color: var(--text-hover);
   }
 
   .btn-icon.delete:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
+    background: rgba(var(--color-error-rgb), 0.1);
+    color: var(--color-error-soft);
   }
 
   .inline-confirm {
@@ -881,7 +909,7 @@ onDestroy(() => {
 
   .inline-confirm span {
     font-size: 0.8rem;
-    color: #f87171;
+    color: var(--color-error-soft);
   }
 
   .inline-confirm-actions {
@@ -894,7 +922,7 @@ onDestroy(() => {
     font-size: 0.75rem;
     font-weight: 600;
     color: white;
-    background: #ef4444;
+    background: var(--color-error);
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -902,23 +930,23 @@ onDestroy(() => {
   }
 
   .btn-inline-confirm:hover {
-    background: #dc2626;
+    background: var(--color-error-dark);
   }
 
   .btn-inline-cancel {
     padding: 4px 10px;
     font-size: 0.75rem;
     font-weight: 500;
-    color: #9e9ea7;
+    color: var(--text-secondary);
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .btn-inline-cancel:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(var(--glass-rgb), 0.05);
   }
 
   .profile-details {
@@ -929,8 +957,8 @@ onDestroy(() => {
 
   .detail {
     font-size: 0.75rem;
-    color: #9e9ea7;
-    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+    background: rgba(var(--glass-rgb), 0.05);
     padding: 4px 8px;
     border-radius: 4px;
   }
@@ -945,18 +973,18 @@ onDestroy(() => {
     flex: 1;
     min-height: 280px;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 10px;
     padding: 14px;
     font-family: ui-monospace, monospace;
     font-size: 0.8rem;
-    color: #e4e4e7;
+    color: var(--text-primary);
     resize: none;
     outline: none;
   }
 
   .raw-editor:focus {
-    border-color: #6366f1;
+    border-color: var(--accent-primary);
   }
 
   .raw-actions {
@@ -970,7 +998,7 @@ onDestroy(() => {
     font-size: 0.875rem;
     font-weight: 500;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: var(--bg-button-gradient);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -979,7 +1007,7 @@ onDestroy(() => {
 
   .btn-save:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px var(--bg-button-gradient-shadow);
   }
 
   .btn-save:active:not(:disabled) {
@@ -1003,7 +1031,7 @@ onDestroy(() => {
   }
 
   .edit-modal {
-    background: rgba(30, 30, 50, 0.9);
+    background: var(--bg-card-inner);
     -webkit-backdrop-filter: var(--glass-blur-heavy);
     backdrop-filter: var(--glass-blur-heavy);
     border: 1px solid var(--glass-border);
@@ -1030,7 +1058,7 @@ onDestroy(() => {
   .edit-modal h3 {
     margin: 0 0 20px;
     font-size: 1.1rem;
-    color: #e4e4e7;
+    color: var(--text-primary);
   }
 
   .form-group {
@@ -1041,7 +1069,7 @@ onDestroy(() => {
     display: block;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a1a1aa;
+    color: var(--text-hover);
     margin-bottom: 8px;
   }
 
@@ -1050,11 +1078,11 @@ onDestroy(() => {
   .form-group select {
     width: 100%;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
     padding: 10px 12px;
     font-size: 0.875rem;
-    color: #e4e4e7;
+    color: var(--text-primary);
     outline: none;
   }
 
@@ -1070,7 +1098,7 @@ onDestroy(() => {
   .form-group input:focus,
   .form-group textarea:focus,
   .form-group select:focus {
-    border-color: #6366f1;
+    border-color: var(--accent-primary);
   }
 
   .form-group input:disabled {
@@ -1088,7 +1116,7 @@ onDestroy(() => {
   .field-hint {
     display: block;
     font-size: 0.7rem;
-    color: #8b8b95;
+    color: var(--text-inactive);
     margin-top: 4px;
   }
 
@@ -1115,23 +1143,23 @@ onDestroy(() => {
   .port-mappings-label {
     font-size: 0.8rem;
     font-weight: 500;
-    color: #a1a1aa;
+    color: var(--text-hover);
   }
 
   .btn-add-small {
     padding: 4px 10px;
     font-size: 0.75rem;
     font-weight: 500;
-    color: #a5b4fc;
-    background: rgba(99, 102, 241, 0.1);
-    border: 1px solid rgba(99, 102, 241, 0.2);
+    color: var(--accent-primary-light);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .btn-add-small:hover {
-    background: rgba(99, 102, 241, 0.15);
+    background: rgba(var(--accent-primary-rgb), 0.15);
   }
 
   .port-mapping-row {
@@ -1144,23 +1172,23 @@ onDestroy(() => {
   .port-mapping-row input {
     flex: 1;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 6px;
     padding: 8px 10px;
     font-size: 0.8rem;
-    color: #e4e4e7;
+    color: var(--text-primary);
     outline: none;
   }
 
   .port-mapping-row input:focus {
-    border-color: #6366f1;
+    border-color: var(--accent-primary);
   }
 
   .btn-remove {
     padding: 6px;
     background: none;
     border: none;
-    color: #71717a;
+    color: var(--text-muted);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
@@ -1168,8 +1196,8 @@ onDestroy(() => {
   }
 
   .btn-remove:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
+    background: rgba(var(--color-error-rgb), 0.1);
+    color: var(--color-error-soft);
   }
 
   .edit-actions {
@@ -1183,20 +1211,72 @@ onDestroy(() => {
     padding: 10px 20px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #71717a;
+    color: var(--text-muted);
     background: none;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .btn-cancel:active {
     transform: var(--press-scale);
+  }
+
+  .appearance-tab {
+    padding: 8px 0;
+  }
+
+  .theme-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .theme-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 16px;
+    background: rgba(var(--glass-rgb), 0.04);
+    border: 2px solid rgba(var(--glass-rgb), 0.08);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+  }
+
+  .theme-card:hover {
+    background: rgba(var(--glass-rgb), 0.07);
+    border-color: rgba(var(--glass-rgb), 0.15);
+  }
+
+  .theme-card.selected {
+    border-color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+  }
+
+  .theme-swatches {
+    display: flex;
+    gap: 6px;
+  }
+
+  .swatch {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .theme-name {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    text-transform: capitalize;
   }
 </style>

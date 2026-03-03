@@ -1,0 +1,161 @@
+use crate::error::AppError;
+use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
+use tauri_plugin_store::StoreExt;
+
+const SAVED_CONNECTIONS_KEY: &str = "savedConnections";
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SavedConnection {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "projectKey")]
+    pub project_key: String,
+    pub profile: String,
+    #[serde(rename = "lastUsedAt")]
+    pub last_used_at: Option<String>,
+}
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}", duration.as_secs() * 1000)
+}
+
+#[tauri::command]
+pub async fn load_saved_connections(app_handle: AppHandle) -> Result<Vec<SavedConnection>, AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    Ok(connections)
+}
+
+#[tauri::command]
+pub async fn save_connection(
+    app_handle: AppHandle,
+    name: String,
+    project_key: String,
+    profile: String,
+) -> Result<SavedConnection, AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    // Check if connection with same project/profile exists
+    if let Some(existing) = connections
+        .iter_mut()
+        .find(|c| c.project_key == project_key && c.profile == profile)
+    {
+        existing.name.clone_from(&name);
+        existing.last_used_at = Some(chrono_now());
+        let saved = existing.clone();
+
+        store.set(
+            SAVED_CONNECTIONS_KEY,
+            serde_json::to_value(&connections)
+                .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+        );
+        store
+            .save()
+            .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+        return Ok(saved);
+    }
+
+    let new_connection = SavedConnection {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        project_key,
+        profile,
+        last_used_at: Some(chrono_now()),
+    };
+
+    connections.push(new_connection.clone());
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(new_connection)
+}
+
+#[tauri::command]
+pub async fn delete_saved_connection(app_handle: AppHandle, id: String) -> Result<(), AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    connections.retain(|c| c.id != id);
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_saved_connection_last_used(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<(), AppError> {
+    update_saved_connection_last_used_inner(&app_handle, &id)
+}
+
+/// Inner function callable from other commands.
+pub fn update_saved_connection_last_used_inner(
+    app_handle: &AppHandle,
+    id: &str,
+) -> Result<(), AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    if let Some(conn) = connections.iter_mut().find(|c| c.id == id) {
+        conn.last_used_at = Some(chrono_now());
+    }
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(())
+}

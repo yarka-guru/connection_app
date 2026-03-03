@@ -4,23 +4,23 @@ const { connectionStatus = 'disconnected', statusMessage = '' } = $props()
 const STATUS_CONFIGS = {
   disconnected: {
     label: 'Ready',
-    color: '#71717a',
-    bgColor: 'rgba(113, 113, 122, 0.1)',
-    borderColor: 'rgba(113, 113, 122, 0.2)',
+    color: 'var(--text-muted)',
+    bgColor: 'rgba(var(--glass-rgb), 0.06)',
+    borderColor: 'rgba(var(--glass-rgb), 0.12)',
     icon: 'circle',
   },
   connecting: {
     label: 'Connecting',
-    color: '#fbbf24',
-    bgColor: 'rgba(251, 191, 36, 0.1)',
-    borderColor: 'rgba(251, 191, 36, 0.2)',
+    color: 'var(--accent-primary)',
+    bgColor: 'rgba(var(--accent-primary-rgb), 0.1)',
+    borderColor: 'rgba(var(--accent-primary-rgb), 0.2)',
     icon: 'loading',
   },
   connected: {
     label: 'Connected',
-    color: '#34d399',
-    bgColor: 'rgba(52, 211, 153, 0.1)',
-    borderColor: 'rgba(52, 211, 153, 0.2)',
+    color: 'var(--accent-secondary)',
+    bgColor: 'rgba(var(--accent-secondary-rgb), 0.1)',
+    borderColor: 'rgba(var(--accent-secondary-rgb), 0.2)',
     icon: 'check',
   },
 }
@@ -103,6 +103,6 @@ const statusConfig = $derived(STATUS_CONFIGS[connectionStatus])
   .status-detail {
     margin: 0;
     font-size: 0.8rem;
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 </style>

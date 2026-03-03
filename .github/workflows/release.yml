@@ -18,24 +18,14 @@ jobs:
         include:
           - platform: macos-latest
             rust_target: aarch64-apple-darwin
-            sidecar_target: node22-macos-arm64
-            sidecar_triple: aarch64-apple-darwin
           - platform: macos-latest
             rust_target: x86_64-apple-darwin
-            sidecar_target: node22-macos-x64
-            sidecar_triple: x86_64-apple-darwin
           - platform: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
-            sidecar_target: node22-linux-x64
-            sidecar_triple: x86_64-unknown-linux-gnu
           - platform: ubuntu-22.04-arm
             rust_target: aarch64-unknown-linux-gnu
-            sidecar_target: node22-linux-arm64
-            sidecar_triple: aarch64-unknown-linux-gnu
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            sidecar_target: node22-win-x64
-            sidecar_triple: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -69,16 +59,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
-
-      - name: Build sidecar for current platform
-        run: |
-          mkdir -p src-tauri/binaries
-          npx esbuild gui-adapter.js --bundle --platform=node --target=node22 --outfile=src-tauri/binaries/gui-adapter-bundle.cjs --format=cjs --external:inquirer
-          npx @yao-pkg/pkg src-tauri/binaries/gui-adapter-bundle.cjs --target ${{ matrix.sidecar_target }} -o src-tauri/binaries/gui-adapter-${{ matrix.sidecar_triple }}
-          rm src-tauri/binaries/gui-adapter-bundle.cjs
-
-      - name: Download session-manager-plugin
-        run: node scripts/download-ssm-plugin.js --triple ${{ matrix.sidecar_triple }}
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

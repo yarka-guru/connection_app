@@ -138,7 +138,7 @@ function handleHeaderKeydown(e, connectionId) {
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(16, 185, 129, 0.3);
+    border: 1px solid rgba(var(--accent-secondary-rgb), 0.3);
     border-radius: 20px;
     padding: 24px;
     box-shadow: var(--glass-inner-glow);
@@ -160,12 +160,12 @@ function handleHeaderKeydown(e, connectionId) {
   .card-icon {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, rgba(52, 211, 153, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%);
+    background: linear-gradient(135deg, rgba(var(--accent-secondary-rgb), 0.2) 0%, rgba(var(--accent-secondary-rgb), 0.15) 100%);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #34d399;
+    color: var(--accent-secondary);
     animation: pulse 2s ease-in-out infinite;
     will-change: opacity;
   }
@@ -178,24 +178,24 @@ function handleHeaderKeydown(e, connectionId) {
   .card-title {
     font-size: 1rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: var(--text-primary);
   }
 
   .btn-disconnect-all {
     padding: 8px 14px;
     font-size: 0.75rem;
     font-weight: 500;
-    color: #f87171;
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: var(--color-error-soft);
+    background: rgba(var(--color-error-rgb), 0.1);
+    border: 1px solid rgba(var(--color-error-rgb), 0.2);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s;
   }
 
   .btn-disconnect-all:hover {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(var(--color-error-rgb), 0.15);
+    border-color: rgba(var(--color-error-rgb), 0.3);
   }
 
   .btn-disconnect-all:active {
@@ -238,9 +238,9 @@ function handleHeaderKeydown(e, connectionId) {
     display: block;
     width: 8px;
     height: 8px;
-    background: #34d399;
+    background: var(--accent-secondary);
     border-radius: 50%;
-    box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 8px rgba(var(--accent-secondary-rgb), 0.5);
   }
 
   .connection-info {
@@ -254,18 +254,18 @@ function handleHeaderKeydown(e, connectionId) {
   .connection-name {
     font-size: 0.9rem;
     font-weight: 500;
-    color: #e4e4e7;
+    color: var(--text-primary);
   }
 
   .connection-port {
-    color: #34d399;
+    color: var(--accent-secondary);
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.85rem;
   }
 
   .connection-meta {
     font-size: 0.75rem;
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 
   .connection-actions {
@@ -287,12 +287,12 @@ function handleHeaderKeydown(e, connectionId) {
   }
 
   .btn-expand {
-    color: #71717a;
+    color: var(--text-muted);
   }
 
   .btn-expand:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .btn-expand svg {
@@ -304,12 +304,12 @@ function handleHeaderKeydown(e, connectionId) {
   }
 
   .btn-disconnect {
-    color: #71717a;
+    color: var(--text-muted);
   }
 
   .btn-disconnect:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
+    background: rgba(var(--color-error-rgb), 0.1);
+    color: var(--color-error-soft);
   }
 
   .connection-details {
@@ -345,7 +345,7 @@ function handleHeaderKeydown(e, connectionId) {
     width: 70px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #9e9ea7;
+    color: var(--text-secondary);
     text-transform: uppercase;
     flex-shrink: 0;
   }
@@ -354,7 +354,7 @@ function handleHeaderKeydown(e, connectionId) {
     flex: 1;
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
     font-size: 0.8rem;
-    color: #a5b4fc;
+    color: var(--accent-primary-light);
     background: transparent;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -362,7 +362,7 @@ function handleHeaderKeydown(e, connectionId) {
   }
 
   .detail-value.password {
-    color: #fbbf24;
+    color: var(--accent-primary);
     letter-spacing: 0.1em;
   }
 </style>

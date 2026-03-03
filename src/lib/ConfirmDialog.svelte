@@ -57,7 +57,7 @@ function handleKeydown(e) {
   }
 
   .confirm-dialog {
-    background: rgba(26, 26, 46, 0.85);
+    background: var(--bg-card);
     -webkit-backdrop-filter: var(--glass-blur-heavy);
     backdrop-filter: var(--glass-blur-heavy);
     border: 1px solid var(--glass-border);
@@ -78,13 +78,13 @@ function handleKeydown(e) {
     margin: 0 0 8px;
     font-size: 1.1rem;
     font-weight: 600;
-    color: #e4e4e7;
+    color: var(--text-primary);
   }
 
   .confirm-message {
     margin: 0 0 20px;
     font-size: 0.875rem;
-    color: #9e9ea7;
+    color: var(--text-secondary);
     line-height: 1.5;
   }
 
@@ -98,17 +98,17 @@ function handleKeydown(e) {
     padding: 10px 18px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #71717a;
+    color: var(--text-muted);
     background: none;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .btn-cancel:active {
@@ -120,7 +120,7 @@ function handleKeydown(e) {
     font-size: 0.875rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: var(--bg-button-gradient);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -129,7 +129,7 @@ function handleKeydown(e) {
 
   .btn-confirm:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px var(--bg-button-gradient-shadow);
   }
 
   .btn-confirm:active {
@@ -137,11 +137,11 @@ function handleKeydown(e) {
   }
 
   .btn-confirm.destructive {
-    background: #ef4444;
+    background: var(--color-error);
   }
 
   .btn-confirm.destructive:hover {
-    background: #dc2626;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+    background: var(--color-error-dark);
+    box-shadow: 0 4px 12px rgba(var(--color-error-rgb), 0.3);
   }
 </style>

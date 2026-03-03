@@ -1,6 +1,7 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
+import { applyTheme, themes } from './lib/themes.js'
 import SavedConnections from './lib/SavedConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
@@ -35,7 +36,14 @@ let showCloseConfirm = $state(false)
 let isCheckingUpdates = $state(false)
 let updateCheckMessage = $state('')
 
+let currentTheme = $state('forest')
 let showSettings = $state(false)
+let showSetupScreen = $state(false)
+let setupError = $state('')
+let isGrantingAccess = $state(false)
+let showMigrationOffer = $state(false)
+let isImporting = $state(false)
+let migrationResult = $state('')
 
 let invoke = null
 let listen = null
@@ -43,7 +51,11 @@ let appWindow = null
 
 // Cleanup references
 let cancelUpdateMsgTimeout = null
-let unlistenSidecar = null
+let unlistenSsoStatus = null
+let unlistenSsoOpenUrl = null
+let unlistenStatus = null
+let unlistenDisconnected = null
+let unlistenConnectionError = null
 let unlistenCloseRequested = null
 
 // Global keyboard shortcuts
@@ -118,6 +130,29 @@ async function initApp() {
     return
   }
 
+  // Load saved theme
+  try {
+    const saved = localStorage.getItem('theme')
+    if (saved && themes[saved]) {
+      currentTheme = saved
+      applyTheme(saved)
+    }
+  } catch (_err) {
+    // Non-fatal: use default theme
+  }
+
+  // Check sandbox status — if sandboxed and no AWS access, show setup screen
+  try {
+    const sandboxStatus = await invoke('get_sandbox_status')
+    if (sandboxStatus.isSandboxed && !sandboxStatus.hasAwsAccess) {
+      showSetupScreen = true
+      loadingProjects = false
+      return
+    }
+  } catch (_err) {
+    // Non-fatal: if check fails, continue normally (not sandboxed)
+  }
+
   // Intercept window close — prompt if active connections, otherwise quit cleanly
   unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
     event.preventDefault()
@@ -128,34 +163,37 @@ async function initApp() {
     }
   })
 
-  // Set up sidecar listener (non-blocking)
-  listen('sidecar-event', (ev) => {
-    const data = ev.payload
-    if (data.event === 'sso-status') {
-      statusMessage = data.message
-    } else if (data.event === 'sso-open-url') {
-      statusMessage = 'Waiting for SSO authorization in browser...'
-    } else if (data.event === 'status') {
-      statusMessage = data.message
-    } else if (data.event === 'credentials') {
-      // Credentials are now part of connection info, handled via activeConnections
-    } else if (data.event === 'disconnected') {
-      const { connectionId } = data
-      if (connectionId) {
-        activeConnections = activeConnections.filter(
-          (c) => c.id !== connectionId,
-        )
-      }
-      if (activeConnections.length === 0) {
-        connectionStatus = 'disconnected'
-        statusMessage = ''
-      }
-      connectingId = null
-    } else if (data.event === 'error') {
-      errorMessage = data.message
-      connectingId = null
+  // Set up named event listeners (direct from Rust backend)
+  listen('sso-status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenSsoStatus = fn })
+
+  listen('sso-open-url', (ev) => {
+    statusMessage = 'Waiting for SSO authorization in browser...'
+  }).then((fn) => { unlistenSsoOpenUrl = fn })
+
+  listen('status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenStatus = fn })
+
+  listen('disconnected', (ev) => {
+    const { connectionId } = ev.payload
+    if (connectionId) {
+      activeConnections = activeConnections.filter(
+        (c) => c.id !== connectionId,
+      )
     }
-  }).then((fn) => { unlistenSidecar = fn })
+    if (activeConnections.length === 0) {
+      connectionStatus = 'disconnected'
+      statusMessage = ''
+    }
+    connectingId = null
+  }).then((fn) => { unlistenDisconnected = fn })
+
+  listen('connection-error', (ev) => {
+    errorMessage = ev.payload.message
+    connectingId = null
+  }).then((fn) => { unlistenConnectionError = fn })
 
   // Load saved data + version with timeout
   try {
@@ -189,9 +227,142 @@ function retryInit() {
   initApp()
 }
 
+async function handleGrantAccess() {
+  if (isGrantingAccess) return
+  isGrantingAccess = true
+  setupError = ''
+
+  try {
+    await invoke('grant_aws_access')
+    // Check if migration is available before continuing
+    try {
+      const migrationAvailable = await invoke('check_migration_available')
+      if (migrationAvailable) {
+        showMigrationOffer = true
+        isGrantingAccess = false
+        return
+      }
+    } catch (_err) {
+      // Non-fatal: skip migration check
+    }
+    showSetupScreen = false
+    await continueAfterSetup()
+  } catch (err) {
+    setupError = `${err}`
+  } finally {
+    isGrantingAccess = false
+  }
+}
+
+async function handleImportProjects() {
+  if (isImporting) return
+  isImporting = true
+  migrationResult = ''
+
+  try {
+    const count = await invoke('import_projects_file')
+    migrationResult = `Imported ${count} project${count !== 1 ? 's' : ''}`
+    await finishSetup()
+  } catch (err) {
+    if (`${err}`.includes('cancelled')) {
+      migrationResult = 'Import cancelled'
+    } else {
+      migrationResult = `Import failed: ${err}`
+    }
+  } finally {
+    isImporting = false
+  }
+}
+
+async function skipMigration() {
+  await finishSetup()
+}
+
+async function finishSetup() {
+  showSetupScreen = false
+  showMigrationOffer = false
+  await continueAfterSetup()
+}
+
+async function continueAfterSetup() {
+  loadingProjects = true
+
+  // Set up close handler
+  unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
+    event.preventDefault()
+    if (activeConnections.length > 0) {
+      showCloseConfirm = true
+    } else {
+      try { await invoke('quit_app') } catch (_err) { appWindow?.destroy() }
+    }
+  })
+
+  // Set up event listeners
+  listen('sso-status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenSsoStatus = fn })
+
+  listen('sso-open-url', (ev) => {
+    statusMessage = 'Waiting for SSO authorization in browser...'
+  }).then((fn) => { unlistenSsoOpenUrl = fn })
+
+  listen('status', (ev) => {
+    statusMessage = ev.payload.message
+  }).then((fn) => { unlistenStatus = fn })
+
+  listen('disconnected', (ev) => {
+    const { connectionId } = ev.payload
+    if (connectionId) {
+      activeConnections = activeConnections.filter(
+        (c) => c.id !== connectionId,
+      )
+    }
+    if (activeConnections.length === 0) {
+      connectionStatus = 'disconnected'
+      statusMessage = ''
+    }
+    connectingId = null
+  }).then((fn) => { unlistenDisconnected = fn })
+
+  listen('connection-error', (ev) => {
+    errorMessage = ev.payload.message
+    connectingId = null
+  }).then((fn) => { unlistenConnectionError = fn })
+
+  // Load saved data + version
+  try {
+    const [savedResult, versionResult] = await withTimeout(
+      Promise.all([
+        invoke('load_saved_connections'),
+        invoke('get_current_version'),
+      ]),
+      5000,
+    )
+    savedConnections = savedResult
+    currentVersion = versionResult
+  } catch (_err) {
+    // Non-fatal
+  }
+
+  // Load projects
+  try {
+    projects = await invoke('list_projects')
+  } catch (err) {
+    errorMessage = `Failed to load projects: ${err}`
+  } finally {
+    loadingProjects = false
+  }
+
+  checkForUpdates()
+}
+
 onDestroy(() => {
   cancelUpdateMsgTimeout?.()
-  unlistenSidecar?.()
+  unlistenSsoStatus?.()
+  unlistenSsoOpenUrl?.()
+  unlistenStatus?.()
+  unlistenDisconnected?.()
+  unlistenConnectionError?.()
   unlistenCloseRequested?.()
 })
 
@@ -469,6 +640,16 @@ function dismissSavePrompt() {
   showSavePrompt = false
 }
 
+function handleThemeChange(themeName) {
+  currentTheme = themeName
+  applyTheme(themeName)
+  try {
+    localStorage.setItem('theme', themeName)
+  } catch (_err) {
+    // Non-fatal
+  }
+}
+
 // Computed: check if the selected project/profile is already saved
 const isAlreadySaved = $derived(
   savedConnections.some(
@@ -486,8 +667,8 @@ const isAlreadySaved = $derived(
         <circle cx="24" cy="20" r="3" fill="white"/>
         <defs>
           <linearGradient id="gradient-loading" x1="0" y1="0" x2="32" y2="32">
-            <stop stop-color="#6366f1"/>
-            <stop offset="1" stop-color="#8b5cf6"/>
+            <stop stop-color="#d4a853"/>
+            <stop offset="1" stop-color="#7aab6d"/>
           </linearGradient>
         </defs>
       </svg>
@@ -499,6 +680,66 @@ const isAlreadySaved = $derived(
         <p class="init-error-text">{errorMessage}</p>
         <button class="btn-retry" onclick={retryInit}>Retry</button>
       {/if}
+    </div>
+  {:else if showSetupScreen}
+    <div class="setup-screen">
+      <div class="setup-card">
+        <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
+          <rect width="32" height="32" rx="8" fill="url(#gradient-setup)"/>
+          <path d="M10 12h12M10 16h12M10 20h8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="24" cy="20" r="3" fill="white"/>
+          <defs>
+            <linearGradient id="gradient-setup" x1="0" y1="0" x2="32" y2="32">
+              <stop stop-color="#d4a853"/>
+              <stop offset="1" stop-color="#7aab6d"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        {#if showMigrationOffer}
+          <h2 class="setup-title">Import Projects</h2>
+          <p class="setup-description">
+            Would you like to import projects from an existing <code>projects.json</code> file?
+          </p>
+          <p class="setup-hint">
+            If you previously used RDS Connect, you can import your projects from <code>~/.rds-ssm-connect/projects.json</code>.
+          </p>
+          <div class="setup-actions">
+            <button class="btn-grant" onclick={handleImportProjects} disabled={isImporting}>
+              {#if isImporting}
+                <span class="btn-spinner"></span>
+                Importing...
+              {:else}
+                Import Projects
+              {/if}
+            </button>
+            <button class="btn-skip" onclick={skipMigration} disabled={isImporting}>
+              Skip
+            </button>
+          </div>
+          {#if migrationResult}
+            <p class={migrationResult.startsWith('Import failed') ? 'setup-error' : 'setup-success'}>{migrationResult}</p>
+          {/if}
+        {:else}
+          <h2 class="setup-title">AWS Directory Access</h2>
+          <p class="setup-description">
+            RDS Connect needs access to your <code>~/.aws</code> directory to read AWS profiles and SSO credentials.
+          </p>
+          <p class="setup-hint">
+            You'll be asked to select your <code>~/.aws</code> folder once. Access is remembered for future launches.
+          </p>
+          <button class="btn-grant" onclick={handleGrantAccess} disabled={isGrantingAccess}>
+            {#if isGrantingAccess}
+              <span class="btn-spinner"></span>
+              Granting access...
+            {:else}
+              Grant Access
+            {/if}
+          </button>
+          {#if setupError}
+            <p class="setup-error">{setupError}</p>
+          {/if}
+        {/if}
+      </div>
     </div>
   {:else}
     <div class="app-container">
@@ -519,8 +760,8 @@ const isAlreadySaved = $derived(
             <circle cx="24" cy="20" r="3" fill="white"/>
             <defs>
               <linearGradient id="gradient" x1="0" y1="0" x2="32" y2="32">
-                <stop stop-color="#6366f1"/>
-                <stop offset="1" stop-color="#8b5cf6"/>
+                <stop stop-color="#d4a853"/>
+                <stop offset="1" stop-color="#7aab6d"/>
               </linearGradient>
             </defs>
           </svg>
@@ -651,6 +892,8 @@ const isAlreadySaved = $derived(
         onClose={() => showSettings = false}
         {invoke}
         onProjectsChanged={refreshProjects}
+        {currentTheme}
+        onThemeChange={handleThemeChange}
       />
     {/if}
   {/if}
@@ -658,14 +901,39 @@ const isAlreadySaved = $derived(
 
 <style>
   :global(:root) {
-    --glass-bg: rgba(255, 255, 255, 0.04);
-    --glass-bg-hover: rgba(255, 255, 255, 0.07);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-border-hover: rgba(255, 255, 255, 0.14);
+    --bg-primary: #141e17;
+    --bg-secondary: #1a2b1f;
+    --bg-tertiary: #182a1d;
+    --bg-card: rgba(26, 43, 31, 0.85);
+    --bg-card-inner: rgba(28, 40, 30, 0.9);
+    --accent-primary: #d4a853;
+    --accent-primary-light: #e2c87a;
+    --accent-primary-rgb: 212, 168, 83;
+    --accent-secondary: #7aab6d;
+    --accent-secondary-rgb: 122, 171, 109;
+    --text-primary: #d5ddd3;
+    --text-secondary: #8a9488;
+    --text-muted: #6b7d6a;
+    --text-hover: #9baa98;
+    --text-inactive: #7d8f7a;
+    --color-error: #c9614a;
+    --color-error-dark: #b0503c;
+    --color-error-soft: #d4836b;
+    --color-error-light: #e0a08a;
+    --color-error-rgb: 201, 97, 74;
+    --color-success: #7aab6d;
+    --color-success-soft: #8bbd7a;
+    --glass-rgb: 200, 220, 195;
+    --glass-bg: rgba(200, 220, 195, 0.04);
+    --glass-bg-hover: rgba(200, 220, 195, 0.07);
+    --glass-border: rgba(122, 171, 109, 0.08);
+    --glass-border-hover: rgba(122, 171, 109, 0.14);
     --glass-blur: blur(16px) saturate(1.8);
     --glass-blur-heavy: blur(32px) saturate(1.8);
-    --glass-inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --glass-inner-glow: inset 0 1px 0 rgba(200, 220, 195, 0.06);
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    --bg-button-gradient: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
+    --bg-button-gradient-shadow: rgba(212, 168, 83, 0.3);
     --press-scale: scale(0.97);
     --transition-fast: 0.15s ease;
     --transition-normal: 0.2s ease;
@@ -673,8 +941,8 @@ const isAlreadySaved = $derived(
 
   @media (prefers-reduced-transparency) {
     :global(:root) {
-      --glass-bg: rgba(30, 30, 50, 0.95);
-      --glass-bg-hover: rgba(40, 40, 60, 0.95);
+      --glass-bg: rgba(26, 43, 31, 0.95);
+      --glass-bg-hover: rgba(32, 52, 36, 0.95);
       --glass-blur: none;
       --glass-blur-heavy: none;
     }
@@ -695,9 +963,9 @@ const isAlreadySaved = $derived(
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
-    background: linear-gradient(145deg, #0f0f1a 0%, #1a1a2e 50%, #16162a 100%);
+    background: linear-gradient(145deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--bg-tertiary) 100%);
     min-height: 100vh;
-    color: #e4e4e7;
+    color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
   }
 
@@ -718,8 +986,8 @@ const isAlreadySaved = $derived(
   .loading-spinner {
     width: 24px;
     height: 24px;
-    border: 2px solid rgba(99, 102, 241, 0.2);
-    border-top-color: #6366f1;
+    border: 2px solid rgba(var(--accent-primary-rgb), 0.2);
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     will-change: transform;
@@ -727,13 +995,13 @@ const isAlreadySaved = $derived(
 
   .loading-text {
     font-size: 0.875rem;
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 
   .init-error-text {
     margin: 8px 0 0;
     font-size: 0.8rem;
-    color: #fca5a5;
+    color: var(--color-error-light);
     text-align: center;
     max-width: 360px;
     line-height: 1.5;
@@ -746,17 +1014,17 @@ const isAlreadySaved = $derived(
     font-size: 0.875rem;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    background: var(--bg-button-gradient);
     border: none;
     border-radius: 10px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px var(--bg-button-gradient-shadow);
   }
 
   .btn-retry:hover {
     transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+    box-shadow: 0 6px 16px rgba(var(--accent-primary-rgb), 0.4);
   }
 
   .btn-retry:active {
@@ -786,7 +1054,7 @@ const isAlreadySaved = $derived(
     margin: 0;
     font-size: 1.5rem;
     font-weight: 600;
-    background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+    background: linear-gradient(135deg, #fff 0%, var(--accent-primary-light) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -795,7 +1063,7 @@ const isAlreadySaved = $derived(
   .header-text p {
     margin: 4px 0 0;
     font-size: 0.875rem;
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 
   .main-content {
@@ -812,7 +1080,7 @@ const isAlreadySaved = $derived(
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(251, 191, 36, 0.2);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
     border-radius: 12px;
     box-shadow: var(--glass-inner-glow);
     animation: fadeIn 0.3s ease-out;
@@ -820,7 +1088,7 @@ const isAlreadySaved = $derived(
 
   .save-label {
     font-size: 0.875rem;
-    color: #fbbf24;
+    color: var(--accent-primary);
     font-weight: 500;
   }
 
@@ -828,21 +1096,21 @@ const isAlreadySaved = $derived(
     width: 100%;
     padding: 10px 14px;
     background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
-    color: #e4e4e7;
+    color: var(--text-primary);
     font-size: 0.9rem;
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
   }
 
   .save-input:focus {
-    border-color: #fbbf24;
-    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.2);
   }
 
   .save-input::placeholder {
-    color: #9e9ea7;
+    color: var(--text-secondary);
   }
 
   .save-prompt-actions {
@@ -854,8 +1122,8 @@ const isAlreadySaved = $derived(
     padding: 6px 14px;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #1a1a2e;
-    background: #fbbf24;
+    color: var(--bg-secondary);
+    background: var(--accent-primary);
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -863,7 +1131,7 @@ const isAlreadySaved = $derived(
   }
 
   .btn-save:hover {
-    background: #fcd34d;
+    background: var(--accent-primary-light);
   }
 
   .btn-save:active {
@@ -874,17 +1142,17 @@ const isAlreadySaved = $derived(
     padding: 6px 14px;
     font-size: 0.8rem;
     font-weight: 500;
-    color: #71717a;
+    color: var(--text-muted);
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, color 0.2s;
   }
 
   .btn-dismiss-save:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: #a1a1aa;
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .error-toast {
@@ -895,7 +1163,7 @@ const isAlreadySaved = $derived(
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    border: 1px solid rgba(var(--color-error-rgb), 0.2);
     border-radius: 16px;
     box-shadow: var(--glass-inner-glow);
     animation: slideIn 0.3s ease-out;
@@ -922,7 +1190,7 @@ const isAlreadySaved = $derived(
   }
 
   .error-icon {
-    color: #f87171;
+    color: var(--color-error-soft);
     flex-shrink: 0;
     margin-top: 2px;
   }
@@ -931,14 +1199,14 @@ const isAlreadySaved = $derived(
     flex: 1;
     margin: 0;
     font-size: 0.875rem;
-    color: #fca5a5;
+    color: var(--color-error-light);
     line-height: 1.5;
   }
 
   .dismiss-btn {
     background: transparent;
     border: none;
-    color: #71717a;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 4px;
     border-radius: 6px;
@@ -949,8 +1217,8 @@ const isAlreadySaved = $derived(
   }
 
   .dismiss-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: #a1a1aa;
+    background: rgba(var(--glass-rgb), 0.1);
+    color: var(--text-hover);
   }
 
   .app-footer {
@@ -963,7 +1231,7 @@ const isAlreadySaved = $derived(
 
   .app-footer > span:first-child {
     font-size: 0.75rem;
-    color: #8b8b95;
+    color: var(--text-inactive);
   }
 
   .footer-actions {
@@ -975,9 +1243,9 @@ const isAlreadySaved = $derived(
   .settings-btn {
     padding: 6px;
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--glass-border);
     border-radius: 6px;
-    color: #71717a;
+    color: var(--text-muted);
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
     display: flex;
@@ -986,9 +1254,9 @@ const isAlreadySaved = $derived(
   }
 
   .settings-btn:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(var(--glass-rgb), 0.05);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #a1a1aa;
+    color: var(--text-hover);
   }
 
   .settings-btn:active {
@@ -999,18 +1267,18 @@ const isAlreadySaved = $derived(
     padding: 6px 12px;
     font-size: 0.7rem;
     font-weight: 500;
-    color: #71717a;
+    color: var(--text-muted);
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--glass-border);
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s, border-color 0.2s, color 0.2s;
   }
 
   .check-updates-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(var(--glass-rgb), 0.05);
     border-color: rgba(255, 255, 255, 0.12);
-    color: #a1a1aa;
+    color: var(--text-hover);
   }
 
   .check-updates-btn:active:not(:disabled) {
@@ -1027,7 +1295,7 @@ const isAlreadySaved = $derived(
     width: 10px;
     height: 10px;
     border: 1.5px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #a1a1aa;
+    border-top-color: var(--text-hover);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-right: 4px;
@@ -1035,7 +1303,148 @@ const isAlreadySaved = $derived(
 
   .update-message {
     font-size: 0.75rem;
-    color: #10b981;
+    color: var(--accent-secondary);
     animation: fadeIn 0.3s ease-out;
+  }
+
+  .setup-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 48px);
+  }
+
+  .setup-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    max-width: 400px;
+    padding: 32px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: var(--glass-shadow), var(--glass-inner-glow);
+    text-align: center;
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  .setup-title {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .setup-description {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .setup-description code,
+  .setup-hint code {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.85em;
+    color: var(--accent-primary-light);
+    background: rgba(var(--accent-primary-rgb), 0.15);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .setup-hint {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .btn-grant {
+    margin-top: 8px;
+    padding: 12px 32px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: white;
+    background: var(--bg-button-gradient);
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 4px 16px var(--bg-button-gradient-shadow);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-grant:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(var(--accent-primary-rgb), 0.4);
+  }
+
+  .btn-grant:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .btn-grant:disabled {
+    opacity: 0.7;
+    cursor: wait;
+  }
+
+  .btn-grant .btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .setup-error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--color-error-light);
+    line-height: 1.5;
+    max-width: 100%;
+    word-break: break-word;
+  }
+
+  .setup-success {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--accent-secondary);
+    line-height: 1.5;
+  }
+
+  .setup-actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 8px;
+  }
+
+  .btn-skip {
+    padding: 12px 24px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+  }
+
+  .btn-skip:hover:not(:disabled) {
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
+  }
+
+  .btn-skip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
