@@ -286,7 +286,7 @@ async fn poll_for_token(
 
                 return Ok(serde_json::json!({
                     "accessToken": access_token,
-                    "expiresAt": expires_at.to_rfc3339(),
+                    "expiresAt": expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 }));
             }
             Err(err) => {

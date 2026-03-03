@@ -4,6 +4,7 @@ version = "2.0.2"
 description = "Secure RDS connections through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
+default-run = "rds-ssm-connect"
 
 [lib]
 name = "rds_ssm_connect_lib"

@@ -56,7 +56,7 @@ pub async fn get_connection_credentials(
         )
         .send()
         .await
-        .map_err(|e| AppError::Aws(format!("Failed to list secrets: {}", e)))?;
+        .map_err(|e| AppError::Aws(format!("Failed to list secrets: {:?}", e)))?;
 
     let secrets = list_response.secret_list();
     if secrets.is_empty() {
@@ -77,7 +77,7 @@ pub async fn get_connection_credentials(
         .secret_id(&secret_name)
         .send()
         .await
-        .map_err(|e| AppError::Aws(format!("Failed to get secret value: {}", e)))?;
+        .map_err(|e| AppError::Aws(format!("Failed to get secret value: {:?}", e)))?;
 
     let secret_string = get_response
         .secret_string()
@@ -144,7 +144,7 @@ pub async fn find_bastion_instance(clients: &AwsClients) -> Result<String, AppEr
         )
         .send()
         .await
-        .map_err(|e| AppError::Aws(format!("Failed to describe instances: {}", e)))?;
+        .map_err(|e| AppError::Aws(format!("Failed to describe instances: {:?}", e)))?;
 
     for reservation in response.reservations() {
         for instance in reservation.instances() {
@@ -172,7 +172,7 @@ pub async fn get_rds_endpoint(
                 .describe_db_clusters()
                 .send()
                 .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {}", e)))?;
+                .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {:?}", e)))?;
 
             for cluster in response.db_clusters() {
                 let status = cluster.status().unwrap_or_default();
@@ -191,7 +191,7 @@ pub async fn get_rds_endpoint(
                 .describe_db_instances()
                 .send()
                 .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {}", e)))?;
+                .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {:?}", e)))?;
 
             for instance in response.db_instances() {
                 let status = instance.db_instance_status().unwrap_or_default();
@@ -225,7 +225,7 @@ pub async fn get_rds_port(
                 .describe_db_clusters()
                 .send()
                 .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {}", e)))?;
+                .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {:?}", e)))?;
 
             for cluster in response.db_clusters() {
                 let status = cluster.status().unwrap_or_default();
@@ -246,7 +246,7 @@ pub async fn get_rds_port(
                 .describe_db_instances()
                 .send()
                 .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {}", e)))?;
+                .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {:?}", e)))?;
 
             for instance in response.db_instances() {
                 let status = instance.db_instance_status().unwrap_or_default();
@@ -278,7 +278,7 @@ pub async fn terminate_bastion_instance(
         .instance_ids(instance_id)
         .send()
         .await
-        .map_err(|e| AppError::Aws(format!("Failed to terminate bastion: {}", e)))?;
+        .map_err(|e| AppError::Aws(format!("Failed to terminate bastion: {:?}", e)))?;
 
     Ok(())
 }
@@ -308,7 +308,7 @@ pub async fn wait_for_new_bastion_instance(
             )
             .send()
             .await
-            .map_err(|e| AppError::Aws(format!("Failed to describe instances: {}", e)))?;
+            .map_err(|e| AppError::Aws(format!("Failed to describe instances: {:?}", e)))?;
 
         let mut new_instance_id = None;
         for reservation in response.reservations() {
@@ -363,7 +363,7 @@ pub async fn wait_for_ssm_agent_ready(
             .send()
             .await
             .map_err(|e| {
-                AppError::Aws(format!("Failed to describe instance information: {}", e))
+                AppError::Aws(format!("Failed to describe instance information: {:?}", e))
             })?;
 
         let instances = response.instance_information_list();
@@ -403,7 +403,7 @@ pub async fn start_session(
         .parameters("localPortNumber", vec![local_port.to_string()])
         .send()
         .await
-        .map_err(|e| AppError::Aws(format!("Failed to start SSM session: {}", e)))?;
+        .map_err(|e| AppError::Aws(format!("Failed to start SSM session: {:?}", e)))?;
 
     Ok(response)
 }
