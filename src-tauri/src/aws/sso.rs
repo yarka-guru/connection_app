@@ -64,13 +64,13 @@ pub struct CliSsoHandler;
 
 impl SsoEventHandler for CliSsoHandler {
     fn on_status(&self, message: &str, _connection_id: Option<&str>) {
-        eprintln!("  {} {}", '\u{23F3}', message);
+        eprintln!("  \u{23F3} {}", message);
     }
 
     fn on_open_url(&self, url: &str, _connection_id: Option<&str>) {
         eprintln!(
-            "\n  {} Open this URL in your browser to authorize:\n     {}\n",
-            '\u{1F310}', url
+            "\n  \u{1F310} Open this URL in your browser to authorize:\n     {}\n",
+            url
         );
         // Try to open browser automatically
         #[cfg(target_os = "macos")]

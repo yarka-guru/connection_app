@@ -236,17 +236,30 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
         .parse()
         .map_err(|_| format!("Invalid port: {}", local_port))?;
 
-    // Display connection info
+    // Display connection info with dynamic-width box
     let masked_password = mask_password(&db_creds.password);
+    let rows = [
+        ("Host",     "localhost".to_string()),
+        ("Port",     local_port.clone()),
+        ("Username", db_creds.username.clone()),
+        ("Password", masked_password),
+        ("Database", db_creds.database.clone()),
+        ("Endpoint", rds_endpoint.clone()),
+    ];
+    // Build formatted lines, then measure for box width
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|(label, value)| format!("  {:<10}{}", format!("{}:", label), value))
+        .collect();
+    let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    let box_width = max_line_len + 2; // + right padding
+
     eprintln!("\n  \u{2705} Connected!\n");
-    eprintln!("  \u{250C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
-    eprintln!("  \u{2502}  Host:      localhost");
-    eprintln!("  \u{2502}  Port:      {}", local_port);
-    eprintln!("  \u{2502}  Username:  {}", db_creds.username);
-    eprintln!("  \u{2502}  Password:  {}", masked_password);
-    eprintln!("  \u{2502}  Database:  {}", db_creds.database);
-    eprintln!("  \u{2502}  Endpoint:  {}", rds_endpoint);
-    eprintln!("  \u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n");
+    eprintln!("  \u{250C}{}\u{2510}", "\u{2500}".repeat(box_width));
+    for line in &lines {
+        eprintln!("  \u{2502}{:<box_width$}\u{2502}", line, box_width = box_width);
+    }
+    eprintln!("  \u{2514}{}\u{2518}\n", "\u{2500}".repeat(box_width));
 
     // Copy password to clipboard
     if try_copy_to_clipboard(&db_creds.password) {
