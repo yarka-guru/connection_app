@@ -119,22 +119,28 @@ jobs:
             end
 
             def post_install
-              # Link .desktop file so Linux desktop environments find the app
-              desktop_src = share/"applications/RDS SSM Connect.desktop"
-              if desktop_src.exist?
-                desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
-                desktop_dir.mkpath
-                cp desktop_src, desktop_dir/"rds-ssm-connect.desktop"
-              end
+              # Generate .desktop file with correct Homebrew paths
+              desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
+              desktop_dir.mkpath
+              (desktop_dir/"rds-ssm-connect.desktop").write <<~DESKTOP
+                [Desktop Entry]
+                Name=RDS SSM Connect
+                Comment=Secure database tunneling via AWS SSM
+                Exec=#{bin}/rds-ssm-connect
+                Icon=#{share}/icons/hicolor/128x128/apps/rds-ssm-connect.png
+                Type=Application
+                Categories=Development;Network;
+                Terminal=false
+              DESKTOP
 
-              # Link icons
+              # Link icons to user icon directory
               icon_src = share/"icons/hicolor"
               if icon_src.exist?
                 icon_dest = Pathname.new(File.expand_path("~/.local/share/icons/hicolor"))
-                icon_src.glob("*/apps/rds-ssm-connect.png").each do |icon|
+                icon_src.glob("*/apps/*.png").each do |icon|
                   size_dir = icon_dest/icon.parent.parent.basename/"apps"
                   size_dir.mkpath
-                  cp icon, size_dir/"rds-ssm-connect.png"
+                  cp icon, size_dir/icon.basename
                 end
               end
             end

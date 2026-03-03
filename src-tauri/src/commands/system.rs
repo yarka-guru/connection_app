@@ -212,18 +212,52 @@ async fn install_brew_update(app_handle: &AppHandle) -> Result<(), AppError> {
         serde_json::json!({ "phase": "updating" }),
     );
 
+    // Refresh tap first so brew knows about the new version
+    let _ = tokio::process::Command::new(&brew_path)
+        .args(["update"])
+        .output()
+        .await;
+
     let output = tokio::process::Command::new(&brew_path)
         .args(["upgrade", "rds-ssm-connect"])
         .output()
         .await
         .map_err(|e| AppError::General(format!("Failed to run brew: {}", e)))?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
     if output.status.success() {
-        app_handle.restart();
+        // brew upgrade exits 0 even when "already installed" — detect no-op
+        let combined = format!("{} {}", stdout, stderr).to_lowercase();
+        if combined.contains("already installed")
+            || combined.contains("up-to-date")
+            || combined.contains("up to date")
+        {
+            return Err(AppError::General(
+                "Already up to date in Homebrew. The latest formula may not be published yet. \
+                 Try later or run: brew update && brew upgrade rds-ssm-connect"
+                    .to_string(),
+            ));
+        }
+
+        // After brew upgrade, the old Cellar directory is deleted so
+        // app_handle.restart() (which re-execs current_exe) would fail.
+        // Instead, launch from the Homebrew-linked path.
+        let brew_prefix = std::path::Path::new(&brew_path)
+            .parent()
+            .and_then(|bin| bin.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/home/linuxbrew/.linuxbrew"));
+        let new_binary = brew_prefix.join("bin/rds-ssm-connect");
+
+        if let Err(e) = std::process::Command::new(&new_binary).spawn() {
+            log::error!("failed to launch updated binary at {}: {}", new_binary.display(), e);
+        }
+        app_handle.exit(0);
         #[allow(unreachable_code)]
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         Err(AppError::General(format!(
             "brew upgrade failed: {}. Try running manually: brew upgrade rds-ssm-connect",
             stderr.trim()
