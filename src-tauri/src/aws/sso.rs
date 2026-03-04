@@ -291,10 +291,18 @@ async fn poll_for_token(
                 let expires_at =
                     chrono::Utc::now() + chrono::Duration::seconds(expires_in_secs as i64);
 
-                return Ok(serde_json::json!({
+                let mut token = serde_json::json!({
                     "accessToken": access_token,
                     "expiresAt": expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                }));
+                });
+
+                // Include refreshToken if available — needed by the AWS SDK
+                // for automatic token refresh on sso-session profiles.
+                if let Some(rt) = response.refresh_token() {
+                    token["refreshToken"] = serde_json::json!(rt);
+                }
+
+                return Ok(token);
             }
             Err(sdk_err) => {
                 if let aws_sdk_ssooidc::error::SdkError::ServiceError(ref service_err) =
@@ -399,6 +407,25 @@ pub async fn perform_sso_login(
 
     token_data["startUrl"] = serde_json::json!(sso_start_url);
     token_data["region"] = serde_json::json!(sso_region);
+
+    // Include OIDC registration fields — the AWS SDK needs these for
+    // automatic token refresh on sso-session profiles.
+    token_data["clientId"] = serde_json::json!(client_id);
+    token_data["clientSecret"] = serde_json::json!(client_secret);
+    {
+        let cache = CLIENT_REGISTRATION_CACHE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(ref map) = *cache
+            && let Some(reg) = map.get(sso_region)
+        {
+            token_data["registrationExpiresAt"] = serde_json::json!(
+                chrono::DateTime::from_timestamp(reg.client_secret_expires_at, 0)
+                    .unwrap_or_default()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            );
+        }
+    }
 
     // Write token to the cache location the AWS SDK expects:
     // - sso-session profiles: SHA1(session_name)
