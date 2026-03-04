@@ -23,6 +23,10 @@ pub struct SsoConfig {
     pub region: String,
     pub account_id: Option<String>,
     pub role_name: Option<String>,
+    /// If using new-style `sso_session`, the session name.
+    /// The AWS SDK caches tokens under SHA1(session_name) for sso-session profiles,
+    /// vs SHA1(start_url) for legacy SSO profiles.
+    pub session_name: Option<String>,
 }
 
 /// Authentication type detected from profile config (used by Phase 3 CLI).
@@ -109,14 +113,16 @@ pub async fn get_sso_config(profile: &str) -> Option<SsoConfig> {
     let mut region = config.get("sso_region").cloned();
     let account_id = config.get("sso_account_id").cloned();
     let role_name = config.get("sso_role_name").cloned();
+    let mut session_name = None;
 
     // New-style: profile references an [sso-session <name>] section
-    if start_url.is_none()
-        && let Some(sso_session) = config.get("sso_session")
-    {
+    if let Some(sso_session) = config.get("sso_session") {
+        session_name = Some(sso_session.clone());
         let session_key = format!("sso-session {}", sso_session);
         if let Some(session_config) = profiles.get(&session_key) {
-            start_url = session_config.get("sso_start_url").cloned();
+            if start_url.is_none() {
+                start_url = session_config.get("sso_start_url").cloned();
+            }
             if region.is_none() {
                 region = session_config.get("sso_region").cloned();
             }
@@ -131,6 +137,7 @@ pub async fn get_sso_config(profile: &str) -> Option<SsoConfig> {
         region,
         account_id,
         role_name,
+        session_name,
     })
 }
 

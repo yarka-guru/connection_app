@@ -334,6 +334,7 @@ async fn poll_for_token(
 pub async fn perform_sso_login(
     sso_start_url: &str,
     sso_region: &str,
+    sso_session_name: Option<&str>,
     handler: &dyn SsoEventHandler,
     connection_id: Option<&str>,
 ) -> Result<(), AppError> {
@@ -399,7 +400,16 @@ pub async fn perform_sso_login(
     token_data["startUrl"] = serde_json::json!(sso_start_url);
     token_data["region"] = serde_json::json!(sso_region);
 
-    write_sso_token(sso_start_url, &token_data).await?;
+    // Write token to the cache location the AWS SDK expects:
+    // - sso-session profiles: SHA1(session_name)
+    // - legacy SSO profiles: SHA1(start_url)
+    let cache_key = sso_session_name.unwrap_or(sso_start_url);
+    write_sso_token(cache_key, &token_data).await?;
+
+    // For sso-session profiles, also write under SHA1(start_url) for CLI compatibility
+    if sso_session_name.is_some() {
+        write_sso_token(sso_start_url, &token_data).await?;
+    }
 
     handler.on_status("SSO login successful", connection_id);
     Ok(())
@@ -416,8 +426,15 @@ pub async fn ensure_sso_session(
         None => return Ok(()), // Not an SSO profile
     };
 
+    // The AWS SDK caches tokens under SHA1(session_name) for sso-session profiles,
+    // and SHA1(start_url) for legacy SSO profiles. Use the matching key.
+    let cache_key = sso_config
+        .session_name
+        .as_deref()
+        .unwrap_or(&sso_config.start_url);
+
     // Check cached token
-    if let Some(cached_token) = read_sso_token(&sso_config.start_url).await
+    if let Some(cached_token) = read_sso_token(cache_key).await
         && is_sso_token_valid(&cached_token)
     {
         handler.on_status("SSO session valid", connection_id);
@@ -429,6 +446,7 @@ pub async fn ensure_sso_session(
     perform_sso_login(
         &sso_config.start_url,
         &sso_config.region,
+        sso_config.session_name.as_deref(),
         handler,
         connection_id,
     )
