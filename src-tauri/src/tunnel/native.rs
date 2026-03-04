@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 
 /// WebSocket ping interval (5 minutes, per protocol spec).
 const WS_PING_INTERVAL_SECS: u64 = 300;
@@ -115,7 +116,7 @@ pub async fn start_native_port_forwarding(
     //   - incoming: HandshakeRequest was seq 0, HandshakeComplete was seq 1 → next expected = 2
     let outgoing_seq = Arc::new(AtomicI64::new(initial_outgoing_seq));
     let expected_incoming_seq = Arc::new(AtomicI64::new(initial_incoming_seq));
-    let session_active = Arc::new(AtomicBool::new(true));
+    let session_cancel = CancellationToken::new();
     let tcp_connected = Arc::new(AtomicBool::new(false));
 
     // Outgoing buffer for retransmission
@@ -133,13 +134,13 @@ pub async fn start_native_port_forwarding(
     // --- Task 1: WebSocket ping keepalive ---
     let ws_write_ping = ws_write.clone();
     let cancel_ping = cancel.clone();
-    let session_active_ping = session_active.clone();
+    let session_cancel_ping = session_cancel.clone();
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
         loop {
             interval.tick().await;
-            if cancel_ping.is_cancelled() || !session_active_ping.load(Ordering::Relaxed) {
+            if cancel_ping.is_cancelled() || session_cancel_ping.is_cancelled() {
                 break;
             }
             let mut ws = ws_write_ping.lock().await;
@@ -157,7 +158,7 @@ pub async fn start_native_port_forwarding(
     let outgoing_buffer_rt = outgoing_buffer.clone();
     let ws_write_rt = ws_write.clone();
     let cancel_rt = cancel.clone();
-    let session_active_rt = session_active.clone();
+    let session_cancel_rt = session_cancel.clone();
     let rtt_estimator_rt = rtt_estimator.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
@@ -165,7 +166,7 @@ pub async fn start_native_port_forwarding(
         ));
         loop {
             interval.tick().await;
-            if cancel_rt.is_cancelled() || !session_active_rt.load(Ordering::Relaxed) {
+            if cancel_rt.is_cancelled() || session_cancel_rt.is_cancelled() {
                 break;
             }
 
@@ -183,7 +184,7 @@ pub async fn start_native_port_forwarding(
                 if entry.sent_at.elapsed() > timeout {
                     if entry.retransmit_count >= MAX_RETRANSMIT_ATTEMPTS {
                         log::error!("Max retransmissions reached for seq {}", seq);
-                        session_active_rt.store(false, Ordering::Relaxed);
+                        session_cancel_rt.cancel();
                         break;
                     }
                     entry.retransmit_count += 1;
@@ -197,7 +198,7 @@ pub async fn start_native_port_forwarding(
                 let mut ws = ws_write_rt.lock().await;
                 for data in to_resend {
                     if ws.send(Message::Binary(data.into())).await.is_err() {
-                        session_active_rt.store(false, Ordering::Relaxed);
+                        session_cancel_rt.cancel();
                         break;
                     }
                 }
@@ -210,7 +211,7 @@ pub async fn start_native_port_forwarding(
     let ws_read_task = ws_read.clone();
     let ws_write_ack = ws_write.clone();
     let cancel_ws = cancel.clone();
-    let session_active_ws = session_active.clone();
+    let session_cancel_ws = session_cancel.clone();
     let expected_seq = expected_incoming_seq.clone();
     let incoming_buf = incoming_buffer.clone();
     let outgoing_buf_ack = outgoing_buffer.clone();
@@ -220,7 +221,7 @@ pub async fn start_native_port_forwarding(
     tokio::spawn(async move {
         let mut ws = ws_read_task.lock().await;
         loop {
-            if cancel_ws.is_cancelled() || !session_active_ws.load(Ordering::Relaxed) {
+            if cancel_ws.is_cancelled() || session_cancel_ws.is_cancelled() {
                 break;
             }
 
@@ -233,11 +234,11 @@ pub async fn start_native_port_forwarding(
                 Some(Ok(m)) => m,
                 Some(Err(e)) => {
                     log::error!("WebSocket read error: {}", e);
-                    session_active_ws.store(false, Ordering::Relaxed);
+                    session_cancel_ws.cancel();
                     break;
                 }
                 None => {
-                    session_active_ws.store(false, Ordering::Relaxed);
+                    session_cancel_ws.cancel();
                     break;
                 }
             };
@@ -285,7 +286,7 @@ pub async fn start_native_port_forwarding(
                                                     log::error!(
                                                         "Agent failed to connect to remote port"
                                                     );
-                                                    session_active_ws.store(false, Ordering::Relaxed);
+                                                    session_cancel_ws.cancel();
                                                 }
                                                 _ => {}
                                             }
@@ -315,7 +316,7 @@ pub async fn start_native_port_forwarding(
                                                     }
                                                     FLAG_CONNECT_TO_PORT_ERROR => {
                                                         log::error!("Agent failed to connect to remote port");
-                                                        session_active_ws.store(false, Ordering::Relaxed);
+                                                        session_cancel_ws.cancel();
                                                     }
                                                     _ => {}
                                                 }
@@ -356,14 +357,14 @@ pub async fn start_native_port_forwarding(
                         }
                         CHANNEL_CLOSED => {
                             log::info!("Channel closed by agent");
-                            session_active_ws.store(false, Ordering::Relaxed);
+                            session_cancel_ws.cancel();
                             break;
                         }
                         _ => {}
                     }
                 }
                 Message::Close(_) => {
-                    session_active_ws.store(false, Ordering::Relaxed);
+                    session_cancel_ws.cancel();
                     break;
                 }
                 _ => {} // Ignore ping/pong/text
@@ -373,7 +374,7 @@ pub async fn start_native_port_forwarding(
 
     // --- Main loop: accept TCP connections ---
     loop {
-        if cancel.is_cancelled() || !session_active.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() || session_cancel.is_cancelled() {
             break;
         }
 
@@ -388,6 +389,7 @@ pub async fn start_native_port_forwarding(
                 }
             }
             _ = cancel.cancelled() => break,
+            _ = session_cancel.cancelled() => break,
         };
 
         // Disable Nagle's algorithm — critical for database protocols that
@@ -406,13 +408,13 @@ pub async fn start_native_port_forwarding(
         let tcp_conn_cancel = tokio_util::sync::CancellationToken::new();
 
         // TCP write task: drain data from WebSocket reader
-        let session_active_tw = session_active.clone();
+        let session_cancel_tw = session_cancel.clone();
         let cancel_tw = cancel.clone();
         let tcp_connected_tw = tcp_connected.clone();
         let tcp_conn_cancel_tw = tcp_conn_cancel.clone();
         let tcp_write_handle = tokio::spawn(async move {
             loop {
-                if cancel_tw.is_cancelled() || !session_active_tw.load(Ordering::Relaxed) {
+                if cancel_tw.is_cancelled() || session_cancel_tw.is_cancelled() {
                     break;
                 }
                 tokio::select! {
@@ -439,12 +441,12 @@ pub async fn start_native_port_forwarding(
         let ws_write_tcp = ws_write.clone();
         let outgoing_buffer_tcp = outgoing_buffer.clone();
         let outgoing_seq_tcp = outgoing_seq.clone();
-        let session_active_tr = session_active.clone();
+        let session_cancel_tr = session_cancel.clone();
         let cancel_tr = cancel.clone();
         let tcp_connected_tr = tcp_connected.clone();
 
         loop {
-            if cancel_tr.is_cancelled() || !session_active_tr.load(Ordering::Relaxed) {
+            if cancel_tr.is_cancelled() || session_cancel_tr.is_cancelled() {
                 break;
             }
 
@@ -489,7 +491,7 @@ pub async fn start_native_port_forwarding(
                 .await
                 .is_err()
             {
-                session_active_tr.store(false, Ordering::Relaxed);
+                session_cancel_tr.cancel();
                 break;
             }
         }
@@ -497,7 +499,7 @@ pub async fn start_native_port_forwarding(
         // TCP client disconnected — stop the write task and send DisconnectToPort flag
         tcp_conn_cancel.cancel();
 
-        if session_active.load(Ordering::Relaxed) && !cancel.is_cancelled() {
+        if !session_cancel.is_cancelled() && !cancel.is_cancelled() {
             let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
             let flag_msg = build_flag_message(FLAG_DISCONNECT_TO_PORT, seq, false);
             let serialized = flag_msg.serialize();
@@ -529,7 +531,7 @@ pub async fn start_native_port_forwarding(
     }
 
     // Terminate session
-    if session_active.load(Ordering::Relaxed) {
+    if !session_cancel.is_cancelled() {
         let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
         let term_msg = build_flag_message(FLAG_TERMINATE_SESSION, seq, true);
         let serialized = term_msg.serialize();
