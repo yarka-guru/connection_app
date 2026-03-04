@@ -121,9 +121,10 @@ jobs:
           path: sigs/
           if-no-files-found: error
 
-  # Generate update manifest after all builds complete
+  # Generate update manifest after builds complete (runs even if some fail)
   update-manifest:
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
