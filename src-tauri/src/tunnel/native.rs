@@ -10,12 +10,12 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
-/// WebSocket ping interval (5 minutes, per protocol spec).
-const WS_PING_INTERVAL_SECS: u64 = 300;
+/// WebSocket ping interval — 30 seconds keeps the connection alive through
+/// Linux NAT/firewall conntrack (default idle timeout is often 120s).
+const WS_PING_INTERVAL_SECS: u64 = 30;
 
 /// Max retransmission attempts before giving up.
 const MAX_RETRANSMIT_ATTEMPTS: u32 = 3000;
@@ -99,10 +99,34 @@ pub async fn start_native_port_forwarding(
     // Wrap write half in Arc<Mutex> for shared access
     let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write_half));
 
-    // Bind local TCP listener
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", local_port))
-        .await
-        .map_err(|e| format!("Failed to bind port {}: {}", local_port, e))?;
+    // Bind local TCP listener with SO_REUSEADDR — critical on Linux where
+    // TIME_WAIT lasts 60s (vs ~15s on macOS), blocking reconnections.
+    let listener = {
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{}", local_port)
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?;
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .map_err(|e| format!("Failed to create socket: {}", e))?;
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| format!("Failed to set SO_REUSEADDR: {}", e))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
+        socket
+            .bind(&addr.into())
+            .map_err(|e| format!("Failed to bind port {}: {}", local_port, e))?;
+        socket
+            .listen(128)
+            .map_err(|e| format!("Failed to listen on port {}: {}", local_port, e))?;
+        let std_listener: std::net::TcpListener = socket.into();
+        tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| format!("Failed to create async listener: {}", e))?
+    };
     log::info!("Listening on 127.0.0.1:{}", local_port);
 
     // Signal that the tunnel is ready for connections
@@ -395,6 +419,15 @@ pub async fn start_native_port_forwarding(
         // Disable Nagle's algorithm — critical for database protocols that
         // rely on prompt delivery of small packets (e.g. PostgreSQL 1-byte SSL response).
         let _ = tcp_stream.set_nodelay(true);
+
+        // Enable TCP keepalive so the kernel detects dead connections.
+        // Without this, a silently dropped connection (e.g. laptop sleep, network change)
+        // leaves the tunnel stuck forever on Linux.
+        let sock_ref = socket2::SockRef::from(&tcp_stream);
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(60))
+            .with_interval(std::time::Duration::from_secs(10));
+        let _ = sock_ref.set_tcp_keepalive(&keepalive);
 
         // Drain any stale data left in the channel from the previous TCP connection
         // (response data in-flight when the previous client disconnected).

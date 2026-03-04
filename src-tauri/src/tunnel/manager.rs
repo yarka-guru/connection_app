@@ -18,7 +18,6 @@ use tokio_util::sync::CancellationToken;
 const BASTION_WAIT_MAX_RETRIES: u32 = 20;
 const BASTION_WAIT_RETRY_DELAY_MS: u64 = 15000;
 const PORT_FORWARDING_MAX_RETRIES: u32 = 2;
-const KEEPALIVE_INTERVAL_MS: u64 = 4 * 60 * 1000; // 4 minutes
 const AUTO_RECONNECT_MAX_RETRIES: u32 = 3;
 const AUTO_RECONNECT_DELAY_MS: u64 = 3000;
 
@@ -392,15 +391,10 @@ async fn run_tunnel_lifecycle(
             break;
         }
 
-        // Start keepalive
-        let keepalive_cancel = CancellationToken::new();
-        let keepalive_child = keepalive_cancel.child_token();
-        let keepalive_port = local_port.parse::<u16>().unwrap_or(5432);
-        tokio::spawn(async move {
-            run_keepalive(keepalive_port, keepalive_child).await;
-        });
-
         // Start port forwarding (pass ready_tx only on first attempt)
+        // Note: WebSocket-level pings (30s interval in native.rs) handle keepalive.
+        // The old TCP-connect keepalive was counterproductive — it created full
+        // connect/disconnect cycles on the remote port every 4 minutes.
         let result = start_port_forwarding_with_retry(
             clients,
             &current_instance_id,
@@ -412,9 +406,6 @@ async fn run_tunnel_lifecycle(
             ready_tx.take(),
         )
         .await;
-
-        // Stop keepalive
-        keepalive_cancel.cancel();
 
         if cancel_token.is_cancelled() {
             break;
@@ -674,26 +665,6 @@ async fn execute_port_forwarding(
             Err(PortForwardError::TargetNotConnected)
         }
         Err(msg) => Err(PortForwardError::Failed(msg)),
-    }
-}
-
-/// Keepalive: periodic TCP ping to prevent SSM idle timeout.
-async fn run_keepalive(port: u16, cancel_token: CancellationToken) {
-    let interval = tokio::time::Duration::from_millis(KEEPALIVE_INTERVAL_MS);
-
-    loop {
-        tokio::select! {
-            _ = tokio::time::sleep(interval) => {
-                // TCP ping
-                let _ = tokio::time::timeout(
-                    tokio::time::Duration::from_secs(5),
-                    tokio::net::TcpStream::connect(("127.0.0.1", port))
-                ).await;
-            }
-            _ = cancel_token.cancelled() => {
-                break;
-            }
-        }
     }
 }
 
