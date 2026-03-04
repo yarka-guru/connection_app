@@ -107,7 +107,7 @@ pub fn get_profiles_for_project(
     // Further restrict to profiles matching an envPortMapping suffix
     if !project_config.env_port_mapping.is_empty() {
         let mut suffixes: Vec<&String> = project_config.env_port_mapping.keys().collect();
-        suffixes.sort_by(|a, b| b.len().cmp(&a.len()));
+        suffixes.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
         filtered
             .into_iter()
@@ -126,7 +126,7 @@ pub fn get_profiles_for_project(
 /// Get local port number based on environment suffix matching.
 pub fn get_local_port(profile: &str, project_config: &ProjectConfig) -> String {
     let mut suffixes: Vec<&String> = project_config.env_port_mapping.keys().collect();
-    suffixes.sort_by(|a, b| b.len().cmp(&a.len()));
+    suffixes.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
     let matched = suffixes.iter().find(|suffix| {
         profile.ends_with(suffix.as_str()) || profile == suffix.as_str()

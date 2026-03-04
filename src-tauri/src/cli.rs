@@ -321,7 +321,10 @@ fn select_project(
     }
 
     if available.len() == 1 {
-        let (key, config) = available.into_iter().next().unwrap();
+        let (key, config) = available
+            .into_iter()
+            .next()
+            .ok_or_else(|| "No available projects".to_string())?;
         return Ok((key, config.clone()));
     }
 
@@ -337,7 +340,10 @@ fn select_project(
         .interact()
         .map_err(|e| format!("Selection cancelled: {}", e))?;
 
-    let (key, config) = available.into_iter().nth(selection).unwrap();
+    let (key, config) = available
+        .into_iter()
+        .nth(selection)
+        .ok_or_else(|| format!("Invalid selection index: {}", selection))?;
     Ok((key, config.clone()))
 }
 

@@ -337,21 +337,19 @@ pub async fn start_native_port_forwarding(
                             // Process ack: remove from outgoing buffer, update RTT
                             if let Ok(content) =
                                 serde_json::from_slice::<serde_json::Value>(&agent_msg.payload)
-                            {
-                                if let Some(seq) = content
+                                && let Some(seq) = content
                                     .get("AcknowledgedMessageSequenceNumber")
                                     .and_then(|v| v.as_i64())
-                                {
-                                    let mut buf = outgoing_buf_ack.lock().await;
-                                    if let Some(entry) = buf.remove(&seq) {
-                                        // Only use first-transmission samples for RTT
-                                        // (Karn's algorithm: skip retransmitted packets)
-                                        if entry.retransmit_count == 0 {
-                                            let rtt_sample =
-                                                entry.sent_at.elapsed().as_millis() as i64;
-                                            let mut est = rtt_estimator_ack.lock().await;
-                                            est.update(rtt_sample);
-                                        }
+                            {
+                                let mut buf = outgoing_buf_ack.lock().await;
+                                if let Some(entry) = buf.remove(&seq) {
+                                    // Only use first-transmission samples for RTT
+                                    // (Karn's algorithm: skip retransmitted packets)
+                                    if entry.retransmit_count == 0 {
+                                        let rtt_sample =
+                                            entry.sent_at.elapsed().as_millis() as i64;
+                                        let mut est = rtt_estimator_ack.lock().await;
+                                        est.update(rtt_sample);
                                     }
                                 }
                             }

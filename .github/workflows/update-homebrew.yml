@@ -122,7 +122,9 @@ jobs:
               # Generate .desktop file with correct Homebrew paths
               desktop_dir = Pathname.new(File.expand_path("~/.local/share/applications"))
               desktop_dir.mkpath
-              (desktop_dir/"rds-ssm-connect.desktop").write <<~DESKTOP
+              desktop_file = desktop_dir/"rds-ssm-connect.desktop"
+              desktop_file.unlink if desktop_file.exist?
+              desktop_file.write <<~DESKTOP
                 [Desktop Entry]
                 Name=RDS SSM Connect
                 Comment=Secure database tunneling via AWS SSM
@@ -133,14 +135,16 @@ jobs:
                 Terminal=false
               DESKTOP
 
-              # Link icons to user icon directory
+              # Copy icons to user icon directory
               icon_src = share/"icons/hicolor"
               if icon_src.exist?
                 icon_dest = Pathname.new(File.expand_path("~/.local/share/icons/hicolor"))
                 icon_src.glob("*/apps/*.png").each do |icon|
                   size_dir = icon_dest/icon.parent.parent.basename/"apps"
                   size_dir.mkpath
-                  cp icon, size_dir/icon.basename
+                  dest_icon = size_dir/icon.basename
+                  dest_icon.unlink if dest_icon.exist?
+                  cp icon, dest_icon
                 end
               end
             end

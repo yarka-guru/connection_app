@@ -369,6 +369,7 @@ pub struct ActiveConnectionInfo {
 }
 
 /// Run the tunnel lifecycle: start port forwarding, keepalive, auto-reconnect.
+#[allow(clippy::too_many_arguments)]
 async fn run_tunnel_lifecycle(
     app_handle: &AppHandle,
     clients: &AwsClients,
@@ -549,6 +550,7 @@ async fn run_tunnel_lifecycle(
 }
 
 /// Start port forwarding with TargetNotConnected retry.
+#[allow(clippy::too_many_arguments)]
 async fn start_port_forwarding_with_retry(
     clients: &AwsClients,
     instance_id: &str,
@@ -616,6 +618,7 @@ enum PortForwardError {
 }
 
 /// Execute a single port forwarding session via native WebSocket (no plugin binary).
+#[allow(clippy::too_many_arguments)]
 async fn execute_port_forwarding(
     clients: &AwsClients,
     instance_id: &str,

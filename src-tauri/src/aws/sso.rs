@@ -135,7 +135,9 @@ fn is_sso_token_valid(token: &serde_json::Value) -> bool {
 /// Write an SSO token to the AWS CLI-compatible cache location.
 async fn write_sso_token(key: &str, token_data: &serde_json::Value) -> Result<(), AppError> {
     let filepath = get_sso_token_filepath(key);
-    let dir = filepath.parent().unwrap();
+    let dir = filepath
+        .parent()
+        .ok_or_else(|| AppError::Sso("SSO cache filepath has no parent directory".to_string()))?;
 
     tokio::fs::create_dir_all(dir)
         .await
@@ -164,13 +166,15 @@ async fn register_client(
     sso_region: &str,
 ) -> Result<(String, String), AppError> {
     {
-        let cache = CLIENT_REGISTRATION_CACHE.lock().unwrap();
-        if let Some(ref map) = *cache {
-            if let Some(reg) = map.get(sso_region) {
-                let now_secs = chrono::Utc::now().timestamp();
-                if reg.client_secret_expires_at > now_secs {
-                    return Ok((reg.client_id.clone(), reg.client_secret.clone()));
-                }
+        let cache = CLIENT_REGISTRATION_CACHE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(ref map) = *cache
+            && let Some(reg) = map.get(sso_region)
+        {
+            let now_secs = chrono::Utc::now().timestamp();
+            if reg.client_secret_expires_at > now_secs {
+                return Ok((reg.client_id.clone(), reg.client_secret.clone()));
             }
         }
     }
@@ -194,7 +198,9 @@ async fn register_client(
     let expires_at = response.client_secret_expires_at();
 
     {
-        let mut cache = CLIENT_REGISTRATION_CACHE.lock().unwrap();
+        let mut cache = CLIENT_REGISTRATION_CACHE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let map = cache.get_or_insert_with(HashMap::new);
         map.insert(
             sso_region.to_string(),
@@ -248,6 +254,7 @@ struct DeviceAuth {
 }
 
 /// Poll for token after user authorizes in browser.
+#[allow(clippy::too_many_arguments)]
 async fn poll_for_token(
     client: &ssooidc::Client,
     client_id: &str,
@@ -289,29 +296,30 @@ async fn poll_for_token(
                     "expiresAt": expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 }));
             }
-            Err(err) => {
-                let err_str = format!("{}", err);
-
-                if err_str.contains("AuthorizationPendingException") {
-                    handler.on_status(
-                        "Waiting for authorization in browser...",
-                        connection_id,
-                    );
-                    continue;
+            Err(sdk_err) => {
+                if let aws_sdk_ssooidc::error::SdkError::ServiceError(ref service_err) =
+                    sdk_err
+                {
+                    let err = service_err.err();
+                    if err.is_authorization_pending_exception() {
+                        handler.on_status(
+                            "Waiting for authorization in browser...",
+                            connection_id,
+                        );
+                        continue;
+                    }
+                    if err.is_slow_down_exception() {
+                        poll_interval += std::time::Duration::from_secs(5);
+                        continue;
+                    }
+                    if err.is_expired_token_exception() {
+                        return Err(AppError::Sso(
+                            "SSO authorization expired. Please try connecting again.".to_string(),
+                        ));
+                    }
                 }
 
-                if err_str.contains("SlowDownException") {
-                    poll_interval += std::time::Duration::from_secs(5);
-                    continue;
-                }
-
-                if err_str.contains("ExpiredTokenException") {
-                    return Err(AppError::Sso(
-                        "SSO authorization expired. Please try connecting again.".to_string(),
-                    ));
-                }
-
-                return Err(AppError::Sso(format!("SSO token polling failed: {}", err)));
+                return Err(AppError::Sso(format!("SSO token polling failed: {}", sdk_err)));
             }
         }
     }
@@ -409,11 +417,11 @@ pub async fn ensure_sso_session(
     };
 
     // Check cached token
-    if let Some(cached_token) = read_sso_token(&sso_config.start_url).await {
-        if is_sso_token_valid(&cached_token) {
-            handler.on_status("SSO session valid", connection_id);
-            return Ok(());
-        }
+    if let Some(cached_token) = read_sso_token(&sso_config.start_url).await
+        && is_sso_token_valid(&cached_token)
+    {
+        handler.on_status("SSO session valid", connection_id);
+        return Ok(());
     }
 
     // Token expired or missing — perform login

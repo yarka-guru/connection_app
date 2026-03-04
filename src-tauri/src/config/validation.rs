@@ -59,13 +59,14 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
     }
 
     // Validate engine (optional)
-    if let Some(ref engine) = config.engine {
-        if !engine.is_empty() && !VALID_ENGINES.contains(&engine.as_str()) {
-            errors.push(format!(
-                "engine must be one of: {}",
-                VALID_ENGINES.join(", ")
-            ));
-        }
+    if let Some(ref engine) = config.engine
+        && !engine.is_empty()
+        && !VALID_ENGINES.contains(&engine.as_str())
+    {
+        errors.push(format!(
+            "engine must be one of: {}",
+            VALID_ENGINES.join(", ")
+        ));
     }
 
     // Validate shell-safe fields

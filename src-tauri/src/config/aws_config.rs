@@ -28,10 +28,10 @@ pub struct AwsProfile {
 /// Get the AWS directory path (~/.aws/).
 /// Respects AWS_CONFIG_FILE env var (returns its parent directory).
 pub fn get_aws_dir() -> PathBuf {
-    if let Ok(config_path) = std::env::var("AWS_CONFIG_FILE") {
-        if let Some(parent) = PathBuf::from(&config_path).parent() {
-            return parent.to_path_buf();
-        }
+    if let Ok(config_path) = std::env::var("AWS_CONFIG_FILE")
+        && let Some(parent) = PathBuf::from(&config_path).parent()
+    {
+        return parent.to_path_buf();
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -102,21 +102,22 @@ pub async fn read_aws_config() -> Result<Vec<AwsProfile>, AppError> {
             current_content.push_str(line);
             current_content.push('\n');
 
-            if !trimmed.starts_with('#') && !trimmed.starts_with(';') {
-                if let Some((key, value)) = trimmed.split_once('=') {
-                    let key = key.trim();
-                    let value = value.trim();
-                    match key {
-                        "region" => current_region = Some(value.to_string()),
-                        "source_profile" => current_source_profile = Some(value.to_string()),
-                        "role_arn" => current_role_arn = Some(value.to_string()),
-                        "mfa_serial" => current_mfa_serial = Some(value.to_string()),
-                        "sso_start_url" => current_sso_start_url = Some(value.to_string()),
-                        "sso_region" => current_sso_region = Some(value.to_string()),
-                        "sso_account_id" => current_sso_account_id = Some(value.to_string()),
-                        "sso_role_name" => current_sso_role_name = Some(value.to_string()),
-                        _ => {}
-                    }
+            if !trimmed.starts_with('#')
+                && !trimmed.starts_with(';')
+                && let Some((key, value)) = trimmed.split_once('=')
+            {
+                let key = key.trim();
+                let value = value.trim();
+                match key {
+                    "region" => current_region = Some(value.to_string()),
+                    "source_profile" => current_source_profile = Some(value.to_string()),
+                    "role_arn" => current_role_arn = Some(value.to_string()),
+                    "mfa_serial" => current_mfa_serial = Some(value.to_string()),
+                    "sso_start_url" => current_sso_start_url = Some(value.to_string()),
+                    "sso_region" => current_sso_region = Some(value.to_string()),
+                    "sso_account_id" => current_sso_account_id = Some(value.to_string()),
+                    "sso_role_name" => current_sso_role_name = Some(value.to_string()),
+                    _ => {}
                 }
             }
         }
@@ -170,13 +171,13 @@ pub async fn parse_aws_config() -> HashMap<String, HashMap<String, String>> {
             continue;
         }
 
-        if let Some(ref profile) = current_profile {
-            if let Some(eq_index) = line.find('=') {
-                let key = line[..eq_index].trim().to_string();
-                let value = line[eq_index + 1..].trim().to_string();
-                if let Some(map) = profiles.get_mut(profile) {
-                    map.insert(key, value);
-                }
+        if let Some(ref profile) = current_profile
+            && let Some(eq_index) = line.find('=')
+        {
+            let key = line[..eq_index].trim().to_string();
+            let value = line[eq_index + 1..].trim().to_string();
+            if let Some(map) = profiles.get_mut(profile) {
+                map.insert(key, value);
             }
         }
     }

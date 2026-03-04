@@ -111,14 +111,14 @@ pub async fn get_sso_config(profile: &str) -> Option<SsoConfig> {
     let role_name = config.get("sso_role_name").cloned();
 
     // New-style: profile references an [sso-session <name>] section
-    if start_url.is_none() {
-        if let Some(sso_session) = config.get("sso_session") {
-            let session_key = format!("sso-session {}", sso_session);
-            if let Some(session_config) = profiles.get(&session_key) {
-                start_url = session_config.get("sso_start_url").cloned();
-                if region.is_none() {
-                    region = session_config.get("sso_region").cloned();
-                }
+    if start_url.is_none()
+        && let Some(sso_session) = config.get("sso_session")
+    {
+        let session_key = format!("sso-session {}", sso_session);
+        if let Some(session_config) = profiles.get(&session_key) {
+            start_url = session_config.get("sso_start_url").cloned();
+            if region.is_none() {
+                region = session_config.get("sso_region").cloned();
             }
         }
     }

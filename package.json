@@ -1,7 +1,12 @@
 {
   "name": "rds_ssm_connect",
-  "version": "2.1.6",
+  "version": "2.1.7",
+  "description": "Secure RDS connections through AWS SSM port forwarding",
+  "license": "MIT",
+  "author": "Iaroslav Pyrogov",
   "type": "module",
+  "homepage": "https://github.com/yarka-guru/connection_app",
+  "keywords": ["aws", "rds", "ssm", "tunnel", "tauri"],
   "repository": {
     "type": "git",
     "url": "https://github.com/yarka-guru/connection_app.git"

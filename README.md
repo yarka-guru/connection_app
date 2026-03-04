@@ -261,4 +261,4 @@ src/
 
 ## License
 
-ISC
+MIT

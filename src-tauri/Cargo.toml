@@ -1,14 +1,23 @@
 [package]
 name = "rds-ssm-connect"
-version = "2.1.6"
+version = "2.1.7"
 description = "Secure RDS connections through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
 default-run = "rds-ssm-connect"
+license = "MIT"
+repository = "https://github.com/yarka-guru/connection_app"
+homepage = "https://github.com/yarka-guru/connection_app"
+keywords = ["aws", "rds", "ssm", "tunnel", "tauri"]
 
 [lib]
 name = "rds_ssm_connect_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "rds-ssm-connect"
+path = "src/main.rs"
+required-features = ["gui"]
 
 [[bin]]
 name = "rds-ssm-connect-cli"
