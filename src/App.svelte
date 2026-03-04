@@ -156,6 +156,10 @@ async function initApp() {
     // Non-fatal: if check fails, continue normally (not sandboxed)
   }
 
+  await setupListenersAndLoad()
+}
+
+async function setupListenersAndLoad() {
   // Intercept window close — prompt if active connections, otherwise quit cleanly
   unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
     event.preventDefault()
@@ -217,7 +221,7 @@ async function initApp() {
     // Non-fatal: app works without saved data
   }
 
-  // Load projects from sidecar
+  // Load projects
   try {
     projects = await invoke('list_projects')
   } catch (err) {
@@ -293,78 +297,7 @@ async function finishSetup() {
 
 async function continueAfterSetup() {
   loadingProjects = true
-
-  // Set up close handler
-  unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
-    event.preventDefault()
-    if (activeConnections.length > 0) {
-      showCloseConfirm = true
-    } else {
-      try { await invoke('quit_app') } catch (_err) { appWindow?.destroy() }
-    }
-  })
-
-  // Set up event listeners
-  listen('sso-status', (ev) => {
-    statusMessage = ev.payload.message
-  }).then((fn) => { unlistenSsoStatus = fn })
-
-  listen('sso-open-url', (ev) => {
-    statusMessage = 'Waiting for SSO authorization in browser...'
-  }).then((fn) => { unlistenSsoOpenUrl = fn })
-
-  listen('status', (ev) => {
-    statusMessage = ev.payload.message
-  }).then((fn) => { unlistenStatus = fn })
-
-  listen('disconnected', (ev) => {
-    const { connectionId } = ev.payload
-    if (connectionId) {
-      activeConnections = activeConnections.filter(
-        (c) => c.id !== connectionId,
-      )
-    }
-    if (activeConnections.length === 0) {
-      connectionStatus = 'disconnected'
-      statusMessage = ''
-    }
-    connectingId = null
-  }).then((fn) => { unlistenDisconnected = fn })
-
-  listen('connection-error', (ev) => {
-    errorMessage = ev.payload.message
-    connectingId = null
-  }).then((fn) => { unlistenConnectionError = fn })
-
-  listen('update-progress', (ev) => {
-    updateProgress = ev.payload
-  }).then((fn) => { unlistenUpdateProgress = fn })
-
-  // Load saved data + version
-  try {
-    const [savedResult, versionResult] = await withTimeout(
-      Promise.all([
-        invoke('load_saved_connections'),
-        invoke('get_current_version'),
-      ]),
-      5000,
-    )
-    savedConnections = savedResult
-    currentVersion = versionResult
-  } catch (_err) {
-    // Non-fatal
-  }
-
-  // Load projects
-  try {
-    projects = await invoke('list_projects')
-  } catch (err) {
-    errorMessage = `Failed to load projects: ${err}`
-  } finally {
-    loadingProjects = false
-  }
-
-  checkForUpdates()
+  await setupListenersAndLoad()
 }
 
 onDestroy(() => {

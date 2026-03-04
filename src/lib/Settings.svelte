@@ -299,6 +299,7 @@ function handleOverlayKeydown(e) {
 
 function handleEditOverlayKeydown(e) {
   if (e.key === 'Escape') {
+    e.stopPropagation()
     closeEditModal()
     closeProjectModal()
   }
