@@ -148,7 +148,12 @@ pub async fn parse_aws_config() -> HashMap<String, HashMap<String, String>> {
 
     let content = match tokio::fs::read_to_string(&config_path).await {
         Ok(c) => c,
-        Err(_) => return HashMap::new(),
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Failed to read AWS config at {}: {}", config_path.display(), e);
+            }
+            return HashMap::new();
+        }
     };
 
     let mut profiles: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -191,7 +196,12 @@ pub async fn read_aws_profile_names() -> Vec<String> {
 
     let content = match tokio::fs::read_to_string(&config_path).await {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Failed to read AWS config at {}: {}", config_path.display(), e);
+            }
+            return Vec::new();
+        }
     };
 
     content
