@@ -48,7 +48,12 @@ export function trapFocus(node) {
   const observer = new MutationObserver(() => {
     focusableElements = [...node.querySelectorAll(focusableSelector)]
   })
-  observer.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'tabindex'] })
+  observer.observe(node, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['disabled', 'tabindex'],
+  })
 
   function handleKeydown(e) {
     if (e.key !== 'Tab') return

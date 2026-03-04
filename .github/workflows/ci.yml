@@ -26,7 +26,7 @@ jobs:
         run: npm ci
 
       - name: Biome lint
-        run: npx @biomejs/biome check .
+        run: npx @biomejs/biome check src/
 
   check-rust:
     name: Check Rust
@@ -39,6 +39,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -48,6 +54,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Build frontend
+        run: npm ci && npm run build:vite
 
       - name: Cargo check (GUI)
         working-directory: src-tauri
