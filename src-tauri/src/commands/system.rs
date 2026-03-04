@@ -70,10 +70,9 @@ fn detect_linux_install_method() -> LinuxInstallMethod {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
+            && status.success()
         {
-            if status.success() {
-                return LinuxInstallMethod::Deb;
-            }
+            return LinuxInstallMethod::Deb;
         }
     }
     LinuxInstallMethod::Unknown
@@ -271,12 +270,11 @@ fn which_brew() -> Option<String> {
     if let Ok(output) = std::process::Command::new("which")
         .arg("brew")
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(path);
-            }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Some(path);
         }
     }
     // Check common Linuxbrew paths
