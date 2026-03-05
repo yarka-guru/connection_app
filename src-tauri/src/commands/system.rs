@@ -482,6 +482,14 @@ pub async fn import_projects_file(app_handle: AppHandle) -> Result<usize, AppErr
 
     let count = imported.len();
     for (key, config) in imported {
+        let result = crate::config::validation::validate_project_config(&config);
+        if !result.valid {
+            return Err(AppError::Config(format!(
+                "Invalid project \"{}\": {}",
+                key,
+                result.errors.join(", ")
+            )));
+        }
         projects::save_project_config(&key, config).await?;
     }
 

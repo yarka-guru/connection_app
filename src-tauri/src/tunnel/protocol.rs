@@ -251,7 +251,6 @@ impl AgentMessage {
     }
 
     /// Validate the payload digest (SHA-256).
-    #[allow(dead_code)]
     pub fn validate_digest(&self, raw: &[u8]) -> bool {
         if raw.len() < PAYLOAD_DIGEST_OFFSET + PAYLOAD_DIGEST_SIZE {
             return false;
@@ -295,6 +294,13 @@ pub fn build_data_message(data: &[u8], sequence_number: i64) -> AgentMessage {
         PAYLOAD_OUTPUT,
         data.to_vec(),
     )
+}
+
+/// Build a SYN flag message — sent after handshake to tell the SSM agent
+/// that the client is ready for port forwarding. The Go session-manager-plugin
+/// sends this; without it the agent may not connect to the remote host.
+pub fn build_syn_message(sequence_number: i64) -> AgentMessage {
+    AgentMessage::new(INPUT_STREAM_DATA, sequence_number, FLAG_SYN, PAYLOAD_FLAG, vec![])
 }
 
 /// Build a flag message (DisconnectToPort, TerminateSession, etc.).

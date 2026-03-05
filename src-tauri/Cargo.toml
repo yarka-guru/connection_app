@@ -1,6 +1,6 @@
 [package]
 name = "rds-ssm-connect"
-version = "2.1.11"
+version = "2.1.12"
 description = "Secure RDS connections through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"

@@ -72,6 +72,11 @@ impl SsoEventHandler for CliSsoHandler {
             "\n  \u{1F310} Open this URL in your browser to authorize:\n     {}\n",
             url
         );
+        // Only open HTTPS URLs to prevent protocol abuse (file://, javascript:, etc.)
+        if !url.starts_with("https://") {
+            eprintln!("  Warning: refusing to open non-HTTPS URL");
+            return;
+        }
         // Try to open browser automatically
         #[cfg(target_os = "macos")]
         {

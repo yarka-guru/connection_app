@@ -1,7 +1,7 @@
 use crate::tunnel::protocol::{
-    build_acknowledge, build_data_message, build_flag_message, AgentMessage, CHANNEL_CLOSED,
-    FLAG_CONNECT_TO_PORT_ERROR, FLAG_DISCONNECT_TO_PORT, FLAG_TERMINATE_SESSION, OUTPUT_STREAM_DATA,
-    PAYLOAD_FLAG, PAYLOAD_OUTPUT, STREAM_DATA_PAYLOAD_SIZE,
+    build_acknowledge, build_data_message, build_flag_message, build_syn_message, AgentMessage,
+    CHANNEL_CLOSED, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DISCONNECT_TO_PORT, FLAG_TERMINATE_SESSION,
+    OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT, STREAM_DATA_PAYLOAD_SIZE,
 };
 use crate::tunnel::websocket::open_data_channel;
 use byteorder::{BigEndian, ByteOrder};
@@ -34,6 +34,10 @@ const CLOCK_GRANULARITY_MS: i64 = 10;
 
 /// Max retransmission timeout (ms).
 const MAX_RETRANSMIT_TIMEOUT_MS: u64 = 1000;
+
+/// Max entries in outgoing/incoming buffers before cancelling the session.
+/// Prevents unbounded memory growth from a misbehaving agent.
+const MAX_BUFFER_SIZE: usize = 10_000;
 
 /// Outgoing message buffer entry.
 struct OutgoingEntry {
@@ -99,12 +103,12 @@ pub async fn start_native_port_forwarding(
     // Wrap write half in Arc<Mutex> for shared access
     let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write_half));
 
-    // Bind local TCP listener with SO_REUSEADDR — critical on Linux where
+    // Bind local TCP listeners with SO_REUSEADDR — critical on Linux where
     // TIME_WAIT lasts 60s (vs ~15s on macOS), blocking reconnections.
-    let listener = {
-        let addr: std::net::SocketAddr = format!("127.0.0.1:{}", local_port)
-            .parse()
-            .map_err(|e| format!("Invalid address: {}", e))?;
+    // Listen on both IPv4 (127.0.0.1) and IPv6 (::1) so clients that resolve
+    // "localhost" to either address can connect (DataGrip on Linux uses IPv6).
+    let listener_v4 = {
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, local_port));
         let socket = socket2::Socket::new(
             socket2::Domain::IPV4,
             socket2::Type::STREAM,
@@ -127,7 +131,39 @@ pub async fn start_native_port_forwarding(
         tokio::net::TcpListener::from_std(std_listener)
             .map_err(|e| format!("Failed to create async listener: {}", e))?
     };
-    log::info!("Listening on 127.0.0.1:{}", local_port);
+
+    // IPv6 listener — best-effort (may fail if IPv6 is disabled on the system)
+    let listener_v6: Option<tokio::net::TcpListener> = {
+        let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, local_port));
+        socket2::Socket::new(
+            socket2::Domain::IPV6,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .ok()
+        .and_then(|socket| {
+            let _ = socket.set_only_v6(true);
+            let _ = socket.set_reuse_address(true);
+            let _ = socket.set_nonblocking(true);
+            socket.bind(&addr.into()).ok()?;
+            socket.listen(128).ok()?;
+            let std_listener: std::net::TcpListener = socket.into();
+            tokio::net::TcpListener::from_std(std_listener).ok()
+        })
+    };
+
+    if listener_v6.is_some() {
+        log::info!(
+            "Listening on 127.0.0.1:{} and [::1]:{}",
+            local_port,
+            local_port
+        );
+    } else {
+        log::info!(
+            "Listening on 127.0.0.1:{} (IPv6 not available)",
+            local_port
+        );
+    }
 
     // Signal that the tunnel is ready for connections
     if let Some(tx) = ready_tx {
@@ -154,6 +190,31 @@ pub async fn start_native_port_forwarding(
 
     // RTT tracking for retransmission timeout (Jacobson/Karels algorithm)
     let rtt_estimator = Arc::new(tokio::sync::Mutex::new(RttEstimator::new()));
+
+    // Send SYN flag — tells the SSM agent "client is ready for port forwarding".
+    // The Go session-manager-plugin sends this after handshake; without it the
+    // agent may not connect to the remote host (observed on Linux).
+    {
+        let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
+        let syn_msg = build_syn_message(syn_seq);
+        let serialized = syn_msg.serialize();
+        {
+            let mut ob = outgoing_buffer.lock().await;
+            ob.insert(
+                syn_seq,
+                OutgoingEntry {
+                    message: serialized.clone(),
+                    sent_at: std::time::Instant::now(),
+                    retransmit_count: 0,
+                },
+            );
+        }
+        let mut ws = ws_write.lock().await;
+        ws.send(Message::Binary(serialized.into()))
+            .await
+            .map_err(|e| format!("Failed to send SYN: {}", e))?;
+        log::info!("Sent SYN flag to SSM agent");
+    }
 
     // --- Task 1: WebSocket ping keepalive ---
     let ws_write_ping = ws_write.clone();
@@ -277,6 +338,15 @@ pub async fn start_native_port_forwarding(
                         }
                     };
 
+                    // Verify payload integrity — drop messages with mismatched SHA-256 digest
+                    if !agent_msg.validate_digest(&data) {
+                        log::warn!(
+                            "Payload digest mismatch, dropping message seq={}",
+                            agent_msg.sequence_number
+                        );
+                        continue;
+                    }
+
                     match agent_msg.message_type.as_str() {
                         OUTPUT_STREAM_DATA => {
                             // Always acknowledge
@@ -354,6 +424,11 @@ pub async fn start_native_port_forwarding(
                             } else if seq > expected {
                                 // Out-of-order: buffer with payload type
                                 let mut ibuf = incoming_buf.lock().await;
+                                if ibuf.len() >= MAX_BUFFER_SIZE {
+                                    log::error!("Incoming buffer overflow ({} entries), cancelling session", MAX_BUFFER_SIZE);
+                                    session_cancel_ws.cancel();
+                                    break;
+                                }
                                 ibuf.insert(seq, (agent_msg.payload_type, agent_msg.payload));
                             }
                             // seq < expected: duplicate, drop silently
@@ -403,11 +478,25 @@ pub async fn start_native_port_forwarding(
         }
 
         let tcp_stream = tokio::select! {
-            result = listener.accept() => {
+            result = listener_v4.accept() => {
                 match result {
                     Ok((stream, _addr)) => stream,
                     Err(e) => {
-                        log::error!("TCP accept error: {}", e);
+                        log::error!("TCP accept error (IPv4): {}", e);
+                        continue;
+                    }
+                }
+            }
+            result = async {
+                match &listener_v6 {
+                    Some(l) => l.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match result {
+                    Ok((stream, _addr)) => stream,
+                    Err(e) => {
+                        log::error!("TCP accept error (IPv6): {}", e);
                         continue;
                     }
                 }
@@ -508,6 +597,11 @@ pub async fn start_native_port_forwarding(
             // Add to outgoing buffer for retransmission tracking
             {
                 let mut ob = outgoing_buffer_tcp.lock().await;
+                if ob.len() >= MAX_BUFFER_SIZE {
+                    log::error!("Outgoing buffer overflow ({} unacked messages), cancelling session", MAX_BUFFER_SIZE);
+                    session_cancel_tr.cancel();
+                    break;
+                }
                 ob.insert(
                     seq,
                     OutgoingEntry {
