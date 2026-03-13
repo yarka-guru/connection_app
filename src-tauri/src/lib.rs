@@ -66,6 +66,8 @@ pub fn run() {
             commands::saved::load_saved_connections,
             commands::saved::save_connection,
             commands::saved::delete_saved_connection,
+            commands::saved::update_saved_connection,
+            commands::saved::reorder_saved_connections,
             commands::saved::update_saved_connection_last_used,
             // System commands
             commands::system::check_for_updates,

@@ -10,9 +10,13 @@ const {
   onConnect,
   onDisconnect,
   onDelete,
+  onUpdate,
+  onReorder,
 } = $props()
 
 let expandedId = $state(null)
+let editingId = $state(null)
+let editName = $state('')
 
 function getProjectName(projectKey) {
   const project = projects.find((p) => p.key === projectKey)
@@ -58,6 +62,48 @@ function handleDelete(connection) {
   onDelete?.(connection)
 }
 
+function startEdit(connection, e) {
+  e.stopPropagation()
+  editingId = connection.id
+  editName = connection.name
+}
+
+function cancelEdit() {
+  editingId = null
+  editName = ''
+}
+
+function saveEdit(e) {
+  e?.preventDefault()
+  if (!editingId || !editName.trim()) return
+  onUpdate?.(editingId, editName.trim())
+  editingId = null
+  editName = ''
+}
+
+function handleEditKeydown(e) {
+  if (e.key === 'Escape') {
+    e.stopPropagation()
+    cancelEdit()
+  }
+}
+
+function moveUp(index, e) {
+  e.stopPropagation()
+  if (index === 0) return
+  const ids = savedConnections.map((c) => c.id)
+  ;[ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]
+  onReorder?.(ids)
+}
+
+function moveDown(index, e) {
+  e.stopPropagation()
+  if (index >= savedConnections.length - 1) return
+  const ids = savedConnections.map((c) => c.id)
+  ;[ids[index], ids[index + 1]] = [ids[index + 1], ids[index]]
+  onReorder?.(ids)
+}
+
 function handleHeaderKeydown(e, activeConn, connectionId) {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
@@ -84,7 +130,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     </div>
 
     <div class="connections-list">
-      {#each savedConnections as connection (connection.id)}
+      {#each savedConnections as connection, index (connection.id)}
         {@const activeConn = getActiveConnection(connection)}
         {@const isConnecting = connectingId === connection.id}
         <div class="connection-item" class:active={activeConn} class:connecting={isConnecting} class:expanded={expandedId === connection.id}>
@@ -105,15 +151,28 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
               </div>
             {/if}
             <div class="connection-info">
-              <div class="connection-name-row">
-                <span class="connection-name">{connection.name}</span>
-                {#if activeConn}
-                  <span class="connection-port">:{activeConn.localPort}</span>
-                {/if}
-              </div>
+              {#if editingId === connection.id}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <form class="edit-name-form" onsubmit={saveEdit} onclick={(e) => e.stopPropagation()} onkeydown={handleEditKeydown}>
+                  <input
+                    type="text"
+                    class="edit-name-input"
+                    bind:value={editName}
+                    autofocus
+                    onblur={saveEdit}
+                  />
+                </form>
+              {:else}
+                <div class="connection-name-row">
+                  <span class="connection-name">{connection.name}</span>
+                  {#if activeConn}
+                    <span class="connection-port">:{activeConn.localPort}</span>
+                  {/if}
+                </div>
+              {/if}
               {#if isConnecting}
                 <span class="connecting-text">Connecting...</span>
-              {:else}
+              {:else if editingId !== connection.id}
                 <span class="connection-meta">
                   {getProjectName(connection.projectKey)} / {connection.profile}
                 </span>
@@ -146,6 +205,40 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
                   </svg>
                 </button>
               {:else}
+                {#if savedConnections.length > 1}
+                  <div class="reorder-buttons">
+                    <button
+                      class="btn-reorder"
+                      disabled={index === 0 || !!connectingId}
+                      onclick={(e) => moveUp(index, e)}
+                      aria-label="Move up"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M6 2.5v7M3 5.5l3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </button>
+                    <button
+                      class="btn-reorder"
+                      disabled={index === savedConnections.length - 1 || !!connectingId}
+                      onclick={(e) => moveDown(index, e)}
+                      aria-label="Move down"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M6 9.5v-7M3 6.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </button>
+                  </div>
+                {/if}
+                <button
+                  class="btn-edit"
+                  disabled={!!connectingId}
+                  onclick={(e) => startEdit(connection, e)}
+                  aria-label="Edit {connection.name}"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M10.5 1.5l2 2-8 8H2.5v-2l8-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
                 <button
                   class="btn-connect"
                   disabled={!!connectingId}
@@ -362,9 +455,10 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
+    align-items: center;
   }
 
-  .btn-connect, .btn-delete, .btn-disconnect, .btn-expand {
+  .btn-connect, .btn-delete, .btn-disconnect, .btn-expand, .btn-edit {
     width: 32px;
     height: 32px;
     display: flex;
@@ -388,6 +482,16 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 
   .btn-connect:active {
     transform: var(--press-scale);
+  }
+
+  .btn-edit {
+    color: var(--text-muted);
+  }
+
+  .btn-edit:hover {
+    color: var(--accent-primary-light);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border-color: rgba(var(--accent-primary-rgb), 0.2);
   }
 
   .btn-delete {
@@ -427,10 +531,57 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     transform: rotate(180deg);
   }
 
-  .btn-connect:disabled, .btn-delete:disabled, .btn-disconnect:disabled, .btn-expand:disabled {
+  .btn-connect:disabled, .btn-delete:disabled, .btn-disconnect:disabled, .btn-expand:disabled, .btn-edit:disabled {
     opacity: 0.4;
     cursor: not-allowed;
     pointer-events: none;
+  }
+
+  .reorder-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .btn-reorder {
+    width: 22px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 0;
+    transition: background-color 0.2s, color 0.2s;
+  }
+
+  .btn-reorder:hover:not(:disabled) {
+    background: rgba(var(--glass-rgb), 0.1);
+    color: var(--text-hover);
+  }
+
+  .btn-reorder:disabled {
+    opacity: 0.2;
+    cursor: not-allowed;
+  }
+
+  .edit-name-form {
+    display: flex;
+  }
+
+  .edit-name-input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--accent-primary);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    outline: none;
   }
 
   .connecting-spinner {

@@ -123,6 +123,77 @@ pub async fn delete_saved_connection(app_handle: AppHandle, id: String) -> Resul
 }
 
 #[tauri::command]
+pub async fn update_saved_connection(
+    app_handle: AppHandle,
+    id: String,
+    name: String,
+) -> Result<SavedConnection, AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    let conn = connections
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or_else(|| AppError::General(format!("Connection not found: {}", id)))?;
+
+    conn.name = name;
+    let updated = conn.clone();
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn reorder_saved_connections(
+    app_handle: AppHandle,
+    ids: Vec<String>,
+) -> Result<(), AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    // Reorder: place connections in the order specified by ids
+    let mut reordered: Vec<SavedConnection> = Vec::with_capacity(connections.len());
+    for id in &ids {
+        if let Some(pos) = connections.iter().position(|c| c.id == *id) {
+            reordered.push(connections.remove(pos));
+        }
+    }
+    // Append any connections not in the ids list (shouldn't happen, but safe)
+    reordered.append(&mut connections);
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&reordered)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn update_saved_connection_last_used(
     app_handle: AppHandle,
     id: String,

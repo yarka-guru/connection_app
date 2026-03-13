@@ -543,6 +543,26 @@ function cancelDelete() {
   showDeleteConfirm = null
 }
 
+async function handleUpdateSavedConnection(id, name) {
+  try {
+    const updated = await invoke('update_saved_connection', { id, name })
+    savedConnections = savedConnections.map((c) => (c.id === updated.id ? updated : c))
+  } catch (err) {
+    errorMessage = `Failed to update connection: ${err}`
+  }
+}
+
+async function handleReorderSavedConnections(ids) {
+  // Optimistic UI update
+  const ordered = ids.map((id) => savedConnections.find((c) => c.id === id)).filter(Boolean)
+  savedConnections = ordered
+  try {
+    await invoke('reorder_saved_connections', { ids })
+  } catch (err) {
+    errorMessage = `Failed to reorder connections: ${err}`
+  }
+}
+
 let isUpdating = $state(false)
 
 async function handleInstallUpdate() {
@@ -740,6 +760,8 @@ const isAlreadySaved = $derived(
             onConnect={handleSavedConnectionConnect}
             onDisconnect={handleDisconnectOne}
             onDelete={handleDeleteSavedConnection}
+            onUpdate={handleUpdateSavedConnection}
+            onReorder={handleReorderSavedConnections}
           />
         {/if}
 
