@@ -759,6 +759,13 @@ const isAlreadySaved = $derived(
         </div>
       </header>
 
+      {#if activeConnections.length > 0}
+        <div class="active-bar">
+          <span>{activeConnections.length} active connection{activeConnections.length > 1 ? 's' : ''}</span>
+          <button onclick={handleDisconnectAll}>Disconnect All</button>
+        </div>
+      {/if}
+
       <div class="tab-bar">
         <button
           class="main-tab"
@@ -1081,6 +1088,34 @@ const isAlreadySaved = $derived(
     margin: 4px 0 0;
     font-size: 0.875rem;
     color: var(--text-secondary);
+  }
+
+  .active-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    border-radius: 10px;
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
+    font-size: 0.8rem;
+    color: var(--accent-primary-light);
+  }
+
+  .active-bar button {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: rgba(var(--glass-rgb), 0.1);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color var(--transition-normal);
+  }
+
+  .active-bar button:hover {
+    background: rgba(var(--glass-rgb), 0.2);
   }
 
   .tab-bar {

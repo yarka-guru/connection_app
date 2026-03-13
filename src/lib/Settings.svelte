@@ -646,13 +646,13 @@ onDestroy(() => {
                 type="button"
                 class="type-btn"
                 class:active={projectConnectionType === 'rds'}
-                onclick={() => projectConnectionType = 'rds'}
+                onclick={() => { projectConnectionType = 'rds'; if (projectDefaultPort === '5900' || projectDefaultPort === '3389') { projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432' } }}
               >RDS Database</button>
               <button
                 type="button"
                 class="type-btn"
                 class:active={projectConnectionType === 'service'}
-                onclick={() => projectConnectionType = 'service'}
+                onclick={() => { projectConnectionType = 'service'; if (projectDefaultPort === '5432' || projectDefaultPort === '3306') { projectDefaultPort = '5900' } }}
               >VNC/RDP Service</button>
             </div>
           </div>

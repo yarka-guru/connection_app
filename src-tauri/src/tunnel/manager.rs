@@ -28,6 +28,8 @@ static INSTANCE_ID_PATTERN: std::sync::LazyLock<Regex> =
     std::sync::LazyLock::new(|| Regex::new(r"^i-[a-f0-9]{8,17}$").unwrap());
 static HOSTNAME_PATTERN: std::sync::LazyLock<Regex> =
     std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9.-]+$").unwrap());
+static IP_PATTERN: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").unwrap());
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConnectionInfo {
@@ -391,6 +393,10 @@ impl TunnelManager {
                 self.emit_status("Finding target EC2 instance...", Some(connection_id));
                 let (id, _ip) = operations::find_ec2_instance(clients, target_pattern).await?;
 
+                if !INSTANCE_ID_PATTERN.is_match(&id) {
+                    return Err(AppError::Aws(format!("Invalid instance ID format: {}", id)));
+                }
+
                 // Verify SSM agent is online
                 self.emit_status("Checking SSM agent...", Some(connection_id));
                 let ready = operations::wait_for_ssm_agent_ready(clients, &id, 3, 3000, 0).await?;
@@ -412,8 +418,16 @@ impl TunnelManager {
                 let bastion_id =
                     operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
 
+                if !INSTANCE_ID_PATTERN.is_match(&bastion_id) {
+                    return Err(AppError::Aws(format!("Invalid bastion instance ID format: {}", bastion_id)));
+                }
+
                 self.emit_status("Finding target EC2 instance...", Some(connection_id));
                 let (_id, ip) = operations::find_ec2_instance(clients, target_pattern).await?;
+
+                if !IP_PATTERN.is_match(&ip) {
+                    return Err(AppError::Aws(format!("Invalid EC2 private IP format: {}", ip)));
+                }
 
                 let target = TunnelTarget::RemoteHost {
                     bastion_id: bastion_id.clone(),
@@ -436,8 +450,16 @@ impl TunnelManager {
                 let bastion_id =
                     operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
 
+                if !INSTANCE_ID_PATTERN.is_match(&bastion_id) {
+                    return Err(AppError::Aws(format!("Invalid bastion instance ID format: {}", bastion_id)));
+                }
+
                 self.emit_status("Finding ECS task IP...", Some(connection_id));
                 let task_ip = operations::find_ecs_task_ip(clients, cluster, service).await?;
+
+                if !IP_PATTERN.is_match(&task_ip) {
+                    return Err(AppError::Aws(format!("Invalid ECS task IP format: {}", task_ip)));
+                }
 
                 let target = TunnelTarget::RemoteHost {
                     bastion_id: bastion_id.clone(),
@@ -547,6 +569,7 @@ async fn run_tunnel_lifecycle(
             local_port,
             &target,
             project_config.bastion_pattern(),
+            project_config.connection_type.as_str(),
             &cancel_token,
             ready_tx.take(),
         )
@@ -697,6 +720,7 @@ async fn start_port_forwarding_with_retry(
     local_port: &str,
     target: &TunnelTarget,
     bastion_pattern: &str,
+    connection_type: &str,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
@@ -717,29 +741,37 @@ async fn start_port_forwarding_with_retry(
         match result {
             Ok(()) => return Ok(()),
             Err(PortForwardError::TargetNotConnected) if retry_count < PORT_FORWARDING_MAX_RETRIES => {
-                // TargetNotConnected: terminate bastion (if applicable), wait for replacement
                 if let TunnelTarget::RemoteHost { ref bastion_id, ref remote_host, ref remote_port } = current_target {
-                    let _ = operations::terminate_bastion_instance(clients, bastion_id).await;
+                    if connection_type == "rds" {
+                        let _ = operations::terminate_bastion_instance(clients, bastion_id).await;
 
-                    let new_id = operations::wait_for_new_bastion_instance(
-                        clients,
-                        bastion_id,
-                        bastion_pattern,
-                        BASTION_WAIT_MAX_RETRIES,
-                        BASTION_WAIT_RETRY_DELAY_MS,
-                    )
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::Tunnel(
-                            "Failed to find new bastion instance after waiting.".to_string(),
+                        let new_id = operations::wait_for_new_bastion_instance(
+                            clients,
+                            bastion_id,
+                            bastion_pattern,
+                            BASTION_WAIT_MAX_RETRIES,
+                            BASTION_WAIT_RETRY_DELAY_MS,
                         )
-                    })?;
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Tunnel(
+                                "Failed to find new bastion instance after waiting.".to_string(),
+                            )
+                        })?;
 
-                    current_target = TunnelTarget::RemoteHost {
-                        bastion_id: new_id,
-                        remote_host: remote_host.clone(),
-                        remote_port: remote_port.clone(),
-                    };
+                        current_target = TunnelTarget::RemoteHost {
+                            bastion_id: new_id,
+                            remote_host: remote_host.clone(),
+                            remote_port: remote_port.clone(),
+                        };
+                    } else {
+                        let new_id = operations::find_bastion_instance(clients, bastion_pattern).await?;
+                        current_target = TunnelTarget::RemoteHost {
+                            bastion_id: new_id,
+                            remote_host: remote_host.clone(),
+                            remote_port: remote_port.clone(),
+                        };
+                    }
                 }
 
                 retry_count += 1;
