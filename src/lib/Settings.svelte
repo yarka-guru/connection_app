@@ -1176,6 +1176,8 @@ onDestroy(() => {
     flex: 1;
     overflow-y: auto;
     margin-bottom: 8px;
+    min-height: 0;
+    padding-right: 4px;
   }
 
   .edit-modal h3 {
