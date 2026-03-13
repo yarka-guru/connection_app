@@ -1,7 +1,8 @@
 use crate::tunnel::protocol::{
     build_acknowledge, build_data_message, build_flag_message, build_syn_message, AgentMessage,
-    CHANNEL_CLOSED, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DISCONNECT_TO_PORT, FLAG_TERMINATE_SESSION,
-    OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT, STREAM_DATA_PAYLOAD_SIZE,
+    ACKNOWLEDGE, CHANNEL_CLOSED, FLAG_ACK, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DISCONNECT_TO_PORT,
+    FLAG_TERMINATE_SESSION, OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT,
+    STREAM_DATA_PAYLOAD_SIZE,
 };
 use crate::tunnel::websocket::open_data_channel;
 use byteorder::{BigEndian, ByteOrder};
@@ -42,6 +43,13 @@ const MAX_BUFFER_SIZE: usize = 10_000;
 /// Number of missed pong responses before declaring WebSocket dead.
 /// With 30s ping interval, 3 misses = 90s without response.
 const WS_PONG_MISS_THRESHOLD: u64 = 3;
+
+/// Send SSM-level keepalive every N ping ticks.
+/// WebSocket pings are transport-level — the SSM relay may not count them
+/// as session activity. Without SSM-level messages, the session can idle
+/// out (default 20 min) even though the WebSocket is alive.
+/// 10 ticks × 30s = every 5 minutes.
+const SSM_KEEPALIVE_TICKS: u64 = 10;
 
 /// Outgoing message buffer entry.
 struct OutgoingEntry {
@@ -224,20 +232,39 @@ pub async fn start_native_port_forwarding(
         log::info!("Sent SYN flag to SSM agent");
     }
 
-    // --- Task 1: WebSocket ping keepalive + pong watchdog ---
+    // --- Task 1: WebSocket ping keepalive + pong watchdog + SSM keepalive ---
     let ws_write_ping = ws_write.clone();
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
     let last_pong_ping = last_pong_time.clone();
+    // Pre-build SSM keepalive message (acknowledge with no-op content).
+    // This goes through the SSM relay as a real protocol message, resetting
+    // the session idle timer. The agent ignores acks for unknown sequences.
+    let ssm_keepalive_bytes = AgentMessage::new(
+        ACKNOWLEDGE,
+        0,
+        FLAG_ACK,
+        0,
+        serde_json::to_vec(&serde_json::json!({
+            "AcknowledgedMessageType": "",
+            "AcknowledgedMessageId": "",
+            "AcknowledgedMessageSequenceNumber": 0,
+            "IsSequentialMessage": false,
+        }))
+        .unwrap_or_default(),
+    )
+    .serialize();
     let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
+        let mut tick_count: u64 = 0;
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
                 _ = cancel_ping.cancelled() => break,
                 _ = session_cancel_ping.cancelled() => break,
             }
+            tick_count += 1;
 
             // Check if pong responses have stopped (dead WebSocket detection).
             // If no pong received within PONG_MISS_THRESHOLD * PING_INTERVAL,
@@ -260,6 +287,15 @@ pub async fn start_native_port_forwarding(
                 .is_err()
             {
                 break;
+            }
+
+            // SSM-level keepalive: send a no-op acknowledge through the SSM relay
+            // to reset the session idle timer (default 20 min). WebSocket pings
+            // are transport-level and may not count as session activity.
+            if tick_count % SSM_KEEPALIVE_TICKS == 0 {
+                let _ = ws
+                    .send(Message::Binary(ssm_keepalive_bytes.clone().into()))
+                    .await;
             }
         }
     });
