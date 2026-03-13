@@ -39,6 +39,10 @@ const MAX_RETRANSMIT_TIMEOUT_MS: u64 = 1000;
 /// Prevents unbounded memory growth from a misbehaving agent.
 const MAX_BUFFER_SIZE: usize = 10_000;
 
+/// Number of missed pong responses before declaring WebSocket dead.
+/// With 30s ping interval, 3 misses = 90s without response.
+const WS_PONG_MISS_THRESHOLD: u64 = 3;
+
 /// Outgoing message buffer entry.
 struct OutgoingEntry {
     message: Vec<u8>,
@@ -179,6 +183,10 @@ pub async fn start_native_port_forwarding(
     let session_cancel = CancellationToken::new();
     let tcp_connected = Arc::new(AtomicBool::new(false));
 
+    // Pong watchdog: track when we last received a pong to detect dead WebSockets.
+    // Stored as seconds since UNIX epoch (AtomicI64 for lock-free access).
+    let last_pong_time = Arc::new(AtomicI64::new(epoch_secs()));
+
     // Outgoing buffer for retransmission
     let outgoing_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, OutgoingEntry>::new()));
 
@@ -216,10 +224,11 @@ pub async fn start_native_port_forwarding(
         log::info!("Sent SYN flag to SSM agent");
     }
 
-    // --- Task 1: WebSocket ping keepalive ---
+    // --- Task 1: WebSocket ping keepalive + pong watchdog ---
     let ws_write_ping = ws_write.clone();
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
+    let last_pong_ping = last_pong_time.clone();
     let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
@@ -229,6 +238,21 @@ pub async fn start_native_port_forwarding(
                 _ = cancel_ping.cancelled() => break,
                 _ = session_cancel_ping.cancelled() => break,
             }
+
+            // Check if pong responses have stopped (dead WebSocket detection).
+            // If no pong received within PONG_MISS_THRESHOLD * PING_INTERVAL,
+            // the remote side is unresponsive — cancel session to trigger reconnect.
+            let last = last_pong_ping.load(Ordering::Relaxed);
+            let stale_secs = epoch_secs() - last;
+            if stale_secs > (WS_PING_INTERVAL_SECS * WS_PONG_MISS_THRESHOLD) as i64 {
+                log::error!(
+                    "No WebSocket pong received for {}s, declaring session dead",
+                    stale_secs
+                );
+                session_cancel_ping.cancel();
+                break;
+            }
+
             let mut ws = ws_write_ping.lock().await;
             if ws
                 .send(Message::Ping(b"keepalive".to_vec().into()))
@@ -304,6 +328,7 @@ pub async fn start_native_port_forwarding(
     let outgoing_buf_ack = outgoing_buffer.clone();
     let rtt_estimator_ack = rtt_estimator.clone();
     let tcp_connected_ws = tcp_connected.clone();
+    let last_pong_ws = last_pong_time.clone();
 
     let ws_read_handle = tokio::spawn(async move {
         let mut ws = ws_read_task.lock().await;
@@ -465,11 +490,14 @@ pub async fn start_native_port_forwarding(
                         _ => {}
                     }
                 }
+                Message::Pong(_) => {
+                    last_pong_ws.store(epoch_secs(), Ordering::Relaxed);
+                }
                 Message::Close(_) => {
                     session_cancel_ws.cancel();
                     break;
                 }
-                _ => {} // Ignore ping/pong/text
+                _ => {} // Ignore ping/text
             }
         }
     });
@@ -690,4 +718,12 @@ pub async fn start_native_port_forwarding(
     }
 
     Ok(())
+}
+
+/// Current time as seconds since UNIX epoch (for pong watchdog).
+fn epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
