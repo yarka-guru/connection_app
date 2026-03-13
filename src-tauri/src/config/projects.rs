@@ -22,6 +22,20 @@ pub struct ProjectConfig {
     pub env_port_mapping: HashMap<String, String>,
     #[serde(rename = "defaultPort")]
     pub default_port: String,
+    #[serde(rename = "bastionPattern", default)]
+    pub bastion_pattern: Option<String>,
+}
+
+pub const DEFAULT_BASTION_PATTERN: &str = "*bastion*";
+
+impl ProjectConfig {
+    /// Returns the bastion Name tag filter pattern, defaulting to `*bastion*`.
+    pub fn bastion_pattern(&self) -> &str {
+        self.bastion_pattern
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_BASTION_PATTERN)
+    }
 }
 
 fn get_config_path() -> PathBuf {
@@ -147,5 +161,44 @@ pub fn get_default_port_for_engine(project_config: &ProjectConfig) -> String {
     match project_config.engine.as_deref() {
         Some("mysql") => "3306".to_string(),
         _ => "5432".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(bastion_pattern: Option<String>) -> ProjectConfig {
+        ProjectConfig {
+            name: "Test".to_string(),
+            region: "us-east-1".to_string(),
+            database: "db".to_string(),
+            secret_prefix: "rds!cluster".to_string(),
+            rds_type: "cluster".to_string(),
+            engine: None,
+            rds_pattern: "pattern".to_string(),
+            profile_filter: None,
+            env_port_mapping: HashMap::new(),
+            default_port: "5432".to_string(),
+            bastion_pattern,
+        }
+    }
+
+    #[test]
+    fn test_bastion_pattern_default() {
+        let config = test_config(None);
+        assert_eq!(config.bastion_pattern(), "*bastion*");
+    }
+
+    #[test]
+    fn test_bastion_pattern_custom() {
+        let config = test_config(Some("*jump-box*".to_string()));
+        assert_eq!(config.bastion_pattern(), "*jump-box*");
+    }
+
+    #[test]
+    fn test_bastion_pattern_empty_string_falls_back() {
+        let config = test_config(Some(String::new()));
+        assert_eq!(config.bastion_pattern(), "*bastion*");
     }
 }

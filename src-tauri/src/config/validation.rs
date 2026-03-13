@@ -7,6 +7,8 @@ static REGION_PATTERN: LazyLock<Regex> =
 static PORT_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+$").unwrap());
 static SHELL_SAFE_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._!/-]+$").unwrap());
+static EC2_FILTER_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._!/*?-]+$").unwrap());
 
 const VALID_RDS_TYPES: &[&str] = &["cluster", "instance"];
 const VALID_ENGINES: &[&str] = &["postgres", "mysql"];
@@ -67,6 +69,19 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             "engine must be one of: {}",
             VALID_ENGINES.join(", ")
         ));
+    }
+
+    // Validate bastionPattern (EC2 filter pattern if provided — allows * and ?)
+    if let Some(ref pattern) = config.bastion_pattern
+        && !pattern.is_empty()
+    {
+        if pattern.len() > 256 {
+            errors.push("bastionPattern must be 256 characters or fewer".to_string());
+        } else if !EC2_FILTER_PATTERN.is_match(pattern) {
+            errors.push(
+                "bastionPattern contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, !, * and ? allowed)".to_string(),
+            );
+        }
     }
 
     // Validate shell-safe fields
@@ -133,6 +148,7 @@ mod tests {
             profile_filter: Some("test-".to_string()),
             env_port_mapping,
             default_port: "5432".to_string(),
+            bastion_pattern: None,
         }
     }
 
@@ -197,5 +213,42 @@ mod tests {
         let result = validate_project_config(&config);
         assert!(!result.valid);
         assert!(result.errors.iter().any(|e| e.contains("staging")));
+    }
+
+    #[test]
+    fn test_bastion_pattern_none_is_valid() {
+        let config = valid_config(); // bastion_pattern: None
+        let result = validate_project_config(&config);
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_bastion_pattern_valid_wildcards() {
+        for pattern in ["*bastion*", "my-bastion-host", "bastion*", "bastion?01", "*jump*"] {
+            let mut config = valid_config();
+            config.bastion_pattern = Some(pattern.to_string());
+            let result = validate_project_config(&config);
+            assert!(result.valid, "expected valid for pattern: {}", pattern);
+        }
+    }
+
+    #[test]
+    fn test_bastion_pattern_invalid_injection() {
+        for pattern in ["bastion;rm -rf /", "bastion$(whoami)", "bastion host", "a\"b", "a'b"] {
+            let mut config = valid_config();
+            config.bastion_pattern = Some(pattern.to_string());
+            let result = validate_project_config(&config);
+            assert!(!result.valid, "expected invalid for pattern: {}", pattern);
+            assert!(result.errors.iter().any(|e| e.contains("bastionPattern")));
+        }
+    }
+
+    #[test]
+    fn test_bastion_pattern_too_long() {
+        let mut config = valid_config();
+        config.bastion_pattern = Some("a".repeat(257));
+        let result = validate_project_config(&config);
+        assert!(!result.valid);
+        assert!(result.errors.iter().any(|e| e.contains("256")));
     }
 }

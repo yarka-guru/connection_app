@@ -30,6 +30,7 @@ let projectRdsType = $state('cluster')
 let projectEngine = $state('postgres')
 let projectRdsPattern = $state('')
 let projectProfileFilter = $state('')
+let projectBastionPattern = $state('')
 let projectDefaultPort = $state('5432')
 let projectPortMappings = $state([])
 
@@ -180,6 +181,7 @@ function openAddProject() {
   projectEngine = 'postgres'
   projectRdsPattern = ''
   projectProfileFilter = ''
+  projectBastionPattern = ''
   projectDefaultPort = '5432'
   projectPortMappings = [{ suffix: '', port: '' }]
 }
@@ -195,6 +197,7 @@ function openEditProject(key, config) {
   projectEngine = config.engine || 'postgres'
   projectRdsPattern = config.rdsPattern
   projectProfileFilter = config.profileFilter || ''
+  projectBastionPattern = config.bastionPattern || ''
   projectDefaultPort = config.defaultPort
   const mappings = Object.entries(config.envPortMapping || {}).map(([suffix, port]) => ({ suffix, port }))
   projectPortMappings = mappings.length > 0 ? mappings : [{ suffix: '', port: '' }]
@@ -238,6 +241,7 @@ async function saveProject() {
     engine: projectEngine,
     rdsPattern: projectRdsPattern.trim(),
     profileFilter: projectProfileFilter.trim() || null,
+    bastionPattern: projectBastionPattern.trim() || null,
     envPortMapping,
     defaultPort: projectDefaultPort.trim(),
   }
@@ -639,6 +643,12 @@ onDestroy(() => {
               <label for="project-default-port">Default Port</label>
               <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder="5432" />
             </div>
+          </div>
+
+          <div class="form-group">
+            <label for="project-bastion-pattern">Bastion Name Pattern</label>
+            <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
+            <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
           </div>
 
           <div class="port-mappings">

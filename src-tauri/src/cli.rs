@@ -185,7 +185,7 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     // Find bastion instance
     eprintln!("  \u{1F50D} Finding bastion instance...");
-    let instance_id = operations::find_bastion_instance(&clients)
+    let instance_id = operations::find_bastion_instance(&clients, project_config.bastion_pattern())
         .await
         .map_err(|e| format!("Failed to find bastion: {}", e))?;
 

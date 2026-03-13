@@ -125,15 +125,18 @@ pub async fn get_connection_credentials(
     })
 }
 
-/// Find a running bastion instance tagged with Name=*bastion*.
-pub async fn find_bastion_instance(clients: &AwsClients) -> Result<String, AppError> {
+/// Find a running bastion instance tagged with the given Name pattern.
+pub async fn find_bastion_instance(
+    clients: &AwsClients,
+    bastion_pattern: &str,
+) -> Result<String, AppError> {
     let response = clients
         .ec2
         .describe_instances()
         .filters(
             aws_sdk_ec2::types::Filter::builder()
                 .name("tag:Name")
-                .values("*bastion*")
+                .values(bastion_pattern)
                 .build(),
         )
         .filters(
@@ -154,9 +157,10 @@ pub async fn find_bastion_instance(clients: &AwsClients) -> Result<String, AppEr
         }
     }
 
-    Err(AppError::Aws(
-        "No running bastion instance found with tag Name=*bastion*.".to_string(),
-    ))
+    Err(AppError::Aws(format!(
+        "No running bastion instance found with tag Name={}.",
+        bastion_pattern
+    )))
 }
 
 /// Get the RDS endpoint (cluster or instance based on rdsType).
@@ -288,6 +292,7 @@ pub async fn terminate_bastion_instance(
 pub async fn wait_for_new_bastion_instance(
     clients: &AwsClients,
     old_instance_id: &str,
+    bastion_pattern: &str,
     max_retries: u32,
     retry_delay_ms: u64,
 ) -> Result<Option<String>, AppError> {
@@ -298,7 +303,7 @@ pub async fn wait_for_new_bastion_instance(
             .filters(
                 aws_sdk_ec2::types::Filter::builder()
                     .name("tag:Name")
-                    .values("*bastion*")
+                    .values(bastion_pattern)
                     .build(),
             )
             .filters(

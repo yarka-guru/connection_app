@@ -181,7 +181,8 @@ impl TunnelManager {
 
         // Find bastion
         self.emit_status("Finding bastion instance...", Some(&connection_id));
-        let instance_id = operations::find_bastion_instance(&clients).await?;
+        let instance_id =
+            operations::find_bastion_instance(&clients, project_config.bastion_pattern()).await?;
 
         if !INSTANCE_ID_PATTERN.is_match(&instance_id) {
             return Err(AppError::Aws(format!(
@@ -412,6 +413,7 @@ async fn run_tunnel_lifecycle(
             local_port,
             rds_port,
             &project_config.region,
+            project_config.bastion_pattern(),
             &cancel_token,
             ready_tx.take(),
         )
@@ -466,7 +468,9 @@ async fn run_tunnel_lifecycle(
                     "Finding bastion instance...",
                     Some(connection_id),
                 );
-                current_instance_id = operations::find_bastion_instance(clients).await?;
+                current_instance_id =
+                    operations::find_bastion_instance(clients, project_config.bastion_pattern())
+                        .await?;
 
                 emit_status_event(
                     app_handle,
@@ -531,7 +535,10 @@ async fn run_tunnel_lifecycle(
                 }
 
                 // Re-discover infrastructure (best effort)
-                if let Ok(id) = operations::find_bastion_instance(clients).await {
+                if let Ok(id) =
+                    operations::find_bastion_instance(clients, project_config.bastion_pattern())
+                        .await
+                {
                     current_instance_id = id;
                 }
                 if let Ok(Some(ep)) = operations::get_rds_endpoint(
@@ -559,6 +566,7 @@ async fn start_port_forwarding_with_retry(
     local_port: &str,
     remote_port: &str,
     region: &str,
+    bastion_pattern: &str,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
@@ -588,6 +596,7 @@ async fn start_port_forwarding_with_retry(
                 let new_id = operations::wait_for_new_bastion_instance(
                     clients,
                     &current_instance_id,
+                    bastion_pattern,
                     BASTION_WAIT_MAX_RETRIES,
                     BASTION_WAIT_RETRY_DELAY_MS,
                 )

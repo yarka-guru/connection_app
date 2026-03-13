@@ -1,6 +1,6 @@
 {
   "name": "rds_ssm_connect",
-  "version": "2.1.16",
+  "version": "2.1.17",
   "description": "Secure RDS connections through AWS SSM port forwarding",
   "license": "MIT",
   "author": "Iaroslav Pyrogov",
