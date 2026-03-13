@@ -292,7 +292,7 @@ pub async fn start_native_port_forwarding(
             // SSM-level keepalive: send a no-op acknowledge through the SSM relay
             // to reset the session idle timer (default 20 min). WebSocket pings
             // are transport-level and may not count as session activity.
-            if tick_count % SSM_KEEPALIVE_TICKS == 0 {
+            if tick_count.is_multiple_of(SSM_KEEPALIVE_TICKS) {
                 let _ = ws
                     .send(Message::Binary(ssm_keepalive_bytes.clone().into()))
                     .await;
