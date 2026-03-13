@@ -46,7 +46,7 @@ jobs:
           echo "ARM64_DEB_SHA=$(sha256sum RDS.SSM.Connect_${VERSION}_arm64.deb | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Checkout Homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: yarka-guru/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
