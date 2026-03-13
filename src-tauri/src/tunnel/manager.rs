@@ -33,13 +33,26 @@ static HOSTNAME_PATTERN: std::sync::LazyLock<Regex> =
 pub struct ConnectionInfo {
     pub host: String,
     pub port: String,
-    pub username: String,
-    pub password: String,
-    pub database: String,
-    #[serde(rename = "rdsEndpoint")]
+    #[serde(rename = "connectionType", default)]
+    pub connection_type: String,
+    // RDS-specific fields (None for service connections)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(rename = "rdsEndpoint", skip_serializing_if = "Option::is_none")]
     pub rds_endpoint: Option<String>,
-    #[serde(rename = "instanceId")]
+    #[serde(rename = "instanceId", skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
+    // Service-specific fields
+    #[serde(rename = "serviceType", skip_serializing_if = "Option::is_none")]
+    pub service_type: Option<String>,
+    #[serde(rename = "remoteHost", skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
+    #[serde(rename = "targetType", skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,7 +118,7 @@ impl TunnelManager {
             .collect()
     }
 
-    /// Connect to RDS through bastion.
+    /// Connect to a project (dispatches to RDS or service based on connectionType).
     pub async fn connect(
         &self,
         project_key: &str,
@@ -170,63 +183,10 @@ impl TunnelManager {
         // Create AWS clients
         let clients = create_aws_clients(profile, &project_config.region).await;
 
-        // Get credentials
-        self.emit_status("Getting credentials...", Some(&connection_id));
-        let credentials = operations::get_connection_credentials(
-            &clients,
-            &project_config.secret_prefix,
-            &project_config.database,
-        )
-        .await?;
-
-        // Find bastion
-        self.emit_status("Finding bastion instance...", Some(&connection_id));
-        let instance_id =
-            operations::find_bastion_instance(&clients, project_config.bastion_pattern()).await?;
-
-        if !INSTANCE_ID_PATTERN.is_match(&instance_id) {
-            return Err(AppError::Aws(format!(
-                "Invalid instance ID format: {}",
-                instance_id
-            )));
-        }
-
-        // Get RDS endpoint
-        self.emit_status("Getting RDS endpoint...", Some(&connection_id));
-        let rds_endpoint = operations::get_rds_endpoint(
-            &clients,
-            &project_config.rds_type,
-            &project_config.rds_pattern,
-        )
-        .await?
-        .ok_or_else(|| AppError::Aws("Failed to find the RDS endpoint.".to_string()))?;
-
-        if !HOSTNAME_PATTERN.is_match(&rds_endpoint) {
-            return Err(AppError::Aws(format!(
-                "Invalid RDS endpoint format: {}",
-                rds_endpoint
-            )));
-        }
-
-        // Get RDS port
-        self.emit_status("Getting RDS port...", Some(&connection_id));
-        let fallback_port = get_default_port_for_engine(project_config);
-        let rds_port = operations::get_rds_port(
-            &clients,
-            &project_config.rds_type,
-            &project_config.rds_pattern,
-            &fallback_port,
-        )
-        .await?;
-
-        let connection_info = ConnectionInfo {
-            host: "localhost".to_string(),
-            port: port_to_use.clone(),
-            username: credentials.username.clone(),
-            password: credentials.password.clone(),
-            database: project_config.database.clone(),
-            rds_endpoint: Some(rds_endpoint.clone()),
-            instance_id: Some(instance_id.clone()),
+        // Dispatch based on connection type
+        let (connection_info, tunnel_target) = match project_config.connection_type.as_str() {
+            "service" => self.resolve_service_target(&clients, &connection_id, project_config, &port_to_use).await?,
+            _ => self.resolve_rds_target(&clients, &connection_id, project_config, &port_to_use).await?,
         };
 
         let cancel_token = CancellationToken::new();
@@ -260,11 +220,9 @@ impl TunnelManager {
                 &app_handle,
                 &clients,
                 &conn_id,
-                &instance_id,
-                &rds_endpoint,
                 &port_to_use,
-                &rds_port,
                 &project_config,
+                tunnel_target,
                 cancel_token,
                 Some(ready_tx),
             )
@@ -309,18 +267,13 @@ impl TunnelManager {
 
         // Wait for the tunnel to actually be ready (TCP listener bound)
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), ready_rx).await {
-            Ok(Ok(Ok(()))) => {
-                // Tunnel is ready
-                Ok((connection_id, connection_info))
-            }
+            Ok(Ok(Ok(()))) => Ok((connection_id, connection_info)),
             Ok(Ok(Err(e))) => {
-                // Tunnel failed to start
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
                 Err(AppError::Tunnel(e))
             }
             Ok(Err(_)) => {
-                // Channel dropped — tunnel task failed before signaling
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
                 Err(AppError::Tunnel(
@@ -328,7 +281,6 @@ impl TunnelManager {
                 ))
             }
             Err(_) => {
-                // Timeout
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
                 Err(AppError::Tunnel(
@@ -336,6 +288,182 @@ impl TunnelManager {
                 ))
             }
         }
+    }
+
+    /// Resolve RDS target: get credentials, find bastion, get RDS endpoint.
+    async fn resolve_rds_target(
+        &self,
+        clients: &AwsClients,
+        connection_id: &str,
+        project_config: &ProjectConfig,
+        local_port: &str,
+    ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
+        self.emit_status("Getting credentials...", Some(connection_id));
+        let credentials = operations::get_connection_credentials(
+            clients,
+            &project_config.secret_prefix,
+            &project_config.database,
+        )
+        .await?;
+
+        self.emit_status("Finding bastion instance...", Some(connection_id));
+        let instance_id =
+            operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+
+        if !INSTANCE_ID_PATTERN.is_match(&instance_id) {
+            return Err(AppError::Aws(format!(
+                "Invalid instance ID format: {}",
+                instance_id
+            )));
+        }
+
+        self.emit_status("Getting RDS endpoint...", Some(connection_id));
+        let rds_endpoint = operations::get_rds_endpoint(
+            clients,
+            &project_config.rds_type,
+            &project_config.rds_pattern,
+        )
+        .await?
+        .ok_or_else(|| AppError::Aws("Failed to find the RDS endpoint.".to_string()))?;
+
+        if !HOSTNAME_PATTERN.is_match(&rds_endpoint) {
+            return Err(AppError::Aws(format!(
+                "Invalid RDS endpoint format: {}",
+                rds_endpoint
+            )));
+        }
+
+        self.emit_status("Getting RDS port...", Some(connection_id));
+        let fallback_port = get_default_port_for_engine(project_config);
+        let rds_port = operations::get_rds_port(
+            clients,
+            &project_config.rds_type,
+            &project_config.rds_pattern,
+            &fallback_port,
+        )
+        .await?;
+
+        let connection_info = ConnectionInfo {
+            host: "localhost".to_string(),
+            port: local_port.to_string(),
+            connection_type: "rds".to_string(),
+            username: Some(credentials.username),
+            password: Some(credentials.password),
+            database: Some(project_config.database.clone()),
+            rds_endpoint: Some(rds_endpoint.clone()),
+            instance_id: Some(instance_id.clone()),
+            service_type: None,
+            remote_host: None,
+            target_type: None,
+        };
+
+        let target = TunnelTarget::RemoteHost {
+            bastion_id: instance_id,
+            remote_host: rds_endpoint,
+            remote_port: rds_port,
+        };
+
+        Ok((connection_info, target))
+    }
+
+    /// Resolve service target: find EC2/ECS target, optionally find bastion.
+    async fn resolve_service_target(
+        &self,
+        clients: &AwsClients,
+        connection_id: &str,
+        project_config: &ProjectConfig,
+        local_port: &str,
+    ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
+        let target_type = project_config
+            .target_type
+            .as_deref()
+            .ok_or_else(|| AppError::Config("Missing targetType for service connection".to_string()))?;
+        let remote_port = project_config
+            .remote_port
+            .ok_or_else(|| AppError::Config("Missing remotePort for service connection".to_string()))?;
+        let target_pattern = project_config
+            .target_pattern
+            .as_deref()
+            .unwrap_or("*");
+
+        let (tunnel_target, instance_id, remote_host) = match target_type {
+            "ec2-direct" => {
+                self.emit_status("Finding target EC2 instance...", Some(connection_id));
+                let (id, _ip) = operations::find_ec2_instance(clients, target_pattern).await?;
+
+                // Verify SSM agent is online
+                self.emit_status("Checking SSM agent...", Some(connection_id));
+                let ready = operations::wait_for_ssm_agent_ready(clients, &id, 3, 3000, 0).await?;
+                if !ready {
+                    return Err(AppError::Aws(format!(
+                        "SSM agent is not online on instance {}. Ensure SSM agent is installed and running.",
+                        id
+                    )));
+                }
+
+                let target = TunnelTarget::DirectInstance {
+                    instance_id: id.clone(),
+                    remote_port: remote_port.to_string(),
+                };
+                (target, Some(id), None)
+            }
+            "ec2-bastion" => {
+                self.emit_status("Finding bastion instance...", Some(connection_id));
+                let bastion_id =
+                    operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+
+                self.emit_status("Finding target EC2 instance...", Some(connection_id));
+                let (_id, ip) = operations::find_ec2_instance(clients, target_pattern).await?;
+
+                let target = TunnelTarget::RemoteHost {
+                    bastion_id: bastion_id.clone(),
+                    remote_host: ip.clone(),
+                    remote_port: remote_port.to_string(),
+                };
+                (target, Some(bastion_id), Some(ip))
+            }
+            "ecs-bastion" => {
+                let cluster = project_config
+                    .ecs_cluster
+                    .as_deref()
+                    .ok_or_else(|| AppError::Config("Missing ecsCluster for ecs-bastion connection".to_string()))?;
+                let service = project_config
+                    .ecs_service
+                    .as_deref()
+                    .ok_or_else(|| AppError::Config("Missing ecsService for ecs-bastion connection".to_string()))?;
+
+                self.emit_status("Finding bastion instance...", Some(connection_id));
+                let bastion_id =
+                    operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+
+                self.emit_status("Finding ECS task IP...", Some(connection_id));
+                let task_ip = operations::find_ecs_task_ip(clients, cluster, service).await?;
+
+                let target = TunnelTarget::RemoteHost {
+                    bastion_id: bastion_id.clone(),
+                    remote_host: task_ip.clone(),
+                    remote_port: remote_port.to_string(),
+                };
+                (target, Some(bastion_id), Some(task_ip))
+            }
+            _ => return Err(AppError::Config(format!("Unknown targetType: {}", target_type))),
+        };
+
+        let connection_info = ConnectionInfo {
+            host: "localhost".to_string(),
+            port: local_port.to_string(),
+            connection_type: "service".to_string(),
+            username: None,
+            password: None,
+            database: None,
+            rds_endpoint: None,
+            instance_id,
+            service_type: project_config.service_type.clone(),
+            remote_host,
+            target_type: Some(target_type.to_string()),
+        };
+
+        Ok((connection_info, tunnel_target))
     }
 
     /// Disconnect a specific connection.
@@ -378,22 +506,34 @@ pub struct ActiveConnectionInfo {
     pub status: String,
 }
 
+/// Describes what the tunnel connects to.
+#[derive(Clone)]
+enum TunnelTarget {
+    /// Port forwarding through a bastion to a remote host (RDS, EC2 via bastion, ECS via bastion).
+    RemoteHost {
+        bastion_id: String,
+        remote_host: String,
+        remote_port: String,
+    },
+    /// Direct port forwarding to an EC2 instance (SSM agent on the instance itself).
+    DirectInstance {
+        instance_id: String,
+        remote_port: String,
+    },
+}
+
 /// Run the tunnel lifecycle: start port forwarding, keepalive, auto-reconnect.
 #[allow(clippy::too_many_arguments)]
 async fn run_tunnel_lifecycle(
     app_handle: &AppHandle,
     clients: &AwsClients,
     connection_id: &str,
-    initial_instance_id: &str,
-    initial_rds_endpoint: &str,
     local_port: &str,
-    rds_port: &str,
     project_config: &ProjectConfig,
+    mut target: TunnelTarget,
     cancel_token: CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
-    let mut current_instance_id = initial_instance_id.to_string();
-    let mut current_rds_endpoint = initial_rds_endpoint.to_string();
     let mut reconnect_count: u32 = 0;
     let mut ready_tx = ready_tx;
 
@@ -402,17 +542,10 @@ async fn run_tunnel_lifecycle(
             break;
         }
 
-        // Start port forwarding (pass ready_tx only on first attempt)
-        // Note: WebSocket-level pings (30s interval in native.rs) handle keepalive.
-        // The old TCP-connect keepalive was counterproductive — it created full
-        // connect/disconnect cycles on the remote port every 4 minutes.
         let result = start_port_forwarding_with_retry(
             clients,
-            &current_instance_id,
-            &current_rds_endpoint,
             local_port,
-            rds_port,
-            &project_config.region,
+            &target,
             project_config.bastion_pattern(),
             &cancel_token,
             ready_tx.take(),
@@ -423,88 +556,31 @@ async fn run_tunnel_lifecycle(
             break;
         }
 
+        // Handle reconnect
         match result {
             Ok(()) => {
-                // Session ended cleanly (unexpected disconnect)
                 reconnect_count += 1;
                 if reconnect_count > AUTO_RECONNECT_MAX_RETRIES {
                     return Err(AppError::Tunnel(
                         "Maximum auto-reconnection attempts reached.".to_string(),
                     ));
                 }
-
                 emit_status_event(
                     app_handle,
                     &format!("Session ended. Reconnecting... ({})", reconnect_count),
                     Some(connection_id),
                 );
-
                 tokio::time::sleep(tokio::time::Duration::from_millis(AUTO_RECONNECT_DELAY_MS))
                     .await;
-
-                if cancel_token.is_cancelled() {
-                    break;
-                }
-
-                // Verify credentials
-                emit_status_event(
-                    app_handle,
-                    "Checking credentials...",
-                    Some(connection_id),
-                );
-                let cred_check = operations::check_credentials_valid(clients).await;
-                if !cred_check.valid {
-                    emit_status_event(
-                        app_handle,
-                        "AWS credentials expired. Please re-authenticate and reconnect.",
-                        Some(connection_id),
-                    );
-                    break;
-                }
-
-                // Re-discover infrastructure
-                emit_status_event(
-                    app_handle,
-                    "Finding bastion instance...",
-                    Some(connection_id),
-                );
-                current_instance_id =
-                    operations::find_bastion_instance(clients, project_config.bastion_pattern())
-                        .await?;
-
-                emit_status_event(
-                    app_handle,
-                    "Getting RDS endpoint...",
-                    Some(connection_id),
-                );
-                current_rds_endpoint = operations::get_rds_endpoint(
-                    clients,
-                    &project_config.rds_type,
-                    &project_config.rds_pattern,
-                )
-                .await?
-                .ok_or_else(|| {
-                    AppError::Aws(
-                        "Failed to find the RDS endpoint during reconnection.".to_string(),
-                    )
-                })?;
-
-                emit_status_event(
-                    app_handle,
-                    "Reconnecting port forwarding...",
-                    Some(connection_id),
-                );
             }
             Err(e) => {
                 if cancel_token.is_cancelled() {
                     break;
                 }
-
                 reconnect_count += 1;
                 if reconnect_count > AUTO_RECONNECT_MAX_RETRIES {
                     return Err(e);
                 }
-
                 emit_status_event(
                     app_handle,
                     &format!(
@@ -513,75 +589,126 @@ async fn run_tunnel_lifecycle(
                     ),
                     Some(connection_id),
                 );
-
-                tokio::time::sleep(tokio::time::Duration::from_millis(
-                    AUTO_RECONNECT_DELAY_MS * 2,
-                ))
-                .await;
-
-                if cancel_token.is_cancelled() {
-                    break;
-                }
-
-                // Verify credentials
-                let cred_check = operations::check_credentials_valid(clients).await;
-                if !cred_check.valid {
-                    emit_status_event(
-                        app_handle,
-                        "AWS credentials expired. Please re-authenticate and reconnect.",
-                        Some(connection_id),
-                    );
-                    break;
-                }
-
-                // Re-discover infrastructure (best effort)
-                if let Ok(id) =
-                    operations::find_bastion_instance(clients, project_config.bastion_pattern())
-                        .await
-                {
-                    current_instance_id = id;
-                }
-                if let Ok(Some(ep)) = operations::get_rds_endpoint(
-                    clients,
-                    &project_config.rds_type,
-                    &project_config.rds_pattern,
-                )
-                .await
-                {
-                    current_rds_endpoint = ep;
-                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(AUTO_RECONNECT_DELAY_MS * 2))
+                    .await;
             }
         }
+
+        if cancel_token.is_cancelled() {
+            break;
+        }
+
+        // Verify credentials
+        emit_status_event(app_handle, "Checking credentials...", Some(connection_id));
+        let cred_check = operations::check_credentials_valid(clients).await;
+        if !cred_check.valid {
+            emit_status_event(
+                app_handle,
+                "AWS credentials expired. Please re-authenticate and reconnect.",
+                Some(connection_id),
+            );
+            break;
+        }
+
+        // Re-discover infrastructure based on target type
+        target = rediscover_target(app_handle, clients, connection_id, project_config, &target).await?;
+
+        emit_status_event(
+            app_handle,
+            "Reconnecting port forwarding...",
+            Some(connection_id),
+        );
     }
 
     Ok(())
 }
 
+/// Re-discover infrastructure for reconnection.
+async fn rediscover_target(
+    app_handle: &AppHandle,
+    clients: &AwsClients,
+    connection_id: &str,
+    project_config: &ProjectConfig,
+    current: &TunnelTarget,
+) -> Result<TunnelTarget, AppError> {
+    match current {
+        TunnelTarget::RemoteHost { remote_port, .. } => {
+            // Re-find bastion
+            emit_status_event(app_handle, "Finding bastion instance...", Some(connection_id));
+            let bastion_id =
+                operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+
+            // Re-discover remote host based on connection type
+            let remote_host = if project_config.connection_type == "rds" {
+                emit_status_event(app_handle, "Getting RDS endpoint...", Some(connection_id));
+                operations::get_rds_endpoint(
+                    clients,
+                    &project_config.rds_type,
+                    &project_config.rds_pattern,
+                )
+                .await?
+                .ok_or_else(|| {
+                    AppError::Aws("Failed to find the RDS endpoint during reconnection.".to_string())
+                })?
+            } else if project_config.target_type.as_deref() == Some("ecs-bastion") {
+                emit_status_event(app_handle, "Finding ECS task IP...", Some(connection_id));
+                operations::find_ecs_task_ip(
+                    clients,
+                    project_config.ecs_cluster.as_deref().unwrap_or(""),
+                    project_config.ecs_service.as_deref().unwrap_or(""),
+                )
+                .await?
+            } else {
+                // ec2-bastion: re-find the EC2 instance IP
+                emit_status_event(app_handle, "Finding target instance...", Some(connection_id));
+                let (_id, ip) = operations::find_ec2_instance(
+                    clients,
+                    project_config.target_pattern.as_deref().unwrap_or("*"),
+                )
+                .await?;
+                ip
+            };
+
+            Ok(TunnelTarget::RemoteHost {
+                bastion_id,
+                remote_host,
+                remote_port: remote_port.clone(),
+            })
+        }
+        TunnelTarget::DirectInstance { remote_port, .. } => {
+            // Re-find the direct instance
+            emit_status_event(app_handle, "Finding target instance...", Some(connection_id));
+            let (instance_id, _ip) = operations::find_ec2_instance(
+                clients,
+                project_config.target_pattern.as_deref().unwrap_or("*"),
+            )
+            .await?;
+            Ok(TunnelTarget::DirectInstance {
+                instance_id,
+                remote_port: remote_port.clone(),
+            })
+        }
+    }
+}
+
 /// Start port forwarding with TargetNotConnected retry.
-#[allow(clippy::too_many_arguments)]
 async fn start_port_forwarding_with_retry(
     clients: &AwsClients,
-    instance_id: &str,
-    rds_endpoint: &str,
     local_port: &str,
-    remote_port: &str,
-    region: &str,
+    target: &TunnelTarget,
     bastion_pattern: &str,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
-    let mut current_instance_id = instance_id.to_string();
+    let mut current_target = target.clone();
     let mut retry_count: u32 = 0;
     let mut ready_tx = ready_tx;
 
     loop {
         let result = execute_port_forwarding(
             clients,
-            &current_instance_id,
-            rds_endpoint,
             local_port,
-            remote_port,
-            region,
+            &current_target,
             cancel_token,
             ready_tx.take(),
         )
@@ -590,24 +717,31 @@ async fn start_port_forwarding_with_retry(
         match result {
             Ok(()) => return Ok(()),
             Err(PortForwardError::TargetNotConnected) if retry_count < PORT_FORWARDING_MAX_RETRIES => {
-                // TargetNotConnected: terminate bastion, wait for ASG replacement
-                let _ = operations::terminate_bastion_instance(clients, &current_instance_id).await;
+                // TargetNotConnected: terminate bastion (if applicable), wait for replacement
+                if let TunnelTarget::RemoteHost { ref bastion_id, ref remote_host, ref remote_port } = current_target {
+                    let _ = operations::terminate_bastion_instance(clients, bastion_id).await;
 
-                let new_id = operations::wait_for_new_bastion_instance(
-                    clients,
-                    &current_instance_id,
-                    bastion_pattern,
-                    BASTION_WAIT_MAX_RETRIES,
-                    BASTION_WAIT_RETRY_DELAY_MS,
-                )
-                .await?
-                .ok_or_else(|| {
-                    AppError::Tunnel(
-                        "Failed to find new bastion instance after waiting.".to_string(),
+                    let new_id = operations::wait_for_new_bastion_instance(
+                        clients,
+                        bastion_id,
+                        bastion_pattern,
+                        BASTION_WAIT_MAX_RETRIES,
+                        BASTION_WAIT_RETRY_DELAY_MS,
                     )
-                })?;
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Tunnel(
+                            "Failed to find new bastion instance after waiting.".to_string(),
+                        )
+                    })?;
 
-                current_instance_id = new_id;
+                    current_target = TunnelTarget::RemoteHost {
+                        bastion_id: new_id,
+                        remote_host: remote_host.clone(),
+                        remote_port: remote_port.clone(),
+                    };
+                }
+
                 retry_count += 1;
             }
             Err(PortForwardError::TargetNotConnected) => {
@@ -621,33 +755,36 @@ async fn start_port_forwarding_with_retry(
     }
 }
 
+#[derive(Clone)]
 enum PortForwardError {
     TargetNotConnected,
     Cancelled,
     Failed(String),
 }
 
-/// Execute a single port forwarding session via native WebSocket (no plugin binary).
-#[allow(clippy::too_many_arguments)]
+/// Execute a single port forwarding session via native WebSocket.
 async fn execute_port_forwarding(
     clients: &AwsClients,
-    instance_id: &str,
-    rds_endpoint: &str,
     local_port: &str,
-    remote_port: &str,
-    _region: &str,
+    target: &TunnelTarget,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), PortForwardError> {
-    // Start SSM session via AWS API
-    let session_response = operations::start_session(
-        clients,
-        instance_id,
-        rds_endpoint,
-        remote_port,
-        local_port,
-    )
-    .await
+    // Start SSM session based on target type
+    let session_response = match target {
+        TunnelTarget::RemoteHost { bastion_id, remote_host, remote_port } => {
+            operations::start_remote_port_forwarding_session(
+                clients, bastion_id, remote_host, remote_port, local_port,
+            )
+            .await
+        }
+        TunnelTarget::DirectInstance { instance_id, remote_port } => {
+            operations::start_direct_port_forwarding_session(
+                clients, instance_id, remote_port, local_port,
+            )
+            .await
+        }
+    }
     .map_err(|e| PortForwardError::Failed(e.to_string()))?;
 
     let stream_url = session_response

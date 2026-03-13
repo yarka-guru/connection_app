@@ -1,6 +1,6 @@
 [package]
 name = "rds-ssm-connect"
-version = "2.1.18"
+version = "3.0.0"
 description = "Secure RDS connections through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
@@ -46,6 +46,7 @@ aws-sdk-ec2 = "1"
 aws-sdk-rds = "1"
 aws-sdk-ssm = "1"
 aws-sdk-secretsmanager = "1"
+aws-sdk-ecs = "1"
 aws-sdk-ssooidc = "1"
 dirs = "5"
 sha1 = "0.10"

@@ -387,6 +387,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-ecs"
+version = "1.115.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d59319b3b87d8e4e2a77c9cf7d3c41eb9594209363a82ce994963ee0de20ba3c"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-rds"
 version = "1.127.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3877,10 +3901,11 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rds-ssm-connect"
-version = "2.1.18"
+version = "3.0.0"
 dependencies = [
  "aws-config",
  "aws-sdk-ec2",
+ "aws-sdk-ecs",
  "aws-sdk-rds",
  "aws-sdk-secretsmanager",
  "aws-sdk-ssm",

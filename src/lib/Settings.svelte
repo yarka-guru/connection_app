@@ -34,6 +34,15 @@ let projectBastionPattern = $state('')
 let projectDefaultPort = $state('5432')
 let projectPortMappings = $state([])
 
+// Service-specific state
+let projectConnectionType = $state('rds')
+let projectServiceType = $state('vnc')
+let projectRemotePort = $state('')
+let projectTargetType = $state('ec2-direct')
+let projectTargetPattern = $state('')
+let projectEcsCluster = $state('')
+let projectEcsService = $state('')
+
 // Delete confirmation state
 let deleteConfirmProfile = $state(null)
 let deleteConfirmProjectKey = $state(null)
@@ -184,6 +193,13 @@ function openAddProject() {
   projectBastionPattern = ''
   projectDefaultPort = '5432'
   projectPortMappings = [{ suffix: '', port: '' }]
+  projectConnectionType = 'rds'
+  projectServiceType = 'vnc'
+  projectRemotePort = ''
+  projectTargetType = 'ec2-direct'
+  projectTargetPattern = ''
+  projectEcsCluster = ''
+  projectEcsService = ''
 }
 
 function openEditProject(key, config) {
@@ -191,16 +207,23 @@ function openEditProject(key, config) {
   projectKey = key
   projectName = config.name
   projectRegion = config.region
-  projectDatabase = config.database
-  projectSecretPrefix = config.secretPrefix
-  projectRdsType = config.rdsType
+  projectDatabase = config.database || ''
+  projectSecretPrefix = config.secretPrefix || ''
+  projectRdsType = config.rdsType || 'cluster'
   projectEngine = config.engine || 'postgres'
-  projectRdsPattern = config.rdsPattern
+  projectRdsPattern = config.rdsPattern || ''
   projectProfileFilter = config.profileFilter || ''
   projectBastionPattern = config.bastionPattern || ''
   projectDefaultPort = config.defaultPort
   const mappings = Object.entries(config.envPortMapping || {}).map(([suffix, port]) => ({ suffix, port }))
   projectPortMappings = mappings.length > 0 ? mappings : [{ suffix: '', port: '' }]
+  projectConnectionType = config.connectionType || 'rds'
+  projectServiceType = config.serviceType || 'vnc'
+  projectRemotePort = config.remotePort ? String(config.remotePort) : ''
+  projectTargetType = config.targetType || 'ec2-direct'
+  projectTargetPattern = config.targetPattern || ''
+  projectEcsCluster = config.ecsCluster || ''
+  projectEcsService = config.ecsService || ''
 }
 
 function closeProjectModal() {
@@ -235,15 +258,22 @@ async function saveProject() {
   const config = {
     name: projectName.trim(),
     region: projectRegion.trim(),
-    database: projectDatabase.trim(),
-    secretPrefix: projectSecretPrefix.trim(),
-    rdsType: projectRdsType,
-    engine: projectEngine,
-    rdsPattern: projectRdsPattern.trim(),
+    connectionType: projectConnectionType,
+    database: projectConnectionType === 'rds' ? projectDatabase.trim() : '',
+    secretPrefix: projectConnectionType === 'rds' ? projectSecretPrefix.trim() : '',
+    rdsType: projectConnectionType === 'rds' ? projectRdsType : '',
+    engine: projectConnectionType === 'rds' ? projectEngine : null,
+    rdsPattern: projectConnectionType === 'rds' ? projectRdsPattern.trim() : '',
     profileFilter: projectProfileFilter.trim() || null,
     bastionPattern: projectBastionPattern.trim() || null,
     envPortMapping,
     defaultPort: projectDefaultPort.trim(),
+    serviceType: projectConnectionType === 'service' ? projectServiceType : null,
+    remotePort: projectConnectionType === 'service' && projectRemotePort.trim() ? parseInt(projectRemotePort.trim(), 10) : null,
+    targetType: projectConnectionType === 'service' ? projectTargetType : null,
+    targetPattern: projectConnectionType === 'service' && projectTargetType !== 'ecs-bastion' ? projectTargetPattern.trim() || null : null,
+    ecsCluster: projectConnectionType === 'service' && projectTargetType === 'ecs-bastion' ? projectEcsCluster.trim() || null : null,
+    ecsService: projectConnectionType === 'service' && projectTargetType === 'ecs-bastion' ? projectEcsService.trim() || null : null,
   }
 
   saving = true
@@ -414,9 +444,17 @@ onDestroy(() => {
                   {:else}
                     <div class="profile-details">
                       <span class="detail">{config.region}</span>
-                      <span class="detail">{config.rdsType}</span>
-                      <span class="detail">{config.engine || 'postgres'}</span>
-                      <span class="detail">{config.database}</span>
+                      {#if (config.connectionType || 'rds') === 'rds'}
+                        <span class="detail">{config.rdsType}</span>
+                        <span class="detail">{config.engine || 'postgres'}</span>
+                        <span class="detail">{config.database}</span>
+                      {:else}
+                        <span class="detail">{(config.serviceType || 'custom').toUpperCase()}</span>
+                        <span class="detail">{config.targetType || 'ec2-direct'}</span>
+                        {#if config.remotePort}
+                          <span class="detail">port {config.remotePort}</span>
+                        {/if}
+                      {/if}
                       <span class="detail">{Object.keys(config.envPortMapping || {}).length} port mappings</span>
                     </div>
                   {/if}
@@ -601,38 +639,110 @@ onDestroy(() => {
             </div>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label for="project-database">Database</label>
-              <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
-            </div>
-            <div class="form-group">
-              <label for="project-secret-prefix">Secret Prefix</label>
-              <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="project-rds-type">RDS Type</label>
-              <select id="project-rds-type" bind:value={projectRdsType}>
-                <option value="cluster">Cluster (Aurora)</option>
-                <option value="instance">Instance</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="project-engine">Engine</label>
-              <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
-                <option value="postgres">PostgreSQL</option>
-                <option value="mysql">MySQL</option>
-              </select>
-            </div>
-          </div>
-
           <div class="form-group">
-            <label for="project-rds-pattern">RDS Pattern</label>
-            <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
+            <label for="project-connection-type">Connection Type</label>
+            <div class="type-toggle">
+              <button
+                type="button"
+                class="type-btn"
+                class:active={projectConnectionType === 'rds'}
+                onclick={() => projectConnectionType = 'rds'}
+              >RDS Database</button>
+              <button
+                type="button"
+                class="type-btn"
+                class:active={projectConnectionType === 'service'}
+                onclick={() => projectConnectionType = 'service'}
+              >VNC/RDP Service</button>
+            </div>
           </div>
+
+          {#if projectConnectionType === 'rds'}
+            <div class="form-row">
+              <div class="form-group">
+                <label for="project-database">Database</label>
+                <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
+              </div>
+              <div class="form-group">
+                <label for="project-secret-prefix">Secret Prefix</label>
+                <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="project-rds-type">RDS Type</label>
+                <select id="project-rds-type" bind:value={projectRdsType}>
+                  <option value="cluster">Cluster (Aurora)</option>
+                  <option value="instance">Instance</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="project-engine">Engine</label>
+                <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
+                  <option value="postgres">PostgreSQL</option>
+                  <option value="mysql">MySQL</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="project-rds-pattern">RDS Pattern</label>
+              <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
+            </div>
+          {:else}
+            <div class="form-row">
+              <div class="form-group">
+                <label for="project-service-type">Service Type</label>
+                <select id="project-service-type" bind:value={projectServiceType}>
+                  <option value="vnc">VNC</option>
+                  <option value="rdp">RDP</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="project-remote-port">Remote Port</label>
+                <input id="project-remote-port" type="text" bind:value={projectRemotePort} placeholder={projectServiceType === 'rdp' ? '3389' : '5900'} />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="project-target-type">Target Type</label>
+              <select id="project-target-type" bind:value={projectTargetType}>
+                <option value="ec2-direct">EC2 Direct (SSM Agent)</option>
+                <option value="ec2-bastion">EC2 via Bastion</option>
+                <option value="ecs-bastion">ECS via Bastion</option>
+              </select>
+              <span class="field-hint">
+                {#if projectTargetType === 'ec2-direct'}
+                  Connects directly to EC2 instance (requires SSM Agent)
+                {:else if projectTargetType === 'ec2-bastion'}
+                  Tunnels through bastion to EC2 instance private IP
+                {:else}
+                  Tunnels through bastion to ECS task private IP
+                {/if}
+              </span>
+            </div>
+
+            {#if projectTargetType === 'ec2-direct' || projectTargetType === 'ec2-bastion'}
+              <div class="form-group">
+                <label for="project-target-pattern">EC2 Name Pattern</label>
+                <input id="project-target-pattern" type="text" bind:value={projectTargetPattern} placeholder="*my-server*" />
+                <span class="field-hint">EC2 Name tag filter (supports * and ? wildcards)</span>
+              </div>
+            {:else}
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="project-ecs-cluster">ECS Cluster</label>
+                  <input id="project-ecs-cluster" type="text" bind:value={projectEcsCluster} placeholder="my-cluster" />
+                </div>
+                <div class="form-group">
+                  <label for="project-ecs-service">ECS Service</label>
+                  <input id="project-ecs-service" type="text" bind:value={projectEcsService} placeholder="my-service" />
+                </div>
+              </div>
+            {/if}
+          {/if}
 
           <div class="form-row">
             <div class="form-group">
@@ -641,15 +751,17 @@ onDestroy(() => {
             </div>
             <div class="form-group">
               <label for="project-default-port">Default Port</label>
-              <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder="5432" />
+              <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder={projectConnectionType === 'rds' ? '5432' : '5900'} />
             </div>
           </div>
 
-          <div class="form-group">
-            <label for="project-bastion-pattern">Bastion Name Pattern</label>
-            <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
-            <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
-          </div>
+          {#if projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct'}
+            <div class="form-group">
+              <label for="project-bastion-pattern">Bastion Name Pattern</label>
+              <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
+              <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
+            </div>
+          {/if}
 
           <div class="port-mappings">
             <div class="port-mappings-header">
@@ -1129,6 +1241,39 @@ onDestroy(() => {
     font-size: 0.7rem;
     color: var(--text-inactive);
     margin-top: 4px;
+  }
+
+  .type-toggle {
+    display: flex;
+    gap: 4px;
+    background: rgba(var(--glass-rgb), 0.03);
+    padding: 3px;
+    border-radius: 8px;
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
+  }
+
+  .type-btn {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+  }
+
+  .type-btn:hover {
+    color: var(--text-hover);
+    background: var(--glass-bg-hover);
+  }
+
+  .type-btn.active {
+    background: rgba(var(--accent-primary-rgb), 0.15);
+    color: var(--accent-primary-light);
+    font-weight: 600;
   }
 
   .form-row {

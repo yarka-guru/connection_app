@@ -1,6 +1,7 @@
 use crate::config::aws_config::parse_aws_config;
 
 use aws_sdk_ec2 as ec2;
+use aws_sdk_ecs as ecs;
 use aws_sdk_rds as rds;
 use aws_sdk_secretsmanager as secretsmanager;
 use aws_sdk_ssm as ssm;
@@ -10,6 +11,7 @@ use aws_sdk_sts as sts;
 pub struct AwsClients {
     pub sts: sts::Client,
     pub ec2: ec2::Client,
+    pub ecs: ecs::Client,
     pub rds: rds::Client,
     pub ssm: ssm::Client,
     pub secrets_manager: secretsmanager::Client,
@@ -62,6 +64,7 @@ pub async fn create_aws_clients(profile: &str, region: &str) -> AwsClients {
     AwsClients {
         sts: sts::Client::new(&config),
         ec2: ec2::Client::new(&config),
+        ecs: ecs::Client::new(&config),
         rds: rds::Client::new(&config),
         ssm: ssm::Client::new(&config),
         secrets_manager: secretsmanager::Client::new(&config),

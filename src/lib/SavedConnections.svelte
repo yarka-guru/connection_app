@@ -7,12 +7,22 @@ const {
   activeConnections = [],
   projects = [],
   connectingId = null,
+  activeTab = 'rds',
   onConnect,
   onDisconnect,
   onDelete,
   onUpdate,
   onReorder,
 } = $props()
+
+// Filter saved connections by active tab
+const filteredConnections = $derived(
+  savedConnections.filter((c) => {
+    const project = projects.find((p) => p.key === c.projectKey)
+    const ct = project?.connectionType || 'rds'
+    return activeTab === 'rds' ? ct === 'rds' : ct === 'service'
+  }),
+)
 
 let expandedId = $state(null)
 let editingId = $state(null)
@@ -91,17 +101,26 @@ function handleEditKeydown(e) {
 function moveUp(index, e) {
   e.stopPropagation()
   if (index === 0) return
-  const ids = savedConnections.map((c) => c.id)
-  ;[ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]
-  onReorder?.(ids)
+  // Reorder within the full list using filtered connection IDs
+  const fullIds = savedConnections.map((c) => c.id)
+  const aId = filteredConnections[index].id
+  const bId = filteredConnections[index - 1].id
+  const aIdx = fullIds.indexOf(aId)
+  const bIdx = fullIds.indexOf(bId)
+  ;[fullIds[bIdx], fullIds[aIdx]] = [fullIds[aIdx], fullIds[bIdx]]
+  onReorder?.(fullIds)
 }
 
 function moveDown(index, e) {
   e.stopPropagation()
-  if (index >= savedConnections.length - 1) return
-  const ids = savedConnections.map((c) => c.id)
-  ;[ids[index], ids[index + 1]] = [ids[index + 1], ids[index]]
-  onReorder?.(ids)
+  if (index >= filteredConnections.length - 1) return
+  const fullIds = savedConnections.map((c) => c.id)
+  const aId = filteredConnections[index].id
+  const bId = filteredConnections[index + 1].id
+  const aIdx = fullIds.indexOf(aId)
+  const bIdx = fullIds.indexOf(bId)
+  ;[fullIds[aIdx], fullIds[bIdx]] = [fullIds[bIdx], fullIds[aIdx]]
+  onReorder?.(fullIds)
 }
 
 function handleHeaderKeydown(e, activeConn, connectionId) {
@@ -112,7 +131,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
 }
 </script>
 
-{#if savedConnections.length > 0}
+{#if filteredConnections.length > 0}
   <div class="saved-connections-card">
     <div class="card-header">
       <div class="header-left">
@@ -130,7 +149,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
     </div>
 
     <div class="connections-list">
-      {#each savedConnections as connection, index (connection.id)}
+      {#each filteredConnections as connection, index (connection.id)}
         {@const activeConn = getActiveConnection(connection)}
         {@const isConnecting = connectingId === connection.id}
         <div class="connection-item" class:active={activeConn} class:connecting={isConnecting} class:expanded={expandedId === connection.id}>
@@ -205,7 +224,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
                   </svg>
                 </button>
               {:else}
-                {#if savedConnections.length > 1}
+                {#if filteredConnections.length > 1}
                   <div class="reorder-buttons">
                     <button
                       class="btn-reorder"
@@ -219,7 +238,7 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
                     </button>
                     <button
                       class="btn-reorder"
-                      disabled={index === savedConnections.length - 1 || !!connectingId}
+                      disabled={index === filteredConnections.length - 1 || !!connectingId}
                       onclick={(e) => moveDown(index, e)}
                       aria-label="Move down"
                     >
@@ -268,32 +287,61 @@ function handleHeaderKeydown(e, activeConn, connectionId) {
           </div>
 
           {#if expandedId === connection.id && activeConn?.connectionInfo}
+            {@const info = activeConn.connectionInfo}
             <div class="connection-details">
               <div class="detail-row">
                 <span class="detail-label">Host</span>
-                <code class="detail-value">{activeConn.connectionInfo.host}</code>
-                <CopyButton value={activeConn.connectionInfo.host} label="Copy host" />
+                <code class="detail-value">{info.host}</code>
+                <CopyButton value={info.host} label="Copy host" />
               </div>
               <div class="detail-row">
                 <span class="detail-label">Port</span>
-                <code class="detail-value">{activeConn.connectionInfo.port}</code>
-                <CopyButton value={String(activeConn.connectionInfo.port)} label="Copy port" />
+                <code class="detail-value">{info.port}</code>
+                <CopyButton value={String(info.port)} label="Copy port" />
               </div>
-              <div class="detail-row">
-                <span class="detail-label">User</span>
-                <code class="detail-value">{activeConn.connectionInfo.username}</code>
-                <CopyButton value={activeConn.connectionInfo.username} label="Copy username" />
-              </div>
-              <div class="detail-row">
-                <span class="detail-label">Password</span>
-                <code class="detail-value password">{maskPassword(activeConn.connectionInfo.password)}</code>
-                <CopyButton value={activeConn.connectionInfo.password} label="Copy password" />
-              </div>
-              <div class="detail-row">
-                <span class="detail-label">Database</span>
-                <code class="detail-value">{activeConn.connectionInfo.database}</code>
-                <CopyButton value={activeConn.connectionInfo.database} label="Copy database" />
-              </div>
+              {#if info.connectionType === 'service'}
+                {#if info.remoteHost}
+                  <div class="detail-row">
+                    <span class="detail-label">Remote</span>
+                    <code class="detail-value">{info.remoteHost}</code>
+                    <CopyButton value={info.remoteHost} label="Copy remote host" />
+                  </div>
+                {/if}
+                {#if info.serviceType}
+                  <div class="detail-row">
+                    <span class="detail-label">Service</span>
+                    <code class="detail-value">{info.serviceType.toUpperCase()}</code>
+                  </div>
+                {/if}
+                {#if info.targetType}
+                  <div class="detail-row">
+                    <span class="detail-label">Target</span>
+                    <code class="detail-value">{info.targetType}</code>
+                  </div>
+                {/if}
+              {:else}
+                {#if info.username}
+                  <div class="detail-row">
+                    <span class="detail-label">User</span>
+                    <code class="detail-value">{info.username}</code>
+                    <CopyButton value={info.username} label="Copy username" />
+                  </div>
+                {/if}
+                {#if info.password}
+                  <div class="detail-row">
+                    <span class="detail-label">Password</span>
+                    <code class="detail-value password">{maskPassword(info.password)}</code>
+                    <CopyButton value={info.password} label="Copy password" />
+                  </div>
+                {/if}
+                {#if info.database}
+                  <div class="detail-row">
+                    <span class="detail-label">Database</span>
+                    <code class="detail-value">{info.database}</code>
+                    <CopyButton value={info.database} label="Copy database" />
+                  </div>
+                {/if}
+              {/if}
             </div>
           {/if}
         </div>

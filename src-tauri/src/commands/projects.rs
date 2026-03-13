@@ -8,6 +8,8 @@ use std::collections::HashMap;
 pub struct Project {
     pub key: String,
     pub name: String,
+    #[serde(rename = "connectionType")]
+    pub connection_type: String,
 }
 
 #[tauri::command]
@@ -29,6 +31,11 @@ pub async fn list_projects() -> Result<Vec<Project>, AppError> {
         .map(|(key, config)| Project {
             key: key.clone(),
             name: config.name.clone(),
+            connection_type: if config.connection_type.is_empty() {
+                "rds".to_string()
+            } else {
+                config.connection_type.clone()
+            },
         })
         .collect();
 

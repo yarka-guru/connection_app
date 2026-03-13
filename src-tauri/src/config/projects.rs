@@ -3,18 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+fn default_connection_type() -> String {
+    "rds".to_string()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
     pub name: String,
     pub region: String,
+    #[serde(default)]
     pub database: String,
-    #[serde(rename = "secretPrefix")]
+    #[serde(rename = "secretPrefix", default)]
     pub secret_prefix: String,
-    #[serde(rename = "rdsType")]
+    #[serde(rename = "rdsType", default)]
     pub rds_type: String,
     #[serde(default)]
     pub engine: Option<String>,
-    #[serde(rename = "rdsPattern")]
+    #[serde(rename = "rdsPattern", default)]
     pub rds_pattern: String,
     #[serde(rename = "profileFilter")]
     pub profile_filter: Option<String>,
@@ -24,6 +29,24 @@ pub struct ProjectConfig {
     pub default_port: String,
     #[serde(rename = "bastionPattern", default)]
     pub bastion_pattern: Option<String>,
+
+    // Connection type: "rds" (default) or "service"
+    #[serde(rename = "connectionType", default = "default_connection_type")]
+    pub connection_type: String,
+
+    // Service-specific fields (used when connectionType == "service")
+    #[serde(rename = "serviceType", default)]
+    pub service_type: Option<String>,
+    #[serde(rename = "remotePort", default)]
+    pub remote_port: Option<u16>,
+    #[serde(rename = "targetType", default)]
+    pub target_type: Option<String>,
+    #[serde(rename = "targetPattern", default)]
+    pub target_pattern: Option<String>,
+    #[serde(rename = "ecsCluster", default)]
+    pub ecs_cluster: Option<String>,
+    #[serde(rename = "ecsService", default)]
+    pub ecs_service: Option<String>,
 }
 
 pub const DEFAULT_BASTION_PATTERN: &str = "*bastion*";
@@ -181,6 +204,13 @@ mod tests {
             env_port_mapping: HashMap::new(),
             default_port: "5432".to_string(),
             bastion_pattern,
+            connection_type: "rds".to_string(),
+            service_type: None,
+            remote_port: None,
+            target_type: None,
+            target_pattern: None,
+            ecs_cluster: None,
+            ecs_service: None,
         }
     }
 

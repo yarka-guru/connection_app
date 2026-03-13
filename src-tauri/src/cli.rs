@@ -10,10 +10,16 @@ use rds_ssm_connect_lib::config::projects::{
 };
 use rds_ssm_connect_lib::tunnel::native::start_native_port_forwarding;
 use std::collections::HashMap;
+
+#[allow(unused_imports)]
+use rds_ssm_connect_lib::aws::operations::{
+    find_bastion_instance, find_ec2_instance, find_ecs_task_ip,
+    start_direct_port_forwarding_session, start_session,
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
-#[command(name = "rds-ssm-connect", about = "Secure RDS connections through AWS SSM")]
+#[command(name = "rds-ssm-connect", about = "ConnectionApp — Secure tunneling via AWS SSM")]
 #[command(version)]
 struct Cli {
     /// Project name (skip interactive selection)
@@ -173,10 +179,28 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
         ));
     }
 
+    let connection_type = if project_config.connection_type.is_empty() {
+        "rds"
+    } else {
+        project_config.connection_type.as_str()
+    };
+
+    if connection_type == "service" {
+        run_service_connect(&clients, &project_config, &local_port).await
+    } else {
+        run_rds_connect(&clients, &project_config, &local_port).await
+    }
+}
+
+async fn run_rds_connect(
+    clients: &rds_ssm_connect_lib::aws::credentials::AwsClients,
+    project_config: &ProjectConfig,
+    local_port: &str,
+) -> Result<(), String> {
     // Get database credentials
     eprintln!("  \u{1F4E6} Getting database credentials...");
     let db_creds = operations::get_connection_credentials(
-        &clients,
+        clients,
         &project_config.secret_prefix,
         &project_config.database,
     )
@@ -185,14 +209,14 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     // Find bastion instance
     eprintln!("  \u{1F50D} Finding bastion instance...");
-    let instance_id = operations::find_bastion_instance(&clients, project_config.bastion_pattern())
+    let instance_id = find_bastion_instance(clients, project_config.bastion_pattern())
         .await
         .map_err(|e| format!("Failed to find bastion: {}", e))?;
 
     // Get RDS endpoint
     eprintln!("  \u{1F4E1} Getting RDS endpoint...");
     let rds_endpoint = operations::get_rds_endpoint(
-        &clients,
+        clients,
         &project_config.rds_type,
         &project_config.rds_pattern,
     )
@@ -201,9 +225,9 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
     .ok_or_else(|| "No matching RDS endpoint found.".to_string())?;
 
     // Get RDS port
-    let fallback_port = get_default_port_for_engine(&project_config);
+    let fallback_port = get_default_port_for_engine(project_config);
     let rds_port = operations::get_rds_port(
-        &clients,
+        clients,
         &project_config.rds_type,
         &project_config.rds_pattern,
         &fallback_port,
@@ -213,24 +237,17 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     // Start SSM session
     eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session...");
-    let session_response = operations::start_session(
-        &clients,
+    let session_response = start_session(
+        clients,
         &instance_id,
         &rds_endpoint,
         &rds_port,
-        &local_port,
+        local_port,
     )
     .await
     .map_err(|e| format!("Failed to start SSM session: {}", e))?;
 
-    let stream_url = session_response
-        .stream_url()
-        .ok_or_else(|| "No StreamUrl in session response".to_string())?
-        .to_string();
-    let token_value = session_response
-        .token_value()
-        .ok_or_else(|| "No TokenValue in session response".to_string())?
-        .to_string();
+    let (stream_url, token_value) = extract_session_info(&session_response)?;
 
     let port_num: u16 = local_port
         .parse()
@@ -238,21 +255,137 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     // Display connection info with dynamic-width box
     let masked_password = mask_password(&db_creds.password);
-    let rows = [
+    let rows = vec![
         ("Host",     "localhost".to_string()),
-        ("Port",     local_port.clone()),
+        ("Port",     local_port.to_string()),
         ("Username", db_creds.username.clone()),
         ("Password", masked_password),
         ("Database", db_creds.database.clone()),
         ("Endpoint", rds_endpoint.clone()),
     ];
-    // Build formatted lines, then measure for box width
+    print_info_box(&rows);
+
+    // Copy password to clipboard
+    if try_copy_to_clipboard(&db_creds.password) {
+        eprintln!("  \u{1F4CB} Password copied to clipboard\n");
+    }
+
+    run_tunnel(stream_url, token_value, port_num).await
+}
+
+async fn run_service_connect(
+    clients: &rds_ssm_connect_lib::aws::credentials::AwsClients,
+    project_config: &ProjectConfig,
+    local_port: &str,
+) -> Result<(), String> {
+    let target_type = project_config
+        .target_type
+        .as_deref()
+        .unwrap_or("ec2-direct");
+    let remote_port = project_config
+        .remote_port
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "5900".to_string());
+    let service_type = project_config
+        .service_type
+        .as_deref()
+        .unwrap_or("custom")
+        .to_uppercase();
+
+    let session_response = match target_type {
+        "ec2-direct" => {
+            let pattern = project_config
+                .target_pattern
+                .as_deref()
+                .ok_or("targetPattern is required for ec2-direct")?;
+            eprintln!("  \u{1F50D} Finding EC2 instance...");
+            let (instance_id, _private_ip) = find_ec2_instance(clients, pattern)
+                .await
+                .map_err(|e| format!("Failed to find EC2 instance: {}", e))?;
+            eprintln!("  \u{1F6E0}\u{FE0F}  Starting direct SSM session to {}...", instance_id);
+            start_direct_port_forwarding_session(clients, &instance_id, &remote_port, local_port)
+                .await
+                .map_err(|e| format!("Failed to start SSM session: {}", e))?
+        }
+        "ec2-bastion" => {
+            let pattern = project_config
+                .target_pattern
+                .as_deref()
+                .ok_or("targetPattern is required for ec2-bastion")?;
+            eprintln!("  \u{1F50D} Finding bastion and target EC2 instance...");
+            let bastion_id = find_bastion_instance(clients, project_config.bastion_pattern())
+                .await
+                .map_err(|e| format!("Failed to find bastion: {}", e))?;
+            let (_instance_id, private_ip) = find_ec2_instance(clients, pattern)
+                .await
+                .map_err(|e| format!("Failed to find EC2 instance: {}", e))?;
+            eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session via bastion...");
+            start_session(clients, &bastion_id, &private_ip, &remote_port, local_port)
+                .await
+                .map_err(|e| format!("Failed to start SSM session: {}", e))?
+        }
+        "ecs-bastion" => {
+            let cluster = project_config
+                .ecs_cluster
+                .as_deref()
+                .ok_or("ecsCluster is required for ecs-bastion")?;
+            let service = project_config
+                .ecs_service
+                .as_deref()
+                .ok_or("ecsService is required for ecs-bastion")?;
+            eprintln!("  \u{1F50D} Finding bastion and ECS task...");
+            let bastion_id = find_bastion_instance(clients, project_config.bastion_pattern())
+                .await
+                .map_err(|e| format!("Failed to find bastion: {}", e))?;
+            let task_ip = find_ecs_task_ip(clients, cluster, service)
+                .await
+                .map_err(|e| format!("Failed to find ECS task: {}", e))?;
+            eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session via bastion to ECS task {}...", task_ip);
+            start_session(clients, &bastion_id, &task_ip, &remote_port, local_port)
+                .await
+                .map_err(|e| format!("Failed to start SSM session: {}", e))?
+        }
+        _ => return Err(format!("Unknown target type: {}", target_type)),
+    };
+
+    let (stream_url, token_value) = extract_session_info(&session_response)?;
+
+    let port_num: u16 = local_port
+        .parse()
+        .map_err(|_| format!("Invalid port: {}", local_port))?;
+
+    let rows = vec![
+        ("Host",    "localhost".to_string()),
+        ("Port",    local_port.to_string()),
+        ("Service", service_type),
+        ("Target",  target_type.to_string()),
+    ];
+    print_info_box(&rows);
+
+    run_tunnel(stream_url, token_value, port_num).await
+}
+
+fn extract_session_info(
+    response: &aws_sdk_ssm::operation::start_session::StartSessionOutput,
+) -> Result<(String, String), String> {
+    let stream_url = response
+        .stream_url()
+        .ok_or_else(|| "No StreamUrl in session response".to_string())?
+        .to_string();
+    let token_value = response
+        .token_value()
+        .ok_or_else(|| "No TokenValue in session response".to_string())?
+        .to_string();
+    Ok((stream_url, token_value))
+}
+
+fn print_info_box(rows: &[(&str, String)]) {
     let lines: Vec<String> = rows
         .iter()
         .map(|(label, value)| format!("  {:<10}{}", format!("{}:", label), value))
         .collect();
     let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
-    let box_width = max_line_len + 2; // + right padding
+    let box_width = max_line_len + 2;
 
     eprintln!("\n  \u{2705} Connected!\n");
     eprintln!("  \u{250C}{}\u{2510}", "\u{2500}".repeat(box_width));
@@ -260,15 +393,11 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
         eprintln!("  \u{2502}{:<box_width$}\u{2502}", line, box_width = box_width);
     }
     eprintln!("  \u{2514}{}\u{2518}\n", "\u{2500}".repeat(box_width));
+}
 
-    // Copy password to clipboard
-    if try_copy_to_clipboard(&db_creds.password) {
-        eprintln!("  \u{1F4CB} Password copied to clipboard\n");
-    }
-
+async fn run_tunnel(stream_url: String, token_value: String, port_num: u16) -> Result<(), String> {
     eprintln!("  Press Ctrl+C to disconnect.\n");
 
-    // Set up SIGINT handler
     let cancel = CancellationToken::new();
     let cancel_signal = cancel.clone();
 
@@ -278,7 +407,6 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
         cancel_signal.cancel();
     });
 
-    // Run native port forwarding
     start_native_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
 
     eprintln!("  \u{1F44B} Disconnected.\n");

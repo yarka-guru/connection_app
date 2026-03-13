@@ -38,6 +38,7 @@ let updateCheckMessage = $state('')
 let updateProgress = $state(null)
 let updateError = $state(null)
 
+let activeTab = $state('rds')
 let currentTheme = $state('forest')
 let showSettings = $state(false)
 let showSetupScreen = $state(false)
@@ -623,6 +624,14 @@ function handleThemeChange(themeName) {
   }
 }
 
+// Filter projects by active tab
+const filteredProjects = $derived(
+  projects.filter((p) => {
+    const ct = p.connectionType || 'rds'
+    return activeTab === 'rds' ? ct === 'rds' : ct === 'service'
+  }),
+)
+
 // Computed: check if the selected project/profile is already saved
 const isAlreadySaved = $derived(
   savedConnections.some(
@@ -674,7 +683,7 @@ const isAlreadySaved = $derived(
             Would you like to import projects from an existing <code>projects.json</code> file?
           </p>
           <p class="setup-hint">
-            If you previously used RDS Connect, you can import your projects from <code>~/.rds-ssm-connect/projects.json</code>.
+            If you previously used ConnectionApp, you can import your projects from <code>~/.rds-ssm-connect/projects.json</code>.
           </p>
           <div class="setup-actions">
             <button class="btn-grant" onclick={handleImportProjects} disabled={isImporting}>
@@ -695,7 +704,7 @@ const isAlreadySaved = $derived(
         {:else}
           <h2 class="setup-title">AWS Directory Access</h2>
           <p class="setup-description">
-            RDS Connect needs access to your <code>~/.aws</code> directory to read AWS profiles and SSO credentials.
+            ConnectionApp needs access to your <code>~/.aws</code> directory to read AWS profiles and SSO credentials.
           </p>
           <p class="setup-hint">
             You'll be asked to select your <code>~/.aws</code> folder once. Access is remembered for future launches.
@@ -745,10 +754,37 @@ const isAlreadySaved = $derived(
           </svg>
         </div>
         <div class="header-text">
-          <h1>RDS Connect</h1>
-          <p>Secure database tunneling via AWS SSM</p>
+          <h1>ConnectionApp</h1>
+          <p>Secure tunneling via AWS SSM</p>
         </div>
       </header>
+
+      <div class="tab-bar">
+        <button
+          class="main-tab"
+          class:active={activeTab === 'rds'}
+          onclick={() => { activeTab = 'rds'; selectedProject = ''; selectedProfile = ''; profiles = [] }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="5.5" cy="8" r="1" fill="currentColor"/>
+            <circle cx="8" cy="8" r="1" fill="currentColor"/>
+            <circle cx="10.5" cy="8" r="1" fill="currentColor"/>
+          </svg>
+          RDS Connect
+        </button>
+        <button
+          class="main-tab"
+          class:active={activeTab === 'service'}
+          onclick={() => { activeTab = 'service'; selectedProject = ''; selectedProfile = ''; profiles = [] }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 6h6M5 8h4M5 10h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+          VNC/RDP Connect
+        </button>
+      </div>
 
       <div class="main-content">
         {#if savedConnections.length > 0}
@@ -757,6 +793,7 @@ const isAlreadySaved = $derived(
             {activeConnections}
             {projects}
             {connectingId}
+            {activeTab}
             onConnect={handleSavedConnectionConnect}
             onDisconnect={handleDisconnectOne}
             onDelete={handleDeleteSavedConnection}
@@ -767,7 +804,7 @@ const isAlreadySaved = $derived(
 
 
         <ConnectionForm
-          {projects}
+          projects={filteredProjects}
           {profiles}
           {selectedProject}
           {selectedProfile}
@@ -1044,6 +1081,43 @@ const isAlreadySaved = $derived(
     margin: 4px 0 0;
     font-size: 0.875rem;
     color: var(--text-secondary);
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    background: rgba(var(--glass-rgb), 0.03);
+    padding: 4px;
+    border-radius: 14px;
+    border: 1px solid var(--glass-border);
+  }
+
+  .main-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 16px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background-color var(--transition-normal), color var(--transition-normal);
+  }
+
+  .main-tab:hover {
+    color: var(--text-hover);
+    background: var(--glass-bg-hover);
+  }
+
+  .main-tab.active {
+    background: rgba(var(--accent-primary-rgb), 0.15);
+    color: var(--accent-primary-light);
+    font-weight: 600;
   }
 
   .main-content {

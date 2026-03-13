@@ -390,20 +390,21 @@ pub async fn wait_for_ssm_agent_ready(
     Ok(false)
 }
 
-/// Start an SSM port forwarding session. Returns the session response needed by the plugin.
-pub async fn start_session(
+/// Start an SSM port forwarding session to a remote host (through a bastion).
+/// Uses AWS-StartPortForwardingSessionToRemoteHost document.
+pub async fn start_remote_port_forwarding_session(
     clients: &AwsClients,
-    instance_id: &str,
-    rds_endpoint: &str,
+    bastion_instance_id: &str,
+    remote_host: &str,
     remote_port: &str,
     local_port: &str,
 ) -> Result<aws_sdk_ssm::operation::start_session::StartSessionOutput, AppError> {
     let response = clients
         .ssm
         .start_session()
-        .target(instance_id)
+        .target(bastion_instance_id)
         .document_name("AWS-StartPortForwardingSessionToRemoteHost")
-        .parameters("host", vec![rds_endpoint.to_string()])
+        .parameters("host", vec![remote_host.to_string()])
         .parameters("portNumber", vec![remote_port.to_string()])
         .parameters("localPortNumber", vec![local_port.to_string()])
         .send()
@@ -411,4 +412,138 @@ pub async fn start_session(
         .map_err(|e| AppError::Aws(format!("Failed to start SSM session: {:?}", e)))?;
 
     Ok(response)
+}
+
+/// Backward-compatible alias for existing RDS tunnel code.
+pub async fn start_session(
+    clients: &AwsClients,
+    instance_id: &str,
+    rds_endpoint: &str,
+    remote_port: &str,
+    local_port: &str,
+) -> Result<aws_sdk_ssm::operation::start_session::StartSessionOutput, AppError> {
+    start_remote_port_forwarding_session(clients, instance_id, rds_endpoint, remote_port, local_port)
+        .await
+}
+
+/// Start an SSM port forwarding session directly to an instance (no bastion).
+/// Uses AWS-StartPortForwardingSession document — the target instance must have SSM agent.
+pub async fn start_direct_port_forwarding_session(
+    clients: &AwsClients,
+    instance_id: &str,
+    remote_port: &str,
+    local_port: &str,
+) -> Result<aws_sdk_ssm::operation::start_session::StartSessionOutput, AppError> {
+    let response = clients
+        .ssm
+        .start_session()
+        .target(instance_id)
+        .document_name("AWS-StartPortForwardingSession")
+        .parameters("portNumber", vec![remote_port.to_string()])
+        .parameters("localPortNumber", vec![local_port.to_string()])
+        .send()
+        .await
+        .map_err(|e| AppError::Aws(format!("Failed to start direct SSM session: {:?}", e)))?;
+
+    Ok(response)
+}
+
+/// Find a running EC2 instance by Name tag pattern. Returns (instance_id, private_ip).
+pub async fn find_ec2_instance(
+    clients: &AwsClients,
+    name_pattern: &str,
+) -> Result<(String, String), AppError> {
+    let response = clients
+        .ec2
+        .describe_instances()
+        .filters(
+            aws_sdk_ec2::types::Filter::builder()
+                .name("tag:Name")
+                .values(name_pattern)
+                .build(),
+        )
+        .filters(
+            aws_sdk_ec2::types::Filter::builder()
+                .name("instance-state-name")
+                .values("running")
+                .build(),
+        )
+        .send()
+        .await
+        .map_err(|e| AppError::Aws(format!("Failed to describe instances: {:?}", e)))?;
+
+    for reservation in response.reservations() {
+        for instance in reservation.instances() {
+            if let (Some(id), Some(ip)) =
+                (instance.instance_id(), instance.private_ip_address())
+            {
+                return Ok((id.to_string(), ip.to_string()));
+            }
+        }
+    }
+
+    Err(AppError::Aws(format!(
+        "No running EC2 instance found with tag Name={}.",
+        name_pattern
+    )))
+}
+
+/// Find the private IP of a running ECS task in the given cluster/service.
+/// Requires awsvpc network mode (Fargate or EC2 with awsvpc).
+pub async fn find_ecs_task_ip(
+    clients: &AwsClients,
+    cluster: &str,
+    service: &str,
+) -> Result<String, AppError> {
+    // List running tasks for the service
+    let list_response = clients
+        .ecs
+        .list_tasks()
+        .cluster(cluster)
+        .service_name(service)
+        .desired_status(aws_sdk_ecs::types::DesiredStatus::Running)
+        .send()
+        .await
+        .map_err(|e| AppError::Aws(format!("Failed to list ECS tasks: {:?}", e)))?;
+
+    let task_arns = list_response.task_arns();
+    if task_arns.is_empty() {
+        return Err(AppError::Aws(format!(
+            "No running tasks found for service '{}' in cluster '{}'.",
+            service, cluster
+        )));
+    }
+
+    // Describe the first running task to get its ENI
+    let describe_response = clients
+        .ecs
+        .describe_tasks()
+        .cluster(cluster)
+        .tasks(&task_arns[0])
+        .send()
+        .await
+        .map_err(|e| AppError::Aws(format!("Failed to describe ECS task: {:?}", e)))?;
+
+    let tasks = describe_response.tasks();
+    if tasks.is_empty() {
+        return Err(AppError::Aws("ECS task description returned empty.".to_string()));
+    }
+
+    // Extract ENI from task attachments (awsvpc mode)
+    for attachment in tasks[0].attachments() {
+        if attachment.r#type() == Some("ElasticNetworkInterface") {
+            for detail in attachment.details() {
+                if detail.name() == Some("privateIPv4Address")
+                    && let Some(ip) = detail.value()
+                {
+                    return Ok(ip.to_string());
+                }
+            }
+        }
+    }
+
+    Err(AppError::Aws(format!(
+        "Could not find private IP for ECS task in service '{}'. Ensure awsvpc network mode is used.",
+        service
+    )))
 }
