@@ -69,7 +69,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: 'RDS SSM Connect v__VERSION__'
+          releaseName: 'ConnectionApp v__VERSION__'
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: false
           prerelease: false
@@ -120,7 +120,7 @@ jobs:
         with:
           name: sig-${{ matrix.rust_target }}
           path: sigs/
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   # Generate update manifest after builds complete (runs even if some fail)
   update-manifest:
