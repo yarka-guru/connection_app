@@ -220,13 +220,14 @@ pub async fn start_native_port_forwarding(
     let ws_write_ping = ws_write.clone();
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
-    tokio::spawn(async move {
+    let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
         loop {
-            interval.tick().await;
-            if cancel_ping.is_cancelled() || session_cancel_ping.is_cancelled() {
-                break;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = cancel_ping.cancelled() => break,
+                _ = session_cancel_ping.cancelled() => break,
             }
             let mut ws = ws_write_ping.lock().await;
             if ws
@@ -245,14 +246,15 @@ pub async fn start_native_port_forwarding(
     let cancel_rt = cancel.clone();
     let session_cancel_rt = session_cancel.clone();
     let rtt_estimator_rt = rtt_estimator.clone();
-    tokio::spawn(async move {
+    let retransmit_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
             RETRANSMIT_CHECK_INTERVAL_MS,
         ));
         loop {
-            interval.tick().await;
-            if cancel_rt.is_cancelled() || session_cancel_rt.is_cancelled() {
-                break;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = cancel_rt.cancelled() => break,
+                _ = session_cancel_rt.cancelled() => break,
             }
 
             let current_rto = {
@@ -303,7 +305,7 @@ pub async fn start_native_port_forwarding(
     let rtt_estimator_ack = rtt_estimator.clone();
     let tcp_connected_ws = tcp_connected.clone();
 
-    tokio::spawn(async move {
+    let ws_read_handle = tokio::spawn(async move {
         let mut ws = ws_read_task.lock().await;
         loop {
             if cancel_ws.is_cancelled() || session_cancel_ws.is_cancelled() {
@@ -313,6 +315,7 @@ pub async fn start_native_port_forwarding(
             let msg = tokio::select! {
                 msg = ws.next() => msg,
                 _ = cancel_ws.cancelled() => break,
+                _ = session_cancel_ws.cancelled() => break,
             };
 
             let msg = match msg {
@@ -657,25 +660,30 @@ pub async fn start_native_port_forwarding(
         log::info!("TCP client disconnected, waiting for new connection");
     }
 
-    // Terminate session
-    if !session_cancel.is_cancelled() {
+    // --- Cleanup: release resources in correct order ---
+
+    // 1. Drop TCP listeners immediately to release ports.
+    //    On Linux, delayed drop can block rebinding for up to 60s (TIME_WAIT).
+    drop(listener_v4);
+    drop(listener_v6);
+
+    // 2. Signal all spawned tasks to stop, then abort to ensure they release
+    //    their Arc<Mutex<ws_write>> clones before we try to send terminate.
+    session_cancel.cancel();
+    ping_handle.abort();
+    retransmit_handle.abort();
+    ws_read_handle.abort();
+    let _ = ping_handle.await;
+    let _ = retransmit_handle.await;
+    let _ = ws_read_handle.await;
+
+    // 3. Best-effort: send terminate and close WebSocket.
+    //    Always attempt this (even if session_cancel was set by agent) so the
+    //    server-side session is cleaned up promptly.
+    {
         let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
         let term_msg = build_flag_message(FLAG_TERMINATE_SESSION, seq, true);
         let serialized = term_msg.serialize();
-
-        // Track in outgoing buffer for retransmission
-        {
-            let mut ob = outgoing_buffer.lock().await;
-            ob.insert(
-                seq,
-                OutgoingEntry {
-                    message: serialized.clone(),
-                    sent_at: std::time::Instant::now(),
-                    retransmit_count: 0,
-                },
-            );
-        }
-
         let mut ws = ws_write.lock().await;
         let _ = ws.send(Message::Binary(serialized.into())).await;
         let _ = ws.close().await;

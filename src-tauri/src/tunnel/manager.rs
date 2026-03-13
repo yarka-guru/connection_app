@@ -66,11 +66,21 @@ impl TunnelManager {
         }
     }
 
-    /// Check if a port is available by attempting to bind.
-    async fn is_port_available(port: u16) -> bool {
-        tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .is_ok()
+    /// Check if a port is available by attempting to bind with SO_REUSEADDR.
+    /// Using SO_REUSEADDR is critical on Linux where TIME_WAIT sockets from
+    /// previous connections can block a plain bind for up to 60 seconds.
+    fn is_port_available(port: u16) -> bool {
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        let socket = match socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        ) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let _ = socket.set_reuse_address(true);
+        socket.bind(&addr.into()).is_ok()
     }
 
     /// Get all ports currently in use by active connections.
@@ -141,7 +151,7 @@ impl TunnelManager {
                 .collect()
         };
 
-        if all_used_ports.contains(&port_num) || !Self::is_port_available(port_num).await {
+        if all_used_ports.contains(&port_num) || !Self::is_port_available(port_num) {
             return Err(AppError::Tunnel(format!(
                 "Port {} is not available. Close the application using it or change the port in project settings.",
                 port_to_use
