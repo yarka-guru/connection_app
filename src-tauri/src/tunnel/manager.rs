@@ -460,6 +460,7 @@ impl TunnelManager {
     }
 
     /// Resolve RDS target: get credentials, find bastion, get RDS endpoint.
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_rds_target(
         &self,
         clients: &AwsClients,
