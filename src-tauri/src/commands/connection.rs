@@ -21,6 +21,7 @@ pub async fn connect(
     project_key: String,
     profile: String,
     local_port: Option<String>,
+    database: Option<String>,
     saved_connection_id: Option<String>,
 ) -> Result<ConnectResult, AppError> {
     let manager = tunnel_manager.lock().await;
@@ -33,6 +34,7 @@ pub async fn connect(
             &project_key,
             &profile,
             local_port.as_deref(),
+            database.as_deref(),
             &used_ports,
         )
         .await?;
@@ -42,6 +44,9 @@ pub async fn connect(
         let _ = super::saved::update_saved_connection_last_used_inner(&app_handle, &saved_id);
     }
 
+    // Refresh tray menu to show the new active connection
+    crate::tray::refresh_tray(&app_handle);
+
     Ok(ConnectResult {
         connection_id,
         connection_info,
@@ -50,6 +55,7 @@ pub async fn connect(
 
 #[tauri::command]
 pub async fn disconnect(
+    app_handle: AppHandle,
     tunnel_manager: State<'_, Arc<Mutex<TunnelManager>>>,
     connection_id: Option<String>,
 ) -> Result<(), AppError> {
@@ -61,15 +67,24 @@ pub async fn disconnect(
         manager.disconnect_all().await?;
     }
 
+    // Refresh tray menu after disconnecting
+    crate::tray::refresh_tray(&app_handle);
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn disconnect_all(
+    app_handle: AppHandle,
     tunnel_manager: State<'_, Arc<Mutex<TunnelManager>>>,
 ) -> Result<(), AppError> {
     let manager = tunnel_manager.lock().await;
-    manager.disconnect_all().await
+    manager.disconnect_all().await?;
+
+    // Refresh tray menu after disconnecting all
+    crate::tray::refresh_tray(&app_handle);
+
+    Ok(())
 }
 
 #[tauri::command]

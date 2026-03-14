@@ -10,6 +10,8 @@ pub struct Project {
     pub name: String,
     #[serde(rename = "connectionType")]
     pub connection_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub databases: Option<Vec<String>>,
 }
 
 #[tauri::command]
@@ -36,6 +38,7 @@ pub async fn list_projects() -> Result<Vec<Project>, AppError> {
             } else {
                 config.connection_type.clone()
             },
+            databases: config.databases.clone(),
         })
         .collect();
 

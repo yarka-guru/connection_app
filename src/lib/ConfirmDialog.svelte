@@ -41,7 +41,7 @@ function handleKeydown(e) {
   .confirm-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--overlay-bg);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -119,7 +119,7 @@ function handleKeydown(e) {
     padding: 10px 18px;
     font-size: 0.875rem;
     font-weight: 600;
-    color: white;
+    color: var(--button-text);
     background: var(--bg-button-gradient);
     border: none;
     border-radius: 8px;

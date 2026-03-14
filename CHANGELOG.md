@@ -76,7 +76,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Pure Rust backend — native SSM WebSocket port forwarding (no Node.js sidecar)
 - macOS App Sandbox support with security-scoped bookmarks
-- Standalone CLI binary (`rds-ssm-connect-cli`)
+- Standalone CLI binary (`connection-app-cli`)
 - Saved connections with one-click connect
 - Multi-connection support with port availability checks
 - Auto-reconnect and TargetNotConnected recovery

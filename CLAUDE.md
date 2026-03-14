@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**RDS SSM Connect** is a Tauri desktop app and standalone Rust CLI that enables secure connections to AWS RDS databases through AWS Systems Manager (SSM) port forwarding via bastion hosts. The backend is 100% Rust — no Node.js sidecar, no external plugins. Projects are user-configurable — the tool reads AWS profiles from `~/.aws/config`, loads project definitions from `~/.rds-ssm-connect/projects.json`, retrieves database credentials from AWS Secrets Manager, and sets up native WebSocket-based port forwarding through a bastion instance.
+**ConnectionApp** is a Tauri desktop app and standalone Rust CLI that enables secure tunneling through AWS Systems Manager (SSM) port forwarding. Supports RDS databases and service connections (VNC/RDP) via bastion hosts. The backend is 100% Rust — no Node.js sidecar, no external plugins. Projects are user-configurable — the tool reads AWS profiles from `~/.aws/config`, loads project definitions from `~/.connection-app/projects.json`, retrieves database credentials from AWS Secrets Manager, and sets up native WebSocket-based port forwarding through a bastion instance.
 
 ## Key Architecture
 
@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `aws/operations.rs` — AWS operations (find bastion, get endpoint, get credentials, start session)
 - `aws/sso.rs` — AWS SSO OIDC device authorization flow with trait-based handler (`GuiSsoHandler`, `CliSsoHandler`)
 - `config/aws_config.rs` — Reads/writes `~/.aws/config`, respects `AWS_CONFIG_FILE` env var for sandbox
-- `config/projects.rs` — Project config CRUD for `~/.rds-ssm-connect/projects.json`
+- `config/projects.rs` — Project config CRUD for `~/.connection-app/projects.json`
 - `config/validation.rs` — Validates required fields, region format, port format, shell-safe patterns
 - `error.rs` — Unified `AppError` enum with Tauri serialization
 
@@ -39,7 +39,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `system.rs` — Updates, version, open_url, quit, sandbox status, grant_aws_access
 
 #### CLI Binary
-- `cli.rs` — Standalone CLI (`rds-ssm-connect-cli`) using clap + dialoguer for interactive selection
+- `cli.rs` — Standalone CLI (`connection-app-cli`) using clap + dialoguer for interactive selection
 
 ### Frontend (`src/`)
 - `App.svelte` — Main app shell (Svelte 5 with runes), sandbox setup screen
@@ -55,7 +55,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Core Flow
 1. Read AWS profiles from `~/.aws/config`
-2. Load project configs from `~/.rds-ssm-connect/projects.json`
+2. Load project configs from `~/.connection-app/projects.json`
 3. Select project (filtered by available profiles)
 4. Filter environments (AWS profiles) based on project's `profileFilter`
 5. Ensure SSO session is valid (OIDC device authorization if needed)
@@ -112,7 +112,7 @@ Note: No external tools required at runtime — the app uses AWS SDK v1 (Rust) n
 
 ## AWS Resource Naming Conventions
 
-The application relies on AWS resource naming patterns defined per project in `~/.rds-ssm-connect/projects.json`:
+The application relies on AWS resource naming patterns defined per project in `~/.connection-app/projects.json`:
 
 - **Secrets**: Must start with the project's `secretPrefix` (e.g., `rds!cluster`, `rds!db`)
 - **Bastion instances**: Must be tagged with `Name=*bastion*` and in `running` state
@@ -121,7 +121,7 @@ The application relies on AWS resource naming patterns defined per project in `~
 
 ## Important Notes
 
-- Projects are user-configurable via `~/.rds-ssm-connect/projects.json` (no hardcoded defaults)
+- Projects are user-configurable via `~/.connection-app/projects.json` (no hardcoded defaults)
 - Port assignment is based on project-specific `envPortMapping` with `defaultPort` fallback
 - AWS region is determined by the selected project's `region` field
 - SSO sessions are validated before connecting; browser opens automatically if needed
@@ -133,4 +133,4 @@ The application relies on AWS resource naming patterns defined per project in `~
 ## Cargo Features
 
 - `gui` (default) — Tauri desktop app with all plugins and commands
-- No features — CLI-only binary (`rds-ssm-connect-cli`)
+- No features — CLI-only binary (`connection-app-cli`)

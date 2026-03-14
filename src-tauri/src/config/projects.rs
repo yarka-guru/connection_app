@@ -7,12 +7,18 @@ fn default_connection_type() -> String {
     "rds".to_string()
 }
 
+fn default_auth_type() -> String {
+    "secrets".to_string()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
     pub name: String,
     pub region: String,
     #[serde(default)]
     pub database: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub databases: Option<Vec<String>>,
     #[serde(rename = "secretPrefix", default)]
     pub secret_prefix: String,
     #[serde(rename = "rdsType", default)]
@@ -47,11 +53,51 @@ pub struct ProjectConfig {
     pub ecs_cluster: Option<String>,
     #[serde(rename = "ecsService", default)]
     pub ecs_service: Option<String>,
+
+    // Custom secret path fields
+    /// Direct secret ARN or name (bypasses prefix-based search)
+    #[serde(rename = "secretPath", default)]
+    pub secret_path: Option<String>,
+    /// JSON field name for username in secret (default: "username")
+    #[serde(rename = "secretUsernameField", default)]
+    pub secret_username_field: Option<String>,
+    /// JSON field name for password in secret (default: "password")
+    #[serde(rename = "secretPasswordField", default)]
+    pub secret_password_field: Option<String>,
+
+    // IAM authentication fields
+    /// Authentication type: "secrets" (default) or "iam"
+    #[serde(rename = "authType", default = "default_auth_type")]
+    pub auth_type: String,
+    /// IAM username for RDS IAM auth
+    #[serde(rename = "iamUsername", default)]
+    pub iam_username: Option<String>,
+
+    // Multiplexing: enable smux protocol for multiple TCP connections per tunnel
+    #[serde(default)]
+    pub multiplexed: Option<bool>,
+
+    // SSH-specific fields (used when serviceType == "ssh")
+    #[serde(rename = "sshUsername", default)]
+    pub ssh_username: Option<String>,
+    #[serde(rename = "sshKeyPath", default)]
+    pub ssh_key_path: Option<String>,
 }
 
 pub const DEFAULT_BASTION_PATTERN: &str = "*bastion*";
 
 impl ProjectConfig {
+    /// Returns the effective database name.
+    /// If `selected_database` is provided (from multi-database selection), use it.
+    /// Otherwise fall back to the single `database` field.
+    pub fn effective_database<'a>(&'a self, selected_database: Option<&'a str>) -> &'a str {
+        if let Some(db) = selected_database
+            && !db.is_empty() {
+                return db;
+            }
+        &self.database
+    }
+
     /// Returns the bastion Name tag filter pattern, defaulting to `*bastion*`.
     pub fn bastion_pattern(&self) -> &str {
         self.bastion_pattern
@@ -61,11 +107,55 @@ impl ProjectConfig {
     }
 }
 
-fn get_config_path() -> PathBuf {
+/// New config directory name.
+const CONFIG_DIR: &str = ".connection-app";
+/// Old config directory name (pre-v3.1 used this).
+const LEGACY_CONFIG_DIR: &str = ".rds-ssm-connect";
+
+fn get_config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".rds-ssm-connect")
-        .join("projects.json")
+        .join(CONFIG_DIR)
+}
+
+fn get_config_path() -> PathBuf {
+    get_config_dir().join("projects.json")
+}
+
+/// Migrate legacy `~/.rds-ssm-connect/` to `~/.connection-app/` if needed.
+/// Copies (not moves) projects.json so the old CLI still works until the user
+/// upgrades it too. Runs once — skips if the new directory already has a config.
+pub fn migrate_legacy_config() {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let legacy_dir = home.join(LEGACY_CONFIG_DIR);
+    let new_dir = home.join(CONFIG_DIR);
+    let new_config = new_dir.join("projects.json");
+    let legacy_config = legacy_dir.join("projects.json");
+
+    // Skip if new config already exists or legacy doesn't exist
+    if new_config.exists() || !legacy_config.exists() {
+        return;
+    }
+
+    // Create new directory and copy projects.json
+    if let Err(e) = std::fs::create_dir_all(&new_dir) {
+        log::warn!("Failed to create {}: {}", new_dir.display(), e);
+        return;
+    }
+    if let Err(e) = std::fs::copy(&legacy_config, &new_config) {
+        log::warn!(
+            "Failed to migrate {} → {}: {}",
+            legacy_config.display(),
+            new_config.display(),
+            e
+        );
+        return;
+    }
+    log::info!(
+        "Migrated config from {} → {}",
+        legacy_dir.display(),
+        new_dir.display()
+    );
 }
 
 pub async fn load_project_configs() -> Result<HashMap<String, ProjectConfig>, AppError> {
@@ -196,6 +286,7 @@ mod tests {
             name: "Test".to_string(),
             region: "us-east-1".to_string(),
             database: "db".to_string(),
+            databases: None,
             secret_prefix: "rds!cluster".to_string(),
             rds_type: "cluster".to_string(),
             engine: None,
@@ -211,6 +302,14 @@ mod tests {
             target_pattern: None,
             ecs_cluster: None,
             ecs_service: None,
+            secret_path: None,
+            secret_username_field: None,
+            secret_password_field: None,
+            auth_type: "secrets".to_string(),
+            iam_username: None,
+            multiplexed: None,
+            ssh_username: None,
+            ssh_key_path: None,
         }
     }
 

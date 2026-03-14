@@ -1,44 +1,45 @@
 [package]
-name = "rds-ssm-connect"
-version = "3.0.1"
-description = "Secure RDS connections through AWS SSM"
+name = "connection-app"
+version = "3.1.0"
+description = "Secure tunneling through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
-default-run = "rds-ssm-connect"
+default-run = "connection-app"
 license = "MIT"
 repository = "https://github.com/yarka-guru/connection_app"
 homepage = "https://github.com/yarka-guru/connection_app"
 keywords = ["aws", "rds", "ssm", "tunnel", "tauri"]
 
 [lib]
-name = "rds_ssm_connect_lib"
+name = "connection_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "rds-ssm-connect"
+name = "connection-app"
 path = "src/main.rs"
 required-features = ["gui"]
 
 [[bin]]
-name = "rds-ssm-connect-cli"
+name = "connection-app-cli"
 path = "src/cli.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [], optional = true }
+tauri = { version = "2", features = ["tray-icon"], optional = true }
 tauri-plugin-store = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-updater = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-notification = { version = "2", optional = true }
 clap = { version = "4", features = ["derive"] }
-dialoguer = "0.11"
+dialoguer = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "fs", "rt", "rt-multi-thread", "net", "time", "process", "macros", "signal"] }
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 semver = "1"
 aws-config = { version = "1", features = ["sso"] }
 aws-sdk-sts = "1"
@@ -48,21 +49,23 @@ aws-sdk-ssm = "1"
 aws-sdk-secretsmanager = "1"
 aws-sdk-ecs = "1"
 aws-sdk-ssooidc = "1"
-dirs = "5"
+aws-sigv4 = "1"
+aws-credential-types = "1"
+dirs = "6"
 sha1 = "0.10"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 log = "0.4"
-tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 sha2 = "0.10"
 byteorder = "1"
 futures-util = "0.3"
 base64 = "0.22"
-socket2 = "0.5"
+socket2 = "0.6"
 
 [features]
 default = ["gui"]
-gui = ["tauri", "tauri-build", "tauri-plugin-store", "tauri-plugin-opener", "tauri-plugin-updater", "tauri-plugin-dialog", "custom-protocol"]
+gui = ["tauri", "tauri-build", "tauri-plugin-store", "tauri-plugin-opener", "tauri-plugin-updater", "tauri-plugin-dialog", "tauri-plugin-notification", "custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

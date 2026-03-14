@@ -4,7 +4,8 @@ use crate::tunnel::protocol::{
     FLAG_TERMINATE_SESSION, OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT,
     STREAM_DATA_PAYLOAD_SIZE,
 };
-use crate::tunnel::websocket::open_data_channel;
+use crate::tunnel::smux::{self, SmuxSession};
+use crate::tunnel::websocket::{open_data_channel, open_data_channel_with_version};
 use byteorder::{BigEndian, ByteOrder};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::BTreeMap;
@@ -744,6 +745,569 @@ pub async fn start_native_port_forwarding(
     // 3. Best-effort: send terminate and close WebSocket.
     //    Always attempt this (even if session_cancel was set by agent) so the
     //    server-side session is cleaned up promptly.
+    {
+        let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
+        let term_msg = build_flag_message(FLAG_TERMINATE_SESSION, seq, true);
+        let serialized = term_msg.serialize();
+        let mut ws = ws_write.lock().await;
+        let _ = ws.send(Message::Binary(serialized.into())).await;
+        let _ = ws.close().await;
+    }
+
+    Ok(())
+}
+
+/// Multiplexed port forwarding via smux protocol.
+///
+/// When the SSM agent supports smux (version >= 3.0.196.0), multiple TCP connections
+/// can share a single SSM WebSocket tunnel. In this mode, after the SSM handshake,
+/// all data payloads are smux-framed, and the local TCP listener accepts multiple
+/// concurrent connections, each mapped to a separate smux stream.
+pub async fn start_multiplexed_port_forwarding(
+    stream_url: String,
+    token_value: String,
+    local_port: u16,
+    cancel: CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
+    // Open data channel with smux-capable client version
+    let channel =
+        open_data_channel_with_version(&stream_url, &token_value, smux::SMUX_CLIENT_VERSION)
+            .await?;
+    log::info!(
+        "SSM data channel open (multiplexed), agent version: {}",
+        channel.agent_version
+    );
+
+    // Verify the agent actually supports smux
+    if !smux::agent_supports_smux(&channel.agent_version) {
+        log::warn!(
+            "Agent version {} does not support smux, falling back to basic mode",
+            channel.agent_version
+        );
+        // Fall back: close this channel and re-open in basic mode.
+        // This is a rare edge case (agent downgraded after session started).
+        drop(channel);
+        return start_native_port_forwarding(stream_url, token_value, local_port, cancel, ready_tx)
+            .await;
+    }
+
+    let initial_outgoing_seq = channel.outgoing_seq;
+    let initial_incoming_seq = channel.expected_incoming_seq;
+
+    // Split WebSocket
+    let (ws_write_half, ws_read_half) = channel.ws.split();
+    let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write_half));
+
+    // Bind TCP listeners (same as basic mode)
+    let listener_v4 = {
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, local_port));
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .map_err(|e| format!("Failed to create socket: {}", e))?;
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| format!("Failed to set SO_REUSEADDR: {}", e))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
+        socket
+            .bind(&addr.into())
+            .map_err(|e| format!("Failed to bind port {}: {}", local_port, e))?;
+        socket
+            .listen(128)
+            .map_err(|e| format!("Failed to listen on port {}: {}", local_port, e))?;
+        let std_listener: std::net::TcpListener = socket.into();
+        tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| format!("Failed to create async listener: {}", e))?
+    };
+
+    let listener_v6: Option<tokio::net::TcpListener> = {
+        let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, local_port));
+        socket2::Socket::new(
+            socket2::Domain::IPV6,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .ok()
+        .and_then(|socket| {
+            let _ = socket.set_only_v6(true);
+            let _ = socket.set_reuse_address(true);
+            let _ = socket.set_nonblocking(true);
+            socket.bind(&addr.into()).ok()?;
+            socket.listen(128).ok()?;
+            let std_listener: std::net::TcpListener = socket.into();
+            tokio::net::TcpListener::from_std(std_listener).ok()
+        })
+    };
+
+    if listener_v6.is_some() {
+        log::info!(
+            "Multiplexed: listening on 127.0.0.1:{} and [::1]:{}",
+            local_port,
+            local_port
+        );
+    } else {
+        log::info!(
+            "Multiplexed: listening on 127.0.0.1:{} (IPv6 not available)",
+            local_port
+        );
+    }
+
+    // Signal tunnel ready
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(Ok(()));
+    }
+
+    // Shared state
+    let outgoing_seq = Arc::new(AtomicI64::new(initial_outgoing_seq));
+    let expected_incoming_seq = Arc::new(AtomicI64::new(initial_incoming_seq));
+    let session_cancel = CancellationToken::new();
+    let last_pong_time = Arc::new(AtomicI64::new(epoch_secs()));
+
+    // Outgoing buffer for SSM-level retransmission
+    let outgoing_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, OutgoingEntry>::new()));
+
+    // RTT estimator for retransmission timeout
+    let rtt_estimator = Arc::new(tokio::sync::Mutex::new(RttEstimator::new()));
+
+    // Smux frame channel: stream tasks write serialized smux frames here,
+    // and the SSM write loop wraps them in input_stream_data messages.
+    let (smux_frame_tx, mut smux_frame_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4096);
+
+    // Channel for delivering reassembled SSM payloads to the smux session
+    let (ssm_payload_tx, mut ssm_payload_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4096);
+
+    // Create the smux session
+    let smux_session = Arc::new(SmuxSession::new(smux_frame_tx.clone(), session_cancel.clone()));
+
+    // Send SYN flag to SSM agent (same as basic mode)
+    {
+        let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
+        let syn_msg = build_syn_message(syn_seq);
+        let serialized = syn_msg.serialize();
+        {
+            let mut ob = outgoing_buffer.lock().await;
+            ob.insert(
+                syn_seq,
+                OutgoingEntry {
+                    message: serialized.clone(),
+                    sent_at: std::time::Instant::now(),
+                    retransmit_count: 0,
+                },
+            );
+        }
+        let mut ws = ws_write.lock().await;
+        ws.send(Message::Binary(serialized.into()))
+            .await
+            .map_err(|e| format!("Failed to send SYN: {}", e))?;
+        log::info!("Sent SYN flag to SSM agent (multiplexed mode)");
+    }
+
+    // --- Task 1: WebSocket ping keepalive + pong watchdog ---
+    let ws_write_ping = ws_write.clone();
+    let cancel_ping = cancel.clone();
+    let session_cancel_ping = session_cancel.clone();
+    let last_pong_ping = last_pong_time.clone();
+    let ssm_keepalive_bytes = AgentMessage::new(
+        crate::tunnel::protocol::ACKNOWLEDGE,
+        0,
+        crate::tunnel::protocol::FLAG_ACK,
+        0,
+        serde_json::to_vec(&serde_json::json!({
+            "AcknowledgedMessageType": "",
+            "AcknowledgedMessageId": "",
+            "AcknowledgedMessageSequenceNumber": 0,
+            "IsSequentialMessage": false,
+        }))
+        .unwrap_or_default(),
+    )
+    .serialize();
+    let ping_handle = tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
+        let mut tick_count: u64 = 0;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = cancel_ping.cancelled() => break,
+                _ = session_cancel_ping.cancelled() => break,
+            }
+            tick_count += 1;
+
+            let last = last_pong_ping.load(Ordering::Relaxed);
+            let stale_secs = epoch_secs() - last;
+            if stale_secs > (WS_PING_INTERVAL_SECS * WS_PONG_MISS_THRESHOLD) as i64 {
+                log::error!(
+                    "No WebSocket pong received for {}s, declaring session dead",
+                    stale_secs
+                );
+                session_cancel_ping.cancel();
+                break;
+            }
+
+            let mut ws = ws_write_ping.lock().await;
+            if ws
+                .send(Message::Ping(b"keepalive".to_vec().into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+
+            if tick_count.is_multiple_of(SSM_KEEPALIVE_TICKS) {
+                let _ = ws
+                    .send(Message::Binary(ssm_keepalive_bytes.clone().into()))
+                    .await;
+            }
+        }
+    });
+
+    // --- Task 2: Retransmission scheduler ---
+    let outgoing_buffer_rt = outgoing_buffer.clone();
+    let ws_write_rt = ws_write.clone();
+    let cancel_rt = cancel.clone();
+    let session_cancel_rt = session_cancel.clone();
+    let rtt_estimator_rt = rtt_estimator.clone();
+    let retransmit_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
+            RETRANSMIT_CHECK_INTERVAL_MS,
+        ));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = cancel_rt.cancelled() => break,
+                _ = session_cancel_rt.cancelled() => break,
+            }
+
+            let current_rto = {
+                let est = rtt_estimator_rt.lock().await;
+                est.srtt + (CLOCK_GRANULARITY_MS).max(4 * est.rttvar)
+            };
+            let timeout = tokio::time::Duration::from_millis(
+                (current_rto
+                    .max(DEFAULT_RETRANSMIT_TIMEOUT_MS as i64)
+                    .min(MAX_RETRANSMIT_TIMEOUT_MS as i64)) as u64,
+            );
+            let mut buf = outgoing_buffer_rt.lock().await;
+            let mut to_resend = vec![];
+
+            for (seq, entry) in buf.iter_mut() {
+                if entry.sent_at.elapsed() > timeout {
+                    if entry.retransmit_count >= MAX_RETRANSMIT_ATTEMPTS {
+                        log::error!("Max retransmissions reached for seq {}", seq);
+                        session_cancel_rt.cancel();
+                        break;
+                    }
+                    entry.retransmit_count += 1;
+                    entry.sent_at = std::time::Instant::now();
+                    to_resend.push(entry.message.clone());
+                }
+            }
+            drop(buf);
+
+            if !to_resend.is_empty() {
+                let mut ws = ws_write_rt.lock().await;
+                for data in to_resend {
+                    if ws.send(Message::Binary(data.into())).await.is_err() {
+                        session_cancel_rt.cancel();
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // --- Task 3: WebSocket read loop (SSM layer) ---
+    // Reads SSM messages, handles acks/retransmission, and forwards output payloads
+    // to the smux session via ssm_payload_tx.
+    let ws_read = Arc::new(tokio::sync::Mutex::new(ws_read_half));
+    let ws_read_task = ws_read.clone();
+    let ws_write_ack = ws_write.clone();
+    let cancel_ws = cancel.clone();
+    let session_cancel_ws = session_cancel.clone();
+    let expected_seq = expected_incoming_seq.clone();
+    let incoming_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, (u32, Vec<u8>)>::new()));
+    let incoming_buf = incoming_buffer.clone();
+    let outgoing_buf_ack = outgoing_buffer.clone();
+    let rtt_estimator_ack = rtt_estimator.clone();
+    let last_pong_ws = last_pong_time.clone();
+
+    let ws_read_handle = tokio::spawn(async move {
+        let mut ws = ws_read_task.lock().await;
+        loop {
+            if cancel_ws.is_cancelled() || session_cancel_ws.is_cancelled() {
+                break;
+            }
+
+            let msg = tokio::select! {
+                msg = ws.next() => msg,
+                _ = cancel_ws.cancelled() => break,
+                _ = session_cancel_ws.cancelled() => break,
+            };
+
+            let msg = match msg {
+                Some(Ok(m)) => m,
+                Some(Err(e)) => {
+                    log::error!("WebSocket read error: {}", e);
+                    session_cancel_ws.cancel();
+                    break;
+                }
+                None => {
+                    session_cancel_ws.cancel();
+                    break;
+                }
+            };
+
+            match msg {
+                Message::Binary(data) => {
+                    let agent_msg = match AgentMessage::deserialize(&data) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            log::warn!("Failed to deserialize message: {}", e);
+                            continue;
+                        }
+                    };
+
+                    if !agent_msg.validate_digest(&data) {
+                        log::warn!(
+                            "Payload digest mismatch, dropping message seq={}",
+                            agent_msg.sequence_number
+                        );
+                        continue;
+                    }
+
+                    match agent_msg.message_type.as_str() {
+                        OUTPUT_STREAM_DATA => {
+                            // Always acknowledge
+                            let ack = build_acknowledge(&agent_msg);
+                            let mut ws_w = ws_write_ack.lock().await;
+                            let _ = ws_w.send(Message::Binary(ack.serialize().into())).await;
+                            drop(ws_w);
+
+                            let seq = agent_msg.sequence_number;
+                            let expected = expected_seq.load(Ordering::Relaxed);
+                            if seq == expected {
+                                // In-order: forward payload to smux session
+                                if agent_msg.payload_type == PAYLOAD_OUTPUT {
+                                    let _ = ssm_payload_tx.send(agent_msg.payload).await;
+                                } else if agent_msg.payload_type == PAYLOAD_FLAG {
+                                    // Handle SSM-level flags (shouldn't happen much in mux mode)
+                                    if agent_msg.payload.len() >= 4 {
+                                        let flag_value =
+                                            BigEndian::read_u32(&agent_msg.payload[..4]);
+                                        if flag_value == FLAG_CONNECT_TO_PORT_ERROR {
+                                            log::error!(
+                                                "Agent failed to connect to remote port"
+                                            );
+                                            session_cancel_ws.cancel();
+                                        }
+                                    }
+                                }
+                                expected_seq.store(expected + 1, Ordering::Relaxed);
+
+                                // Drain buffered in-order messages
+                                let mut next = expected + 1;
+                                let mut ibuf = incoming_buf.lock().await;
+                                while let Some((pt, payload_data)) = ibuf.remove(&next) {
+                                    if pt == PAYLOAD_OUTPUT {
+                                        let _ = ssm_payload_tx.send(payload_data).await;
+                                    }
+                                    next += 1;
+                                }
+                                expected_seq.store(next, Ordering::Relaxed);
+                            } else if seq > expected {
+                                let mut ibuf = incoming_buf.lock().await;
+                                if ibuf.len() >= MAX_BUFFER_SIZE {
+                                    log::error!("Incoming buffer overflow, cancelling session");
+                                    session_cancel_ws.cancel();
+                                    break;
+                                }
+                                ibuf.insert(seq, (agent_msg.payload_type, agent_msg.payload));
+                            }
+                        }
+                        "acknowledge" => {
+                            if let Ok(content) =
+                                serde_json::from_slice::<serde_json::Value>(&agent_msg.payload)
+                                && let Some(seq) = content
+                                    .get("AcknowledgedMessageSequenceNumber")
+                                    .and_then(|v| v.as_i64())
+                            {
+                                let mut buf = outgoing_buf_ack.lock().await;
+                                if let Some(entry) = buf.remove(&seq)
+                                    && entry.retransmit_count == 0 {
+                                        let rtt_sample =
+                                            entry.sent_at.elapsed().as_millis() as i64;
+                                        let mut est = rtt_estimator_ack.lock().await;
+                                        est.update(rtt_sample);
+                                    }
+                            }
+                        }
+                        CHANNEL_CLOSED => {
+                            log::info!("Channel closed by agent");
+                            session_cancel_ws.cancel();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Message::Pong(_) => {
+                    last_pong_ws.store(epoch_secs(), Ordering::Relaxed);
+                }
+                Message::Close(_) => {
+                    session_cancel_ws.cancel();
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // --- Task 4: Smux frame write loop ---
+    // Reads serialized smux frames from the channel and wraps them in SSM input_stream_data.
+    let ws_write_smux = ws_write.clone();
+    let outgoing_buffer_smux = outgoing_buffer.clone();
+    let outgoing_seq_smux = outgoing_seq.clone();
+    let cancel_smux_write = cancel.clone();
+    let session_cancel_smux_write = session_cancel.clone();
+    let smux_write_handle = tokio::spawn(async move {
+        loop {
+            let frame_data = tokio::select! {
+                data = smux_frame_rx.recv() => {
+                    match data {
+                        Some(d) => d,
+                        None => break,
+                    }
+                }
+                _ = cancel_smux_write.cancelled() => break,
+                _ = session_cancel_smux_write.cancelled() => break,
+            };
+
+            // Wrap smux frame bytes in an SSM input_stream_data message
+            let seq = outgoing_seq_smux.fetch_add(1, Ordering::Relaxed);
+            let msg = build_data_message(&frame_data, seq);
+            let serialized = msg.serialize();
+
+            {
+                let mut ob = outgoing_buffer_smux.lock().await;
+                if ob.len() >= MAX_BUFFER_SIZE {
+                    log::error!("Outgoing buffer overflow, cancelling session");
+                    session_cancel_smux_write.cancel();
+                    break;
+                }
+                ob.insert(
+                    seq,
+                    OutgoingEntry {
+                        message: serialized.clone(),
+                        sent_at: std::time::Instant::now(),
+                        retransmit_count: 0,
+                    },
+                );
+            }
+
+            let mut ws = ws_write_smux.lock().await;
+            if ws
+                .send(Message::Binary(serialized.into()))
+                .await
+                .is_err()
+            {
+                session_cancel_smux_write.cancel();
+                break;
+            }
+        }
+    });
+
+    // --- Task 5: Smux payload dispatch loop ---
+    // Reads reassembled SSM payloads and dispatches them to the smux session.
+    let smux_session_dispatch = smux_session.clone();
+    let cancel_dispatch = cancel.clone();
+    let session_cancel_dispatch = session_cancel.clone();
+    let dispatch_handle = tokio::spawn(async move {
+        loop {
+            let payload = tokio::select! {
+                data = ssm_payload_rx.recv() => {
+                    match data {
+                        Some(d) => d,
+                        None => break,
+                    }
+                }
+                _ = cancel_dispatch.cancelled() => break,
+                _ = session_cancel_dispatch.cancelled() => break,
+            };
+
+            smux_session_dispatch.handle_incoming_data(&payload).await;
+        }
+    });
+
+    // --- Task 6: Smux keepalive ---
+    let smux_session_keepalive = smux_session.clone();
+    let keepalive_handle = tokio::spawn(async move {
+        smux_session_keepalive.run_keepalive().await;
+    });
+
+    // --- Task 7: Multiplexed TCP listener ---
+    let smux_session_listener = smux_session.clone();
+    let cancel_listener = cancel.clone();
+    let session_cancel_listener = session_cancel.clone();
+    let listener_cancel = CancellationToken::new();
+    let listener_cancel_inner = listener_cancel.clone();
+    let listener_handle = tokio::spawn(async move {
+        let combined_cancel = CancellationToken::new();
+        let cc1 = combined_cancel.clone();
+        let cc2 = combined_cancel.clone();
+
+        // Monitor both parent cancellation tokens
+        let monitor1 = tokio::spawn(async move {
+            cancel_listener.cancelled().await;
+            cc1.cancel();
+        });
+        let monitor2 = tokio::spawn(async move {
+            session_cancel_listener.cancelled().await;
+            cc2.cancel();
+        });
+
+        smux::run_multiplexed_listener(
+            smux_session_listener,
+            listener_v4,
+            listener_v6,
+            combined_cancel,
+        )
+        .await;
+
+        listener_cancel_inner.cancel();
+        monitor1.abort();
+        monitor2.abort();
+    });
+
+    // Wait for session to end (cancel or session_cancel)
+    tokio::select! {
+        _ = cancel.cancelled() => {}
+        _ = session_cancel.cancelled() => {}
+        _ = listener_cancel.cancelled() => {}
+    }
+
+    // --- Cleanup ---
+    session_cancel.cancel();
+    ping_handle.abort();
+    retransmit_handle.abort();
+    ws_read_handle.abort();
+    smux_write_handle.abort();
+    dispatch_handle.abort();
+    keepalive_handle.abort();
+    listener_handle.abort();
+
+    let _ = ping_handle.await;
+    let _ = retransmit_handle.await;
+    let _ = ws_read_handle.await;
+    let _ = smux_write_handle.await;
+    let _ = dispatch_handle.await;
+    let _ = keepalive_handle.await;
+    let _ = listener_handle.await;
+
+    // Best-effort: send terminate and close WebSocket
     {
         let seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
         let term_msg = build_flag_message(FLAG_TERMINATE_SESSION, seq, true);

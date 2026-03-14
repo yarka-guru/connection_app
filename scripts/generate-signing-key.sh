@@ -7,7 +7,7 @@ echo "Generating Tauri signing keys..."
 echo ""
 
 # Generate the key pair
-npx @tauri-apps/cli signer generate -w ~/.tauri/rds-ssm-connect.key
+npx @tauri-apps/cli signer generate -w ~/.tauri/connection-app.key
 
 echo ""
 echo "============================================"
@@ -15,7 +15,7 @@ echo "IMPORTANT: Save these values as GitHub secrets:"
 echo "============================================"
 echo ""
 echo "1. TAURI_SIGNING_PRIVATE_KEY"
-echo "   Copy the ENTIRE contents of ~/.tauri/rds-ssm-connect.key"
+echo "   Copy the ENTIRE contents of ~/.tauri/connection-app.key"
 echo ""
 echo "2. TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
 echo "   The password you entered (or empty if none)"

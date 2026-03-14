@@ -4,15 +4,26 @@ const {
   profiles = [],
   selectedProject = '',
   selectedProfile = '',
+  selectedDatabase = '',
   isConnecting = false,
   isLoadingProjects = false,
   onProjectChange,
   onProfileChange,
+  onDatabaseChange,
   onConnect,
 } = $props()
 
+// Get databases for the selected project
+const currentProjectDatabases = $derived(() => {
+  if (!selectedProject) return []
+  const project = projects.find((p) => p.key === selectedProject)
+  return project?.databases || []
+})
+
+const hasDatabases = $derived(currentProjectDatabases().length > 1)
+
 const canConnect = $derived(
-  selectedProject && selectedProfile && !isConnecting,
+  selectedProject && selectedProfile && !isConnecting && (!hasDatabases || selectedDatabase),
 )
 
 function handleProjectSelect(e) {
@@ -21,6 +32,10 @@ function handleProjectSelect(e) {
 
 function handleProfileSelect(e) {
   onProfileChange?.(e.target.value)
+}
+
+function handleDatabaseSelect(e) {
+  onDatabaseChange?.(e.target.value)
 }
 
 function handleConnectClick() {
@@ -89,6 +104,32 @@ function handleConnectClick() {
         </div>
       </div>
     </div>
+
+    {#if hasDatabases}
+      <div class="field-group">
+        <label for="database">
+          <span class="label-text">Database</span>
+        </label>
+        <div class="select-wrapper">
+          <select
+            id="database"
+            value={selectedDatabase}
+            onchange={handleDatabaseSelect}
+            disabled={!selectedProject || isConnecting}
+          >
+            <option value="">Choose a database</option>
+            {#each currentProjectDatabases() as db}
+              <option value={db}>{db}</option>
+            {/each}
+          </select>
+          <div class="select-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    {/if}
   </div>
 
   <div class="action-area">

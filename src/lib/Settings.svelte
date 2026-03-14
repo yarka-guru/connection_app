@@ -2,8 +2,9 @@
 import { onMount, onDestroy } from 'svelte'
 import { trapFocus, safeTimeout } from './utils.js'
 import { themes, themeNames } from './themes.js'
+import ThemeSwitcher from './ThemeSwitcher.svelte'
 
-const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange } = $props()
+const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, scheme = 'dark', onSchemeChange } = $props()
 
 let activeTab = $state('projects')
 let awsProfiles = $state([])
@@ -25,6 +26,7 @@ let projectKey = $state('')
 let projectName = $state('')
 let projectRegion = $state('us-east-1')
 let projectDatabase = $state('')
+let projectDatabases = $state([])
 let projectSecretPrefix = $state('')
 let projectRdsType = $state('cluster')
 let projectEngine = $state('postgres')
@@ -42,6 +44,8 @@ let projectTargetType = $state('ec2-direct')
 let projectTargetPattern = $state('')
 let projectEcsCluster = $state('')
 let projectEcsService = $state('')
+let projectSshUsername = $state('')
+let projectSshKeyPath = $state('')
 
 // Delete confirmation state
 let deleteConfirmProfile = $state(null)
@@ -185,6 +189,7 @@ function openAddProject() {
   projectName = ''
   projectRegion = 'us-east-1'
   projectDatabase = ''
+  projectDatabases = []
   projectSecretPrefix = 'rds!cluster'
   projectRdsType = 'cluster'
   projectEngine = 'postgres'
@@ -200,6 +205,8 @@ function openAddProject() {
   projectTargetPattern = ''
   projectEcsCluster = ''
   projectEcsService = ''
+  projectSshUsername = ''
+  projectSshKeyPath = ''
 }
 
 function openEditProject(key, config) {
@@ -208,6 +215,7 @@ function openEditProject(key, config) {
   projectName = config.name
   projectRegion = config.region
   projectDatabase = config.database || ''
+  projectDatabases = config.databases ? [...config.databases] : []
   projectSecretPrefix = config.secretPrefix || ''
   projectRdsType = config.rdsType || 'cluster'
   projectEngine = config.engine || 'postgres'
@@ -224,6 +232,8 @@ function openEditProject(key, config) {
   projectTargetPattern = config.targetPattern || ''
   projectEcsCluster = config.ecsCluster || ''
   projectEcsService = config.ecsService || ''
+  projectSshUsername = config.sshUsername || ''
+  projectSshKeyPath = config.sshKeyPath || ''
 }
 
 function closeProjectModal() {
@@ -236,6 +246,18 @@ function addPortMapping() {
 
 function removePortMapping(index) {
   projectPortMappings = projectPortMappings.filter((_, i) => i !== index)
+}
+
+function addDatabase() {
+  projectDatabases = [...projectDatabases, '']
+}
+
+function removeDatabase(index) {
+  projectDatabases = projectDatabases.filter((_, i) => i !== index)
+}
+
+function updateDatabase(index, value) {
+  projectDatabases = projectDatabases.map((d, i) => i === index ? value : d)
 }
 
 async function saveProject() {
@@ -260,6 +282,7 @@ async function saveProject() {
     region: projectRegion.trim(),
     connectionType: projectConnectionType,
     database: projectConnectionType === 'rds' ? projectDatabase.trim() : '',
+    databases: projectConnectionType === 'rds' && projectDatabases.length > 0 ? projectDatabases.filter(d => d.trim()) : null,
     secretPrefix: projectConnectionType === 'rds' ? projectSecretPrefix.trim() : '',
     rdsType: projectConnectionType === 'rds' ? projectRdsType : '',
     engine: projectConnectionType === 'rds' ? projectEngine : null,
@@ -274,6 +297,8 @@ async function saveProject() {
     targetPattern: projectConnectionType === 'service' && projectTargetType !== 'ecs-bastion' ? projectTargetPattern.trim() || null : null,
     ecsCluster: projectConnectionType === 'service' && projectTargetType === 'ecs-bastion' ? projectEcsCluster.trim() || null : null,
     ecsService: projectConnectionType === 'service' && projectTargetType === 'ecs-bastion' ? projectEcsService.trim() || null : null,
+    sshUsername: projectConnectionType === 'service' && projectServiceType === 'ssh' ? projectSshUsername.trim() || null : null,
+    sshKeyPath: projectConnectionType === 'service' && projectServiceType === 'ssh' ? projectSshKeyPath.trim() || null : null,
   }
 
   saving = true
@@ -400,7 +425,7 @@ onDestroy(() => {
       {:else if activeTab === 'projects'}
         <div class="profiles-tab">
           <div class="profiles-header">
-            <span class="profiles-path">~/.rds-ssm-connect/projects.json</span>
+            <span class="profiles-path">~/.connection-app/projects.json</span>
             <button class="btn-add" onclick={openAddProject}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -451,6 +476,9 @@ onDestroy(() => {
                       {:else}
                         <span class="detail">{(config.serviceType || 'custom').toUpperCase()}</span>
                         <span class="detail">{config.targetType || 'ec2-direct'}</span>
+                        {#if config.serviceType === 'ssh' && config.sshUsername}
+                          <span class="detail">{config.sshUsername}@</span>
+                        {/if}
                         {#if config.remotePort}
                           <span class="detail">port {config.remotePort}</span>
                         {/if}
@@ -544,23 +572,30 @@ onDestroy(() => {
         </div>
       {:else if activeTab === 'appearance'}
         <div class="appearance-tab">
-          <div class="theme-grid">
-            {#each themeNames as key}
-              {@const theme = themes[key]}
-              <button
-                class="theme-card"
-                class:selected={currentTheme === key}
-                onclick={() => onThemeChange?.(key)}
-              >
-                <div class="theme-swatches">
-                  <span class="swatch" style="background: {theme.vars['--bg-primary']}"></span>
-                  <span class="swatch" style="background: {theme.vars['--accent-primary']}"></span>
-                  <span class="swatch" style="background: {theme.vars['--accent-secondary']}"></span>
-                </div>
-                <span class="theme-name">{theme.name}</span>
-              </button>
-            {/each}
-          </div>
+          <ThemeSwitcher {scheme} {onSchemeChange} />
+          {#if scheme !== 'light'}
+            <div class="dark-theme-label">Dark theme</div>
+            <div class="theme-grid">
+              {#each themeNames as key}
+                {@const theme = themes[key]}
+                <button
+                  class="theme-card"
+                  class:selected={currentTheme === key}
+                  onclick={() => onThemeChange?.(key)}
+                >
+                  <div class="theme-swatches">
+                    <span class="swatch" style="background: {theme.vars['--bg-primary']}"></span>
+                    <span class="swatch" style="background: {theme.vars['--accent-primary']}"></span>
+                    <span class="swatch" style="background: {theme.vars['--accent-secondary']}"></span>
+                  </div>
+                  <span class="theme-name">{theme.name}</span>
+                </button>
+              {/each}
+            </div>
+            {#if scheme === 'system'}
+              <p class="scheme-hint">The dark theme above is used when your system is in dark mode.</p>
+            {/if}
+          {/if}
         </div>
       {/if}
     </div>
@@ -669,6 +704,31 @@ onDestroy(() => {
               </div>
             </div>
 
+            <div class="form-group databases-group">
+              <label>
+                Databases
+                <span class="label-hint">(optional, for multi-database selection)</span>
+              </label>
+              {#if projectDatabases.length > 0}
+                <div class="databases-list">
+                  {#each projectDatabases as db, i}
+                    <div class="database-entry">
+                      <input
+                        type="text"
+                        value={db}
+                        oninput={(e) => updateDatabase(i, e.target.value)}
+                        placeholder="database name"
+                      />
+                      <button type="button" class="btn-icon-remove" onclick={() => removeDatabase(i)} title="Remove database">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <button type="button" class="btn-add-item" onclick={addDatabase}>+ Add Database</button>
+            </div>
+
             <div class="form-row">
               <div class="form-group">
                 <label for="project-rds-type">RDS Type</label>
@@ -697,6 +757,7 @@ onDestroy(() => {
                 <select id="project-service-type" bind:value={projectServiceType}>
                   <option value="vnc">VNC</option>
                   <option value="rdp">RDP</option>
+                  <option value="ssh">SSH</option>
                   <option value="custom">Custom</option>
                 </select>
               </div>
@@ -739,6 +800,21 @@ onDestroy(() => {
                 <div class="form-group">
                   <label for="project-ecs-service">ECS Service</label>
                   <input id="project-ecs-service" type="text" bind:value={projectEcsService} placeholder="my-service" />
+                </div>
+              </div>
+            {/if}
+
+            {#if projectServiceType === 'ssh'}
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="project-ssh-username">SSH Username</label>
+                  <input id="project-ssh-username" type="text" bind:value={projectSshUsername} placeholder="ec2-user (default)" />
+                  <span class="field-hint">Remote SSH username (defaults to ec2-user)</span>
+                </div>
+                <div class="form-group">
+                  <label for="project-ssh-key-path">SSH Key Path</label>
+                  <input id="project-ssh-key-path" type="text" bind:value={projectSshKeyPath} placeholder="~/.ssh/id_rsa (optional)" />
+                  <span class="field-hint">Path to private key (uses SSH agent if empty)</span>
                 </div>
               </div>
             {/if}
@@ -797,7 +873,7 @@ onDestroy(() => {
   .settings-modal {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.8);
+    background: var(--overlay-bg);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -1044,7 +1120,7 @@ onDestroy(() => {
     padding: 4px 10px;
     font-size: 0.75rem;
     font-weight: 600;
-    color: white;
+    color: var(--button-text);
     background: var(--color-error);
     border: none;
     border-radius: 6px;
@@ -1095,7 +1171,7 @@ onDestroy(() => {
   .raw-editor {
     flex: 1;
     min-height: 280px;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--input-bg);
     border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 10px;
     padding: 14px;
@@ -1120,7 +1196,7 @@ onDestroy(() => {
     padding: 10px 20px;
     font-size: 0.875rem;
     font-weight: 500;
-    color: white;
+    color: var(--button-text);
     background: var(--bg-button-gradient);
     border: none;
     border-radius: 8px;
@@ -1146,7 +1222,7 @@ onDestroy(() => {
   .edit-modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--overlay-bg);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1202,7 +1278,7 @@ onDestroy(() => {
   .form-group textarea,
   .form-group select {
     width: 100%;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--input-bg);
     border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
     padding: 10px 12px;
@@ -1329,7 +1405,7 @@ onDestroy(() => {
 
   .port-mapping-row input {
     flex: 1;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--input-bg);
     border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 6px;
     padding: 8px 10px;
@@ -1428,7 +1504,7 @@ onDestroy(() => {
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.1);
+    border: 2px solid var(--border-subtle);
   }
 
   .theme-name {
@@ -1436,5 +1512,93 @@ onDestroy(() => {
     font-weight: 500;
     color: var(--text-primary);
     text-transform: capitalize;
+  }
+
+  .dark-theme-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .scheme-hint {
+    margin: 12px 0 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .databases-group {
+    margin-bottom: 16px;
+  }
+
+  .databases-group .label-hint {
+    font-size: 0.7rem;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 4px;
+  }
+
+  .databases-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .database-entry {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .database-entry input {
+    flex: 1;
+    background: var(--input-bg);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .database-entry input:focus {
+    border-color: var(--accent-primary);
+  }
+
+  .btn-icon-remove {
+    padding: 6px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+    flex-shrink: 0;
+  }
+
+  .btn-icon-remove:hover {
+    background: rgba(var(--color-error-rgb), 0.1);
+    color: var(--color-error-soft);
+  }
+
+  .btn-add-item {
+    background: none;
+    border: 1px dashed rgba(var(--glass-rgb), 0.15);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+    color: var(--accent-primary-light);
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+    width: 100%;
+  }
+
+  .btn-add-item:hover {
+    background: rgba(var(--accent-primary-rgb), 0.08);
+    border-color: rgba(var(--accent-primary-rgb), 0.3);
   }
 </style>

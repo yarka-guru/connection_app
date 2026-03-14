@@ -39,37 +39,64 @@ pub async fn check_credentials_valid(clients: &AwsClients) -> CredentialCheck {
     }
 }
 
+/// Traverse a serde_json::Value using dot-notation field path.
+/// For example, "credentials.username" traverses into {"credentials": {"username": "foo"}}.
+fn get_nested_field<'a>(value: &'a serde_json::Value, field_path: &str) -> Option<&'a str> {
+    let parts: Vec<&str> = field_path.split('.').collect();
+    let mut current = value;
+    for part in &parts {
+        current = current.get(*part)?;
+    }
+    current.as_str()
+}
+
 /// Get database credentials from Secrets Manager.
+///
+/// If `secret_path` is provided, it is used directly as the secret ID (bypasses list_secrets).
+/// `username_field` and `password_field` allow customizing the JSON field names
+/// (supports dot-notation for nested fields). Defaults to "username" and "password".
 pub async fn get_connection_credentials(
     clients: &AwsClients,
     secret_prefix: &str,
     database: &str,
+    secret_path: Option<&str>,
+    username_field: Option<&str>,
+    password_field: Option<&str>,
 ) -> Result<DbCredentials, AppError> {
-    let list_response = clients
-        .secrets_manager
-        .list_secrets()
-        .filters(
-            aws_sdk_secretsmanager::types::Filter::builder()
-                .key(aws_sdk_secretsmanager::types::FilterNameStringType::Name)
-                .values(secret_prefix)
-                .build(),
-        )
-        .send()
-        .await
-        .map_err(|e| AppError::Aws(format!("Failed to list secrets: {:?}", e)))?;
+    let username_key = username_field.unwrap_or("username");
+    let password_key = password_field.unwrap_or("password");
 
-    let secrets = list_response.secret_list();
-    if secrets.is_empty() {
-        return Err(AppError::Aws(format!(
-            "No secret found matching prefix '{}'.",
-            secret_prefix
-        )));
-    }
+    let secret_name = if let Some(path) = secret_path {
+        // Use secret_path directly — skip list_secrets
+        path.to_string()
+    } else {
+        // Prefix-based search (original behavior)
+        let list_response = clients
+            .secrets_manager
+            .list_secrets()
+            .filters(
+                aws_sdk_secretsmanager::types::Filter::builder()
+                    .key(aws_sdk_secretsmanager::types::FilterNameStringType::Name)
+                    .values(secret_prefix)
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| AppError::Aws(format!("Failed to list secrets: {:?}", e)))?;
 
-    let secret_name = secrets[0]
-        .name()
-        .ok_or_else(|| AppError::Aws("Secret has no name".to_string()))?
-        .to_string();
+        let secrets = list_response.secret_list();
+        if secrets.is_empty() {
+            return Err(AppError::Aws(format!(
+                "No secret found matching prefix '{}'.",
+                secret_prefix
+            )));
+        }
+
+        secrets[0]
+            .name()
+            .ok_or_else(|| AppError::Aws("Secret has no name".to_string()))?
+            .to_string()
+    };
 
     let get_response = clients
         .secrets_manager
@@ -95,24 +122,20 @@ pub async fn get_connection_credentials(
         ))
     })?;
 
-    let username = credentials
-        .get("username")
-        .and_then(|v| v.as_str())
+    let username = get_nested_field(&credentials, username_key)
         .ok_or_else(|| {
             AppError::Aws(format!(
-                "Secret '{}' is missing required field: username",
-                secret_name
+                "Secret '{}' is missing required field: {}",
+                secret_name, username_key
             ))
         })?
         .to_string();
 
-    let password = credentials
-        .get("password")
-        .and_then(|v| v.as_str())
+    let password = get_nested_field(&credentials, password_key)
         .ok_or_else(|| {
             AppError::Aws(format!(
-                "Secret '{}' is missing required field: password",
-                secret_name
+                "Secret '{}' is missing required field: {}",
+                secret_name, password_key
             ))
         })?
         .to_string();
@@ -126,10 +149,44 @@ pub async fn get_connection_credentials(
 }
 
 /// Find a running bastion instance tagged with the given Name pattern.
+/// If `preferred_id` is provided and that instance exists and is running, it is returned directly.
+/// Otherwise, the normal tag-based search is used.
 pub async fn find_bastion_instance(
     clients: &AwsClients,
     bastion_pattern: &str,
+    preferred_id: Option<&str>,
 ) -> Result<String, AppError> {
+    // If a preferred bastion is specified, check if it's still running
+    if let Some(pref_id) = preferred_id {
+        let pref_response = clients
+            .ec2
+            .describe_instances()
+            .instance_ids(pref_id)
+            .filters(
+                aws_sdk_ec2::types::Filter::builder()
+                    .name("instance-state-name")
+                    .values("running")
+                    .build(),
+            )
+            .send()
+            .await;
+
+        if let Ok(resp) = pref_response {
+            for reservation in resp.reservations() {
+                for instance in reservation.instances() {
+                    if let Some(id) = instance.instance_id() {
+                        log::info!("Using preferred bastion instance: {}", id);
+                        return Ok(id.to_string());
+                    }
+                }
+            }
+        }
+        log::info!(
+            "Preferred bastion {} not available, falling back to tag search",
+            pref_id
+        );
+    }
+
     let response = clients
         .ec2
         .describe_instances()

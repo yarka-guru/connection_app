@@ -236,7 +236,7 @@ function handleManualDownload() {
     padding: 8px 16px;
     font-size: 0.8rem;
     font-weight: 600;
-    color: white;
+    color: var(--button-text);
     background: var(--bg-button-gradient);
     border: none;
     border-radius: 8px;

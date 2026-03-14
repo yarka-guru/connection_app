@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for RDS SSM Connect","local":true,"windows":["main"],"permissions":["core:default","store:default","opener:default","updater:default","dialog:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for ConnectionApp","local":true,"windows":["main"],"permissions":["core:default","store:default","opener:default","updater:default","dialog:default","notification:default","core:tray:default"]}}

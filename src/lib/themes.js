@@ -183,13 +183,107 @@ const rosewood = {
   },
 }
 
-export const themes = { forest, midnight, ember, arctic, rosewood }
+const light = {
+  name: 'Light',
+  key: 'light',
+  vars: {
+    '--bg-primary': '#ffffff',
+    '--bg-secondary': '#f8fafc',
+    '--bg-tertiary': '#f1f5f9',
+    '--bg-card': 'rgba(255, 255, 255, 0.9)',
+    '--bg-card-inner': 'rgba(248, 250, 252, 0.95)',
+    '--accent-primary': '#16a34a',
+    '--accent-primary-light': '#15803d',
+    '--accent-primary-rgb': '22, 163, 74',
+    '--accent-secondary': '#0d9488',
+    '--accent-secondary-rgb': '13, 148, 136',
+    '--text-primary': '#1e293b',
+    '--text-secondary': '#475569',
+    '--text-muted': '#94a3b8',
+    '--text-hover': '#334155',
+    '--text-inactive': '#64748b',
+    '--color-error': '#dc2626',
+    '--color-error-dark': '#b91c1c',
+    '--color-error-soft': '#ef4444',
+    '--color-error-light': '#991b1b',
+    '--color-error-rgb': '220, 38, 38',
+    '--color-success': '#16a34a',
+    '--color-success-soft': '#22c55e',
+    '--glass-rgb': '30, 41, 59',
+    '--glass-bg': 'rgba(241, 245, 249, 0.7)',
+    '--glass-bg-hover': 'rgba(226, 232, 240, 0.8)',
+    '--glass-border': 'rgba(203, 213, 225, 0.5)',
+    '--glass-border-hover': 'rgba(148, 163, 184, 0.5)',
+    '--glass-inner-glow': 'inset 0 1px 0 rgba(255, 255, 255, 0.8)',
+    '--bg-button-gradient': 'linear-gradient(135deg, #16a34a 0%, #0d9488 100%)',
+    '--bg-button-gradient-shadow': 'rgba(22, 163, 74, 0.3)',
+    '--input-bg': 'rgba(241, 245, 249, 0.8)',
+    '--button-text': 'white',
+    '--border-subtle': 'rgba(203, 213, 225, 0.6)',
+    '--spinner-track': 'rgba(148, 163, 184, 0.3)',
+    '--spinner-color': 'var(--accent-primary)',
+    '--overlay-bg': 'rgba(0, 0, 0, 0.4)',
+    '--title-gradient-start': '#1e293b',
+    '--glass-shadow': '0 8px 32px rgba(0, 0, 0, 0.08)',
+  },
+}
+
+export const themes = { forest, midnight, ember, arctic, rosewood, light }
+export const darkThemeNames = [
+  'forest',
+  'midnight',
+  'ember',
+  'arctic',
+  'rosewood',
+]
 export const themeNames = ['forest', 'midnight', 'ember', 'arctic', 'rosewood']
 
+/** Scheme modes: 'light', 'dark', 'system' */
+export const schemeModes = ['light', 'dark', 'system']
+
+/**
+ * Apply a theme's CSS variables to document root and set data-theme attribute.
+ * @param {string} name - Theme key (e.g. 'forest', 'light')
+ */
 export function applyTheme(name) {
   const theme = themes[name] || themes.forest
   const root = document.documentElement
   for (const [prop, value] of Object.entries(theme.vars)) {
     root.style.setProperty(prop, value)
   }
+  // Set data-theme for any CSS that needs to target light vs dark
+  root.setAttribute('data-theme', name === 'light' ? 'light' : 'dark')
+}
+
+/**
+ * Resolve which theme to apply given the current scheme mode and dark theme preference.
+ * @param {'light'|'dark'|'system'} scheme
+ * @param {string} darkTheme - The selected dark theme key (e.g. 'forest')
+ * @returns {string} The theme key to apply
+ */
+export function resolveTheme(scheme, darkTheme) {
+  if (scheme === 'light') return 'light'
+  if (scheme === 'dark') return darkTheme || 'forest'
+  // system: check OS preference
+  if (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-color-scheme: light)').matches
+  ) {
+    return 'light'
+  }
+  return darkTheme || 'forest'
+}
+
+/**
+ * Get the current OS color scheme preference.
+ * @returns {'light'|'dark'}
+ */
+export function getSystemScheme() {
+  if (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-color-scheme: light)').matches
+  ) {
+    return 'light'
+  }
+  return 'dark'
 }

@@ -1,7 +1,7 @@
 use crate::tunnel::protocol::{
-    build_acknowledge, build_handshake_response, AgentMessage, HandshakeCompletePayload,
-    HandshakeRequestPayload, OpenDataChannelInput, CHANNEL_CLOSED, OUTPUT_STREAM_DATA,
-    PAYLOAD_HANDSHAKE_COMPLETE, PAYLOAD_HANDSHAKE_REQUEST,
+    build_acknowledge, build_handshake_response_with_version, AgentMessage,
+    HandshakeCompletePayload, HandshakeRequestPayload, OpenDataChannelInput, CHANNEL_CLOSED,
+    OUTPUT_STREAM_DATA, PAYLOAD_HANDSHAKE_COMPLETE, PAYLOAD_HANDSHAKE_REQUEST,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -24,9 +24,24 @@ pub struct SsmDataChannel {
 
 /// Connect to SSM WebSocket, authenticate, and complete the handshake.
 /// Returns a ready-to-use data channel.
+///
+/// Uses the basic client version ("1.0.0.0") which disables smux multiplexing.
 pub async fn open_data_channel(
     stream_url: &str,
     token_value: &str,
+) -> Result<SsmDataChannel, String> {
+    open_data_channel_with_version(stream_url, token_value, crate::tunnel::smux::BASIC_CLIENT_VERSION).await
+}
+
+/// Connect to SSM WebSocket, authenticate, and complete the handshake
+/// with a specific client version.
+///
+/// When `client_version` >= "1.1.70.0" and the agent supports it, the SSM agent
+/// enables smux multiplexing mode where all data payloads are smux-framed.
+pub async fn open_data_channel_with_version(
+    stream_url: &str,
+    token_value: &str,
+    client_version: &str,
 ) -> Result<SsmDataChannel, String> {
     // Step 1: Connect WebSocket
     let (mut ws, _response) = connect_async(stream_url)
@@ -39,7 +54,7 @@ pub async fn open_data_channel(
         request_id: Uuid::new_v4().to_string(),
         token_value: token_value.to_string(),
         client_id: Uuid::new_v4().to_string(),
-        client_version: "1.0.0.0".to_string(),
+        client_version: client_version.to_string(),
     };
     let open_json = serde_json::to_string(&open_msg)
         .map_err(|e| format!("Failed to serialize OpenDataChannelInput: {}", e))?;
@@ -87,8 +102,12 @@ pub async fn open_data_channel(
                                     })?;
                                 agent_version = request.agent_version.clone();
 
-                                // Send HandshakeResponse using current client seq
-                                let response = build_handshake_response(&request, client_seq);
+                                // Send HandshakeResponse with the requested client version
+                                let response = build_handshake_response_with_version(
+                                    &request,
+                                    client_seq,
+                                    client_version,
+                                );
                                 ws.send(Message::Binary(response.serialize().into()))
                                     .await
                                     .map_err(|e| {

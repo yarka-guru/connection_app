@@ -97,3 +97,32 @@ export function trapFocus(node) {
 export function autoFocus(node) {
   node.focus()
 }
+
+/**
+ * Build a connection string for a database connection.
+ * @param {{ username: string, password: string, database: string, localPort: string|number, engine?: string }} info
+ * @param {'psql'|'mysql'|'jdbc'|'uri'} format
+ * @returns {string}
+ */
+export function buildConnectionString(info, format) {
+  const host = 'localhost'
+  const port = info.localPort
+
+  switch (format) {
+    case 'psql':
+      return `psql "host=${host} port=${port} user=${info.username} password=${info.password} dbname=${info.database}"`
+    case 'mysql':
+      return `mysql -h ${host} -P ${port} -u ${info.username} -p'${info.password}' ${info.database}`
+    case 'jdbc':
+      if (info.engine === 'mysql') {
+        return `jdbc:mysql://${host}:${port}/${info.database}?user=${info.username}&password=${encodeURIComponent(info.password)}`
+      }
+      return `jdbc:postgresql://${host}:${port}/${info.database}?user=${info.username}&password=${encodeURIComponent(info.password)}`
+    case 'uri': {
+      const proto = info.engine === 'mysql' ? 'mysql' : 'postgresql'
+      return `${proto}://${info.username}:${encodeURIComponent(info.password)}@${host}:${port}/${info.database}`
+    }
+    default:
+      return ''
+  }
+}

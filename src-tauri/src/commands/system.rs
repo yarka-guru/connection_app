@@ -1,5 +1,6 @@
 use crate::config::projects::{self, ProjectConfig};
 use crate::error::AppError;
+use crate::history::{self, HistoryEntry};
 use crate::sandbox::{self, AwsDirAccess, SandboxStatus};
 use crate::tunnel::manager::TunnelManager;
 use serde::{Deserialize, Serialize};
@@ -138,7 +139,7 @@ async fn install_deb_update(version: &str, app_handle: &AppHandle) -> Result<(),
         _ => "amd64",
     };
     let url = format!(
-        "{}/releases/download/v{}/RDS.SSM.Connect_{}_{}.deb",
+        "{}/releases/download/v{}/ConnectionApp_{}_{}.deb",
         GITHUB_REPO, version, version, arch
     );
 
@@ -164,7 +165,7 @@ async fn install_deb_update(version: &str, app_handle: &AppHandle) -> Result<(),
         .await
         .map_err(|e| AppError::General(format!("Failed to read .deb response: {}", e)))?;
 
-    let tmp_path = std::env::temp_dir().join("rds-ssm-connect-update.deb");
+    let tmp_path = std::env::temp_dir().join("connection-app-update.deb");
     std::fs::write(&tmp_path, &bytes)
         .map_err(|e| AppError::General(format!("Failed to write temp .deb: {}", e)))?;
 
@@ -202,7 +203,7 @@ async fn install_brew_update(app_handle: &AppHandle) -> Result<(), AppError> {
     // Find brew binary
     let brew_path = which_brew().ok_or_else(|| {
         AppError::General(
-            "Could not find brew. Run manually: brew upgrade rds-ssm-connect".to_string(),
+            "Could not find brew. Run manually: brew upgrade connection-app".to_string(),
         )
     })?;
 
@@ -218,7 +219,7 @@ async fn install_brew_update(app_handle: &AppHandle) -> Result<(), AppError> {
         .await;
 
     let output = tokio::process::Command::new(&brew_path)
-        .args(["upgrade", "rds-ssm-connect"])
+        .args(["upgrade", "connection-app"])
         .output()
         .await
         .map_err(|e| AppError::General(format!("Failed to run brew: {}", e)))?;
@@ -235,7 +236,7 @@ async fn install_brew_update(app_handle: &AppHandle) -> Result<(), AppError> {
         {
             return Err(AppError::General(
                 "Already up to date in Homebrew. The latest formula may not be published yet. \
-                 Try later or run: brew update && brew upgrade rds-ssm-connect"
+                 Try later or run: brew update && brew upgrade connection-app"
                     .to_string(),
             ));
         }
@@ -248,7 +249,7 @@ async fn install_brew_update(app_handle: &AppHandle) -> Result<(), AppError> {
             .and_then(|bin| bin.parent())
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("/home/linuxbrew/.linuxbrew"));
-        let new_binary = brew_prefix.join("bin/rds-ssm-connect");
+        let new_binary = brew_prefix.join("bin/connection-app");
 
         if let Err(e) = std::process::Command::new(&new_binary).spawn() {
             log::error!("failed to launch updated binary at {}: {}", new_binary.display(), e);
@@ -258,7 +259,7 @@ async fn install_brew_update(app_handle: &AppHandle) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::General(format!(
-            "brew upgrade failed: {}. Try running manually: brew upgrade rds-ssm-connect",
+            "brew upgrade failed: {}. Try running manually: brew upgrade connection-app",
             stderr.trim()
         )))
     }
@@ -494,4 +495,160 @@ pub async fn import_projects_file(app_handle: AppHandle) -> Result<usize, AppErr
     }
 
     Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_projects_file(app_handle: AppHandle) -> Result<String, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let configs = projects::load_project_configs().await?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .file()
+        .set_title("Export projects")
+        .set_file_name("projects.json")
+        .add_filter("JSON", &["json"])
+        .save_file(move |file_path| {
+            let _ = tx.send(file_path);
+        });
+
+    let file_path = rx
+        .await
+        .map_err(|_| AppError::General("Dialog channel closed".to_string()))?
+        .ok_or_else(|| AppError::General("File selection cancelled".to_string()))?;
+
+    let path_buf: std::path::PathBuf = file_path
+        .as_path()
+        .ok_or_else(|| AppError::General("Invalid file path from dialog".to_string()))?
+        .to_path_buf();
+
+    let json = serde_json::to_string_pretty(&configs)?;
+    tokio::fs::write(&path_buf, format!("{}\n", json))
+        .await
+        .map_err(|e| AppError::General(format!("Failed to write file: {}", e)))?;
+
+    Ok(path_buf.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn export_saved_connections(app_handle: AppHandle) -> Result<String, AppError> {
+    use crate::commands::saved::{load_saved_connections, SavedConnection};
+    use tauri_plugin_dialog::DialogExt;
+
+    let connections: Vec<SavedConnection> = load_saved_connections(app_handle.clone()).await?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .file()
+        .set_title("Export saved connections")
+        .set_file_name("saved-connections.json")
+        .add_filter("JSON", &["json"])
+        .save_file(move |file_path| {
+            let _ = tx.send(file_path);
+        });
+
+    let file_path = rx
+        .await
+        .map_err(|_| AppError::General("Dialog channel closed".to_string()))?
+        .ok_or_else(|| AppError::General("File selection cancelled".to_string()))?;
+
+    let path_buf: std::path::PathBuf = file_path
+        .as_path()
+        .ok_or_else(|| AppError::General("Invalid file path from dialog".to_string()))?
+        .to_path_buf();
+
+    let json = serde_json::to_string_pretty(&connections)?;
+    tokio::fs::write(&path_buf, format!("{}\n", json))
+        .await
+        .map_err(|e| AppError::General(format!("Failed to write file: {}", e)))?;
+
+    Ok(path_buf.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn import_saved_connections(app_handle: AppHandle) -> Result<usize, AppError> {
+    use crate::commands::saved::SavedConnection;
+    use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_store::StoreExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .file()
+        .set_title("Select saved connections file")
+        .add_filter("JSON", &["json"])
+        .pick_file(move |file_path| {
+            let _ = tx.send(file_path);
+        });
+
+    let file_path = rx
+        .await
+        .map_err(|_| AppError::General("Dialog channel closed".to_string()))?
+        .ok_or_else(|| AppError::General("File selection cancelled".to_string()))?;
+
+    let path_buf: std::path::PathBuf = file_path
+        .as_path()
+        .ok_or_else(|| AppError::General("Invalid file path from dialog".to_string()))?
+        .to_path_buf();
+
+    let data = tokio::fs::read_to_string(&path_buf)
+        .await
+        .map_err(|e| AppError::General(format!("Failed to read file: {}", e)))?;
+
+    let imported: Vec<SavedConnection> = serde_json::from_str(&data)
+        .map_err(|e| AppError::General(format!("Invalid saved connections JSON: {}", e)))?;
+
+    if imported.is_empty() {
+        return Ok(0);
+    }
+
+    // Load existing connections from store
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut existing: Vec<SavedConnection> = store
+        .get("savedConnections")
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    // Merge: skip duplicates (same project_key + profile)
+    let mut added = 0usize;
+    for conn in imported {
+        let is_duplicate = existing
+            .iter()
+            .any(|e| e.project_key == conn.project_key && e.profile == conn.profile);
+        if !is_duplicate {
+            existing.push(conn);
+            added += 1;
+        }
+    }
+
+    store.set(
+        "savedConnections",
+        serde_json::to_value(&existing)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(added)
+}
+
+#[tauri::command]
+pub async fn get_connection_history(
+    limit: Option<usize>,
+) -> Result<Vec<HistoryEntry>, AppError> {
+    let limit = limit.unwrap_or(100);
+    Ok(history::read_history(limit).await)
+}
+
+#[tauri::command]
+pub async fn clear_connection_history() -> Result<(), AppError> {
+    history::clear_history().await;
+    Ok(())
 }

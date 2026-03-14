@@ -1,16 +1,20 @@
-use crate::aws::credentials::{create_aws_clients, AwsClients};
+use crate::aws::credentials::{build_aws_config, create_aws_clients, AwsClients};
+use crate::aws::iam_auth;
 use crate::aws::operations;
 use crate::aws::sso::{ensure_sso_session, TauriSsoHandler};
+use crate::config::preferences;
 use crate::config::projects::{
     get_default_port_for_engine, get_local_port, load_project_configs, ProjectConfig,
 };
 use crate::error::AppError;
+use crate::history::{self, HistoryEntry};
 use crate::tunnel::native;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +24,11 @@ const BASTION_WAIT_RETRY_DELAY_MS: u64 = 15000;
 const PORT_FORWARDING_MAX_RETRIES: u32 = 2;
 const AUTO_RECONNECT_MAX_RETRIES: u32 = 3;
 const AUTO_RECONNECT_DELAY_MS: u64 = 3000;
+
+// Health check constants
+const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+const HEALTH_CHECK_TIMEOUT_MS: u64 = 5000;
+const HEALTH_CHECK_DEGRADED_MS: u64 = 5000;
 
 // Validation patterns
 static PROFILE_SAFE_PATTERN: std::sync::LazyLock<Regex> =
@@ -55,6 +64,11 @@ pub struct ConnectionInfo {
     pub remote_host: Option<String>,
     #[serde(rename = "targetType", skip_serializing_if = "Option::is_none")]
     pub target_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    // SSH-specific: pre-built SSH command for copy-paste
+    #[serde(rename = "sshCommand", skip_serializing_if = "Option::is_none")]
+    pub ssh_command: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +85,97 @@ pub struct Connection {
 pub struct TunnelManager {
     connections: Arc<Mutex<HashMap<String, Connection>>>,
     app_handle: AppHandle,
+}
+
+/// Attempt to identify which process is holding a given port.
+/// Returns a string like `"postgres (PID 12345)"` or `None` if detection fails.
+/// Uses synchronous `std::process::Command` — safe to call from sync context.
+fn get_port_holder(port: u16) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("lsof")
+            .args([
+                "-i", &format!(":{}", port),
+                "-sTCP:LISTEN",
+                "-P", "-n",
+            ])
+            .output()
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Skip header line, parse first data line: COMMAND PID USER ...
+        let line = stdout.lines().nth(1)?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            Some(format!("{} (PID {})", parts[0], parts[1]))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("ss")
+            .args(["-tlnp", "sport", &format!("= :{}", port)])
+            .output()
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Look for users:(("process",pid=12345,...)) in any line
+        for line in stdout.lines() {
+            if let Some(users_start) = line.find("users:((") {
+                let rest = &line[users_start..];
+                // Extract process name from ("name",pid=N,...)
+                let name = rest
+                    .split('"')
+                    .nth(1)
+                    .unwrap_or("unknown");
+                let pid = rest
+                    .split("pid=")
+                    .nth(1)
+                    .and_then(|s| s.split([',', ')']).next())
+                    .unwrap_or("?");
+                return Some(format!("{} (PID {})", name, pid));
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("netstat")
+            .args(["-aon"])
+            .output()
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let port_str = format!(":{}", port);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // TCP  0.0.0.0:PORT  0.0.0.0:0  LISTENING  PID
+            if parts.len() >= 5
+                && parts[0] == "TCP"
+                && parts[1].ends_with(&port_str)
+                && parts[3] == "LISTENING"
+            {
+                let pid = parts[4];
+                // Try to get process name via tasklist
+                if let Ok(task_output) = std::process::Command::new("tasklist")
+                    .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+                    .output()
+                {
+                    let task_stdout = String::from_utf8_lossy(&task_output.stdout);
+                    if let Some(name) = task_stdout.split('"').nth(1) {
+                        return Some(format!("{} (PID {})", name, pid));
+                    }
+                }
+                return Some(format!("PID {}", pid));
+            }
+        }
+        None
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
 }
 
 impl TunnelManager {
@@ -126,6 +231,7 @@ impl TunnelManager {
         project_key: &str,
         profile: &str,
         local_port: Option<&str>,
+        database: Option<&str>,
         used_ports: &[String],
     ) -> Result<(String, ConnectionInfo), AppError> {
         // Validate profile
@@ -167,9 +273,11 @@ impl TunnelManager {
         };
 
         if all_used_ports.contains(&port_num) || !Self::is_port_available(port_num) {
+            let holder = get_port_holder(port_num)
+                .unwrap_or_else(|| "another process".to_string());
             return Err(AppError::Tunnel(format!(
-                "Port {} is not available. Close the application using it or change the port in project settings.",
-                port_to_use
+                "Port {} is already in use by {}. Close it or change the port in project settings.",
+                port_to_use, holder
             )));
         }
 
@@ -187,8 +295,8 @@ impl TunnelManager {
 
         // Dispatch based on connection type
         let (connection_info, tunnel_target) = match project_config.connection_type.as_str() {
-            "service" => self.resolve_service_target(&clients, &connection_id, project_config, &port_to_use).await?,
-            _ => self.resolve_rds_target(&clients, &connection_id, project_config, &port_to_use).await?,
+            "service" => self.resolve_service_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use).await?,
+            _ => self.resolve_rds_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use, database).await?,
         };
 
         let cancel_token = CancellationToken::new();
@@ -211,13 +319,20 @@ impl TunnelManager {
         // Channel to signal when the tunnel is actually ready
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
+        // Clone values needed for health check (before they're moved into spawn)
+        let health_port = port_to_use.clone();
+        let health_cancel = cancel_token.clone();
+
         // Spawn background task for port forwarding lifecycle
         let app_handle = self.app_handle.clone();
         let connections = self.connections.clone();
         let conn_id = connection_id.clone();
+        let project_key_owned = project_key.to_string();
+        let profile_owned = profile.to_string();
         let project_config = project_config.clone();
 
         tokio::spawn(async move {
+            let conn_label = format!("{} {}", project_key_owned, profile_owned);
             let result = run_tunnel_lifecycle(
                 &app_handle,
                 &clients,
@@ -225,8 +340,11 @@ impl TunnelManager {
                 &port_to_use,
                 &project_config,
                 tunnel_target,
-                cancel_token,
+                cancel_token.clone(),
                 Some(ready_tx),
+                &conn_label,
+                &project_key_owned,
+                &profile_owned,
             )
             .await;
 
@@ -238,6 +356,23 @@ impl TunnelManager {
 
             match result {
                 Ok(()) => {
+                    history::log_event(HistoryEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        event_type: "disconnected".to_string(),
+                        connection_id: conn_id.clone(),
+                        project_key: project_key_owned.clone(),
+                        profile: profile_owned.clone(),
+                        details: Some("session_ended".to_string()),
+                    })
+                    .await;
+                    // Only notify if this was not a user-initiated disconnect
+                    if !cancel_token.is_cancelled() {
+                        send_notification(
+                            &app_handle,
+                            "Connection Lost",
+                            &format!("{} disconnected", conn_label),
+                        );
+                    }
                     let _ = app_handle.emit(
                         "disconnected",
                         serde_json::json!({
@@ -247,6 +382,20 @@ impl TunnelManager {
                     );
                 }
                 Err(e) => {
+                    history::log_event(HistoryEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        event_type: "error".to_string(),
+                        connection_id: conn_id.clone(),
+                        project_key: project_key_owned.clone(),
+                        profile: profile_owned.clone(),
+                        details: Some(e.to_string()),
+                    })
+                    .await;
+                    send_notification(
+                        &app_handle,
+                        "Connection Failed",
+                        &format!("{}: {}", conn_label, e),
+                    );
                     let _ = app_handle.emit(
                         "connection-error",
                         serde_json::json!({
@@ -269,7 +418,25 @@ impl TunnelManager {
 
         // Wait for the tunnel to actually be ready (TCP listener bound)
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), ready_rx).await {
-            Ok(Ok(Ok(()))) => Ok((connection_id, connection_info)),
+            Ok(Ok(Ok(()))) => {
+                history::log_event(HistoryEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    event_type: "connected".to_string(),
+                    connection_id: connection_id.clone(),
+                    project_key: project_key.to_string(),
+                    profile: profile.to_string(),
+                    details: Some(format!("port {}", connection_info.port)),
+                })
+                .await;
+                // Tunnel is ready — start periodic health checks
+                Self::spawn_health_check(
+                    &self.app_handle,
+                    &connection_id,
+                    &health_port,
+                    &health_cancel,
+                );
+                Ok((connection_id, connection_info))
+            }
             Ok(Ok(Err(e))) => {
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
@@ -297,20 +464,31 @@ impl TunnelManager {
         &self,
         clients: &AwsClients,
         connection_id: &str,
+        project_key: &str,
+        profile: &str,
         project_config: &ProjectConfig,
         local_port: &str,
+        selected_database: Option<&str>,
     ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
-        self.emit_status("Getting credentials...", Some(connection_id));
-        let credentials = operations::get_connection_credentials(
+        let effective_db = project_config.effective_database(selected_database);
+
+        self.emit_status("Finding bastion instance...", Some(connection_id));
+        let prefs = preferences::load_preferences().await;
+        let preferred = preferences::get_preferred_bastion(&prefs, project_key, profile)
+            .map(|s| s.to_string());
+        let instance_id = operations::find_bastion_instance(
             clients,
-            &project_config.secret_prefix,
-            &project_config.database,
+            project_config.bastion_pattern(),
+            preferred.as_deref(),
         )
         .await?;
 
-        self.emit_status("Finding bastion instance...", Some(connection_id));
-        let instance_id =
-            operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+        // Save bastion preference for next time
+        {
+            let mut prefs = prefs;
+            preferences::set_preferred_bastion(&mut prefs, project_key, profile, &instance_id);
+            preferences::save_preferences(&prefs).await;
+        }
 
         if !INSTANCE_ID_PATTERN.is_match(&instance_id) {
             return Err(AppError::Aws(format!(
@@ -345,24 +523,75 @@ impl TunnelManager {
         )
         .await?;
 
+        // Determine auth type (default to "secrets")
+        let auth_type = if project_config.auth_type.is_empty() {
+            "secrets"
+        } else {
+            project_config.auth_type.as_str()
+        };
+
+        let (username, password) = match auth_type {
+            "iam" => {
+                self.emit_status("Generating IAM auth token...", Some(connection_id));
+                let iam_username = project_config.iam_username.as_deref().ok_or_else(|| {
+                    AppError::Config(
+                        "iamUsername is required when authType is \"iam\"".to_string(),
+                    )
+                })?;
+
+                let rds_port_num: u16 = rds_port.parse().map_err(|_| {
+                    AppError::General(format!("Invalid RDS port number: {}", rds_port))
+                })?;
+
+                // Build SdkConfig for SigV4 signing
+                let sdk_config = build_aws_config(profile, &project_config.region).await;
+                let token = iam_auth::generate_rds_auth_token(
+                    &sdk_config,
+                    &rds_endpoint,
+                    rds_port_num,
+                    iam_username,
+                )
+                .await?;
+
+                (iam_username.to_string(), token)
+            }
+            _ => {
+                // "secrets" auth type — get credentials from Secrets Manager
+                self.emit_status("Getting credentials...", Some(connection_id));
+                let credentials = operations::get_connection_credentials(
+                    clients,
+                    &project_config.secret_prefix,
+                    effective_db,
+                    project_config.secret_path.as_deref(),
+                    project_config.secret_username_field.as_deref(),
+                    project_config.secret_password_field.as_deref(),
+                )
+                .await?;
+                (credentials.username, credentials.password)
+            }
+        };
+
         let connection_info = ConnectionInfo {
             host: "localhost".to_string(),
             port: local_port.to_string(),
             connection_type: "rds".to_string(),
-            username: Some(credentials.username),
-            password: Some(credentials.password),
-            database: Some(project_config.database.clone()),
+            username: Some(username),
+            password: Some(password),
+            database: Some(effective_db.to_string()),
             rds_endpoint: Some(rds_endpoint.clone()),
             instance_id: Some(instance_id.clone()),
             service_type: None,
             remote_host: None,
             target_type: None,
+            engine: project_config.engine.clone(),
+            ssh_command: None,
         };
 
         let target = TunnelTarget::RemoteHost {
             bastion_id: instance_id,
             remote_host: rds_endpoint,
             remote_port: rds_port,
+            multiplexed: project_config.multiplexed.unwrap_or(false),
         };
 
         Ok((connection_info, target))
@@ -373,6 +602,8 @@ impl TunnelManager {
         &self,
         clients: &AwsClients,
         connection_id: &str,
+        project_key: &str,
+        profile: &str,
         project_config: &ProjectConfig,
         local_port: &str,
     ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
@@ -410,13 +641,28 @@ impl TunnelManager {
                 let target = TunnelTarget::DirectInstance {
                     instance_id: id.clone(),
                     remote_port: remote_port.to_string(),
+                    multiplexed: project_config.multiplexed.unwrap_or(false),
                 };
                 (target, Some(id), None)
             }
             "ec2-bastion" => {
                 self.emit_status("Finding bastion instance...", Some(connection_id));
-                let bastion_id =
-                    operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+                let prefs = preferences::load_preferences().await;
+                let preferred = preferences::get_preferred_bastion(&prefs, project_key, profile)
+                    .map(|s| s.to_string());
+                let bastion_id = operations::find_bastion_instance(
+                    clients,
+                    project_config.bastion_pattern(),
+                    preferred.as_deref(),
+                )
+                .await?;
+
+                // Save bastion preference
+                {
+                    let mut prefs = prefs;
+                    preferences::set_preferred_bastion(&mut prefs, project_key, profile, &bastion_id);
+                    preferences::save_preferences(&prefs).await;
+                }
 
                 if !INSTANCE_ID_PATTERN.is_match(&bastion_id) {
                     return Err(AppError::Aws(format!("Invalid bastion instance ID format: {}", bastion_id)));
@@ -433,6 +679,7 @@ impl TunnelManager {
                     bastion_id: bastion_id.clone(),
                     remote_host: ip.clone(),
                     remote_port: remote_port.to_string(),
+                    multiplexed: project_config.multiplexed.unwrap_or(false),
                 };
                 (target, Some(bastion_id), Some(ip))
             }
@@ -447,8 +694,22 @@ impl TunnelManager {
                     .ok_or_else(|| AppError::Config("Missing ecsService for ecs-bastion connection".to_string()))?;
 
                 self.emit_status("Finding bastion instance...", Some(connection_id));
-                let bastion_id =
-                    operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+                let prefs = preferences::load_preferences().await;
+                let preferred = preferences::get_preferred_bastion(&prefs, project_key, profile)
+                    .map(|s| s.to_string());
+                let bastion_id = operations::find_bastion_instance(
+                    clients,
+                    project_config.bastion_pattern(),
+                    preferred.as_deref(),
+                )
+                .await?;
+
+                // Save bastion preference
+                {
+                    let mut prefs = prefs;
+                    preferences::set_preferred_bastion(&mut prefs, project_key, profile, &bastion_id);
+                    preferences::save_preferences(&prefs).await;
+                }
 
                 if !INSTANCE_ID_PATTERN.is_match(&bastion_id) {
                     return Err(AppError::Aws(format!("Invalid bastion instance ID format: {}", bastion_id)));
@@ -465,10 +726,32 @@ impl TunnelManager {
                     bastion_id: bastion_id.clone(),
                     remote_host: task_ip.clone(),
                     remote_port: remote_port.to_string(),
+                    multiplexed: project_config.multiplexed.unwrap_or(false),
                 };
                 (target, Some(bastion_id), Some(task_ip))
             }
             _ => return Err(AppError::Config(format!("Unknown targetType: {}", target_type))),
+        };
+
+        // Build SSH command if service type is SSH
+        let ssh_command = if project_config.service_type.as_deref() == Some("ssh") {
+            let ssh_user = project_config
+                .ssh_username
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("ec2-user");
+            let mut cmd = format!(
+                "ssh -p {} {}@localhost -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+                local_port, ssh_user
+            );
+            if let Some(ref key_path) = project_config.ssh_key_path
+                && !key_path.is_empty()
+            {
+                cmd.push_str(&format!(" -i {}", key_path));
+            }
+            Some(cmd)
+        } else {
+            None
         };
 
         let connection_info = ConnectionInfo {
@@ -483,6 +766,8 @@ impl TunnelManager {
             service_type: project_config.service_type.clone(),
             remote_host,
             target_type: Some(target_type.to_string()),
+            engine: None,
+            ssh_command,
         };
 
         Ok((connection_info, tunnel_target))
@@ -504,6 +789,75 @@ impl TunnelManager {
             connection.cancel_token.cancel();
         }
         Ok(())
+    }
+
+    /// Spawn a background health check task for a connection.
+    /// Periodically attempts a TCP connect to localhost:port to verify the tunnel is alive.
+    fn spawn_health_check(
+        app_handle: &AppHandle,
+        connection_id: &str,
+        local_port: &str,
+        cancel_token: &CancellationToken,
+    ) {
+        let app_handle = app_handle.clone();
+        let conn_id = connection_id.to_string();
+        let port: u16 = local_port.parse().unwrap_or(0);
+        let cancel = cancel_token.clone();
+
+        tokio::spawn(async move {
+            // Initial delay: wait for tunnel to fully establish before first check
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)) => {}
+                _ = cancel.cancelled() => { return; }
+            }
+
+            loop {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                let check_start = std::time::Instant::now();
+                let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+
+                let status = match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+                    tokio::net::TcpStream::connect(addr),
+                )
+                .await
+                {
+                    Ok(Ok(_stream)) => {
+                        let elapsed = check_start.elapsed().as_millis() as u64;
+                        if elapsed > HEALTH_CHECK_DEGRADED_MS {
+                            "degraded"
+                        } else {
+                            "healthy"
+                        }
+                    }
+                    Ok(Err(_)) => "unhealthy",
+                    Err(_) => "unhealthy", // timeout
+                };
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let _ = app_handle.emit(
+                    "connection-health",
+                    serde_json::json!({
+                        "connectionId": conn_id,
+                        "status": status,
+                        "lastCheck": now_ms,
+                    }),
+                );
+
+                // Wait for next interval or cancellation
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)) => {}
+                    _ = cancel.cancelled() => { break; }
+                }
+            }
+        });
     }
 
     fn emit_status(&self, message: &str, connection_id: Option<&str>) {
@@ -536,12 +890,23 @@ enum TunnelTarget {
         bastion_id: String,
         remote_host: String,
         remote_port: String,
+        multiplexed: bool,
     },
     /// Direct port forwarding to an EC2 instance (SSM agent on the instance itself).
     DirectInstance {
         instance_id: String,
         remote_port: String,
+        multiplexed: bool,
     },
+}
+
+impl TunnelTarget {
+    fn is_multiplexed(&self) -> bool {
+        match self {
+            TunnelTarget::RemoteHost { multiplexed, .. } => *multiplexed,
+            TunnelTarget::DirectInstance { multiplexed, .. } => *multiplexed,
+        }
+    }
 }
 
 /// Run the tunnel lifecycle: start port forwarding, keepalive, auto-reconnect.
@@ -555,6 +920,9 @@ async fn run_tunnel_lifecycle(
     mut target: TunnelTarget,
     cancel_token: CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    conn_label: &str,
+    project_key: &str,
+    profile: &str,
 ) -> Result<(), AppError> {
     let mut reconnect_count: u32 = 0;
     let mut ready_tx = ready_tx;
@@ -579,6 +947,15 @@ async fn run_tunnel_lifecycle(
             break;
         }
 
+        // Notify about connection drop on first failure in this cycle
+        if reconnect_count == 0 {
+            send_notification(
+                app_handle,
+                "Connection Lost",
+                &format!("{} — attempting to reconnect...", conn_label),
+            );
+        }
+
         // Handle reconnect
         match result {
             Ok(()) => {
@@ -588,6 +965,15 @@ async fn run_tunnel_lifecycle(
                         "Maximum auto-reconnection attempts reached.".to_string(),
                     ));
                 }
+                history::log_event(HistoryEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    event_type: "reconnected".to_string(),
+                    connection_id: connection_id.to_string(),
+                    project_key: project_key.to_string(),
+                    profile: profile.to_string(),
+                    details: Some(format!("attempt {}/{}", reconnect_count, AUTO_RECONNECT_MAX_RETRIES)),
+                })
+                .await;
                 emit_status_event(
                     app_handle,
                     &format!("Session ended. Reconnecting... ({})", reconnect_count),
@@ -604,6 +990,15 @@ async fn run_tunnel_lifecycle(
                 if reconnect_count > AUTO_RECONNECT_MAX_RETRIES {
                     return Err(e);
                 }
+                history::log_event(HistoryEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    event_type: "reconnected".to_string(),
+                    connection_id: connection_id.to_string(),
+                    project_key: project_key.to_string(),
+                    profile: profile.to_string(),
+                    details: Some(format!("error retry {}/{}: {}", reconnect_count, AUTO_RECONNECT_MAX_RETRIES, e)),
+                })
+                .await;
                 emit_status_event(
                     app_handle,
                     &format!(
@@ -636,6 +1031,16 @@ async fn run_tunnel_lifecycle(
         // Re-discover infrastructure based on target type
         target = rediscover_target(app_handle, clients, connection_id, project_config, &target).await?;
 
+        // Notify that auto-reconnect succeeded
+        send_notification(
+            app_handle,
+            "Reconnected",
+            &format!("{} tunnel restored", conn_label),
+        );
+
+        // Reset reconnect counter for the next cycle
+        reconnect_count = 0;
+
         emit_status_event(
             app_handle,
             "Reconnecting port forwarding...",
@@ -655,11 +1060,11 @@ async fn rediscover_target(
     current: &TunnelTarget,
 ) -> Result<TunnelTarget, AppError> {
     match current {
-        TunnelTarget::RemoteHost { remote_port, .. } => {
-            // Re-find bastion
+        TunnelTarget::RemoteHost { remote_port, multiplexed, .. } => {
+            // Re-find bastion (no preference on reconnect — use whatever is available)
             emit_status_event(app_handle, "Finding bastion instance...", Some(connection_id));
             let bastion_id =
-                operations::find_bastion_instance(clients, project_config.bastion_pattern()).await?;
+                operations::find_bastion_instance(clients, project_config.bastion_pattern(), None).await?;
 
             // Re-discover remote host based on connection type
             let remote_host = if project_config.connection_type == "rds" {
@@ -696,9 +1101,10 @@ async fn rediscover_target(
                 bastion_id,
                 remote_host,
                 remote_port: remote_port.clone(),
+                multiplexed: *multiplexed,
             })
         }
-        TunnelTarget::DirectInstance { remote_port, .. } => {
+        TunnelTarget::DirectInstance { remote_port, multiplexed, .. } => {
             // Re-find the direct instance
             emit_status_event(app_handle, "Finding target instance...", Some(connection_id));
             let (instance_id, _ip) = operations::find_ec2_instance(
@@ -709,6 +1115,7 @@ async fn rediscover_target(
             Ok(TunnelTarget::DirectInstance {
                 instance_id,
                 remote_port: remote_port.clone(),
+                multiplexed: *multiplexed,
             })
         }
     }
@@ -741,7 +1148,7 @@ async fn start_port_forwarding_with_retry(
         match result {
             Ok(()) => return Ok(()),
             Err(PortForwardError::TargetNotConnected) if retry_count < PORT_FORWARDING_MAX_RETRIES => {
-                if let TunnelTarget::RemoteHost { ref bastion_id, ref remote_host, ref remote_port } = current_target {
+                if let TunnelTarget::RemoteHost { ref bastion_id, ref remote_host, ref remote_port, multiplexed } = current_target {
                     if connection_type == "rds" {
                         let _ = operations::terminate_bastion_instance(clients, bastion_id).await;
 
@@ -763,13 +1170,15 @@ async fn start_port_forwarding_with_retry(
                             bastion_id: new_id,
                             remote_host: remote_host.clone(),
                             remote_port: remote_port.clone(),
+                            multiplexed,
                         };
                     } else {
-                        let new_id = operations::find_bastion_instance(clients, bastion_pattern).await?;
+                        let new_id = operations::find_bastion_instance(clients, bastion_pattern, None).await?;
                         current_target = TunnelTarget::RemoteHost {
                             bastion_id: new_id,
                             remote_host: remote_host.clone(),
                             remote_port: remote_port.clone(),
+                            multiplexed,
                         };
                     }
                 }
@@ -804,13 +1213,13 @@ async fn execute_port_forwarding(
 ) -> Result<(), PortForwardError> {
     // Start SSM session based on target type
     let session_response = match target {
-        TunnelTarget::RemoteHost { bastion_id, remote_host, remote_port } => {
+        TunnelTarget::RemoteHost { bastion_id, remote_host, remote_port, .. } => {
             operations::start_remote_port_forwarding_session(
                 clients, bastion_id, remote_host, remote_port, local_port,
             )
             .await
         }
-        TunnelTarget::DirectInstance { instance_id, remote_port } => {
+        TunnelTarget::DirectInstance { instance_id, remote_port, .. } => {
             operations::start_direct_port_forwarding_session(
                 clients, instance_id, remote_port, local_port,
             )
@@ -832,16 +1241,30 @@ async fn execute_port_forwarding(
         .parse()
         .map_err(|_| PortForwardError::Failed(format!("Invalid port: {}", local_port)))?;
 
-    // Run native port forwarding (WebSocket + TCP relay)
+    let multiplexed = target.is_multiplexed();
+
+    // Run port forwarding — multiplexed or basic mode
     let cancel_child = cancel_token.child_token();
-    let result = native::start_native_port_forwarding(
-        stream_url,
-        token_value,
-        port_num,
-        cancel_child,
-        ready_tx,
-    )
-    .await;
+    let result = if multiplexed {
+        log::info!("Starting multiplexed port forwarding on port {}", port_num);
+        native::start_multiplexed_port_forwarding(
+            stream_url,
+            token_value,
+            port_num,
+            cancel_child,
+            ready_tx,
+        )
+        .await
+    } else {
+        native::start_native_port_forwarding(
+            stream_url,
+            token_value,
+            port_num,
+            cancel_child,
+            ready_tx,
+        )
+        .await
+    };
 
     if cancel_token.is_cancelled() {
         return Err(PortForwardError::Cancelled);
@@ -854,6 +1277,21 @@ async fn execute_port_forwarding(
         }
         Err(msg) => Err(PortForwardError::Failed(msg)),
     }
+}
+
+/// Send a desktop notification only when no app window is focused.
+/// Failures are silently ignored so notifications are never fatal.
+fn send_notification(app_handle: &AppHandle, title: &str, body: &str) {
+    // Skip notification if any app window is currently focused
+    if app_handle.webview_windows().values().any(|w| w.is_focused().unwrap_or(false)) {
+        return;
+    }
+    let _ = app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
 }
 
 fn emit_status_event(app_handle: &AppHandle, message: &str, connection_id: Option<&str>) {

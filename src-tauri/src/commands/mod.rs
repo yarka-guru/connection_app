@@ -3,3 +3,4 @@ pub mod profiles;
 pub mod projects;
 pub mod saved;
 pub mod system;
+pub mod tray;

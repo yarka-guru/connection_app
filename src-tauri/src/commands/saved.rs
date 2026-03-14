@@ -12,8 +12,12 @@ pub struct SavedConnection {
     #[serde(rename = "projectKey")]
     pub project_key: String,
     pub profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
     #[serde(rename = "lastUsedAt")]
     pub last_used_at: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn chrono_now() -> String {
@@ -44,6 +48,7 @@ pub async fn save_connection(
     name: String,
     project_key: String,
     profile: String,
+    database: Option<String>,
 ) -> Result<SavedConnection, AppError> {
     let store = app_handle
         .store("connections.json")
@@ -54,10 +59,10 @@ pub async fn save_connection(
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 
-    // Check if connection with same project/profile exists
+    // Check if connection with same project/profile/database exists
     if let Some(existing) = connections
         .iter_mut()
-        .find(|c| c.project_key == project_key && c.profile == profile)
+        .find(|c| c.project_key == project_key && c.profile == profile && c.database == database)
     {
         existing.name.clone_from(&name);
         existing.last_used_at = Some(chrono_now());
@@ -72,6 +77,8 @@ pub async fn save_connection(
             .save()
             .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
 
+        crate::tray::refresh_tray(&app_handle);
+
         return Ok(saved);
     }
 
@@ -80,7 +87,9 @@ pub async fn save_connection(
         name,
         project_key,
         profile,
+        database,
         last_used_at: Some(chrono_now()),
+        group: None,
     };
 
     connections.push(new_connection.clone());
@@ -93,6 +102,9 @@ pub async fn save_connection(
     store
         .save()
         .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    // Refresh tray menu to show updated saved connections
+    crate::tray::refresh_tray(&app_handle);
 
     Ok(new_connection)
 }
@@ -118,6 +130,9 @@ pub async fn delete_saved_connection(app_handle: AppHandle, id: String) -> Resul
     store
         .save()
         .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    // Refresh tray menu to show updated saved connections
+    crate::tray::refresh_tray(&app_handle);
 
     Ok(())
 }
@@ -229,4 +244,110 @@ pub fn update_saved_connection_last_used_inner(
         .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn move_connection_to_group(
+    app_handle: AppHandle,
+    id: String,
+    group: Option<String>,
+) -> Result<SavedConnection, AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    let conn = connections
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or_else(|| AppError::General(format!("Connection not found: {}", id)))?;
+
+    // Normalize empty strings to None
+    conn.group = group.filter(|g| !g.trim().is_empty());
+    let updated = conn.clone();
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn rename_connection_group(
+    app_handle: AppHandle,
+    old_name: String,
+    new_name: String,
+) -> Result<Vec<SavedConnection>, AppError> {
+    let new_name_trimmed = new_name.trim().to_string();
+    if new_name_trimmed.is_empty() {
+        return Err(AppError::General("Group name cannot be empty".to_string()));
+    }
+
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    for conn in &mut connections {
+        if conn.group.as_deref() == Some(&old_name) {
+            conn.group = Some(new_name_trimmed.clone());
+        }
+    }
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(connections)
+}
+
+#[tauri::command]
+pub async fn delete_connection_group(
+    app_handle: AppHandle,
+    group_name: String,
+) -> Result<Vec<SavedConnection>, AppError> {
+    let store = app_handle
+        .store("connections.json")
+        .map_err(|e| AppError::General(format!("Failed to open store: {}", e)))?;
+
+    let mut connections: Vec<SavedConnection> = store
+        .get(SAVED_CONNECTIONS_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    for conn in &mut connections {
+        if conn.group.as_deref() == Some(&group_name) {
+            conn.group = None;
+        }
+    }
+
+    store.set(
+        SAVED_CONNECTIONS_KEY,
+        serde_json::to_value(&connections)
+            .map_err(|e| AppError::General(format!("Serialization error: {}", e)))?,
+    );
+    store
+        .save()
+        .map_err(|e| AppError::General(format!("Failed to save store: {}", e)))?;
+
+    Ok(connections)
 }

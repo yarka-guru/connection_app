@@ -1,25 +1,25 @@
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Select};
-use rds_ssm_connect_lib::aws::credentials::create_aws_clients;
-use rds_ssm_connect_lib::aws::operations;
-use rds_ssm_connect_lib::aws::sso::{ensure_sso_session, CliSsoHandler};
-use rds_ssm_connect_lib::config::aws_config::read_aws_profile_names;
-use rds_ssm_connect_lib::config::projects::{
+use connection_app_lib::aws::credentials::create_aws_clients;
+use connection_app_lib::aws::operations;
+use connection_app_lib::aws::sso::{ensure_sso_session, CliSsoHandler};
+use connection_app_lib::config::aws_config::read_aws_profile_names;
+use connection_app_lib::config::projects::{
     get_default_port_for_engine, get_local_port, get_profiles_for_project, load_project_configs,
     ProjectConfig,
 };
-use rds_ssm_connect_lib::tunnel::native::start_native_port_forwarding;
+use connection_app_lib::tunnel::native::start_native_port_forwarding;
 use std::collections::HashMap;
 
 #[allow(unused_imports)]
-use rds_ssm_connect_lib::aws::operations::{
+use connection_app_lib::aws::operations::{
     find_bastion_instance, find_ec2_instance, find_ecs_task_ip,
     start_direct_port_forwarding_session, start_session,
 };
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
-#[command(name = "rds-ssm-connect", about = "ConnectionApp — Secure tunneling via AWS SSM")]
+#[command(name = "connection-app", about = "ConnectionApp — Secure tunneling via AWS SSM")]
 #[command(version)]
 struct Cli {
     /// Project name (skip interactive selection)
@@ -51,6 +51,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    // Migrate legacy ~/.rds-ssm-connect/ → ~/.connection-app/
+    connection_app_lib::config::projects::migrate_legacy_config();
+
     let cli = Cli::parse();
 
     if let Some(command) = &cli.command {
@@ -83,7 +86,7 @@ async fn run_list_projects() {
 
     if configs.is_empty() {
         eprintln!("No projects configured.");
-        eprintln!("Add projects in ~/.rds-ssm-connect/projects.json");
+        eprintln!("Add projects in ~/.connection-app/projects.json");
         return;
     }
 
@@ -123,7 +126,7 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     if configs.is_empty() {
         return Err(
-            "No projects configured.\nAdd projects in ~/.rds-ssm-connect/projects.json".to_string(),
+            "No projects configured.\nAdd projects in ~/.connection-app/projects.json".to_string(),
         );
     }
 
@@ -188,28 +191,41 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
     if connection_type == "service" {
         run_service_connect(&clients, &project_config, &local_port).await
     } else {
-        run_rds_connect(&clients, &project_config, &local_port).await
+        // Select database if multiple are configured
+        let selected_database = if let Some(ref databases) = project_config.databases {
+            if databases.len() > 1 {
+                let selection = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Select database")
+                    .items(databases)
+                    .default(0)
+                    .interact()
+                    .map_err(|e| format!("Database selection failed: {}", e))?;
+                Some(databases[selection].clone())
+            } else if databases.len() == 1 {
+                Some(databases[0].clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        run_rds_connect(&clients, &profile, &project_config, &local_port, selected_database.as_deref()).await
     }
 }
 
 async fn run_rds_connect(
-    clients: &rds_ssm_connect_lib::aws::credentials::AwsClients,
+    clients: &connection_app_lib::aws::credentials::AwsClients,
+    profile: &str,
     project_config: &ProjectConfig,
     local_port: &str,
+    selected_database: Option<&str>,
 ) -> Result<(), String> {
-    // Get database credentials
-    eprintln!("  \u{1F4E6} Getting database credentials...");
-    let db_creds = operations::get_connection_credentials(
-        clients,
-        &project_config.secret_prefix,
-        &project_config.database,
-    )
-    .await
-    .map_err(|e| format!("Failed to get credentials: {}", e))?;
+    let effective_db = project_config.effective_database(selected_database);
 
     // Find bastion instance
     eprintln!("  \u{1F50D} Finding bastion instance...");
-    let instance_id = find_bastion_instance(clients, project_config.bastion_pattern())
+    let instance_id = find_bastion_instance(clients, project_config.bastion_pattern(), None)
         .await
         .map_err(|e| format!("Failed to find bastion: {}", e))?;
 
@@ -235,6 +251,53 @@ async fn run_rds_connect(
     .await
     .map_err(|e| format!("Failed to get RDS port: {}", e))?;
 
+    // Determine auth type (default to "secrets")
+    let auth_type = if project_config.auth_type.is_empty() {
+        "secrets"
+    } else {
+        project_config.auth_type.as_str()
+    };
+
+    let (username, password) = if auth_type == "iam" {
+        eprintln!("  \u{1F511} Generating IAM auth token...");
+        let iam_username = project_config
+            .iam_username
+            .as_deref()
+            .ok_or("iamUsername is required when authType is \"iam\"")?;
+
+        let rds_port_num: u16 = rds_port
+            .parse()
+            .map_err(|_| format!("Invalid RDS port number: {}", rds_port))?;
+
+        let sdk_config =
+            connection_app_lib::aws::credentials::build_aws_config(profile, &project_config.region)
+                .await;
+        let token = connection_app_lib::aws::iam_auth::generate_rds_auth_token(
+            &sdk_config,
+            &rds_endpoint,
+            rds_port_num,
+            iam_username,
+        )
+        .await
+        .map_err(|e| format!("Failed to generate IAM auth token: {}", e))?;
+
+        (iam_username.to_string(), token)
+    } else {
+        // "secrets" auth type
+        eprintln!("  \u{1F4E6} Getting database credentials...");
+        let db_creds = operations::get_connection_credentials(
+            clients,
+            &project_config.secret_prefix,
+            effective_db,
+            project_config.secret_path.as_deref(),
+            project_config.secret_username_field.as_deref(),
+            project_config.secret_password_field.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("Failed to get credentials: {}", e))?;
+        (db_creds.username, db_creds.password)
+    };
+
     // Start SSM session
     eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session...");
     let session_response = start_session(
@@ -254,19 +317,19 @@ async fn run_rds_connect(
         .map_err(|_| format!("Invalid port: {}", local_port))?;
 
     // Display connection info with dynamic-width box
-    let masked_password = mask_password(&db_creds.password);
+    let masked_password = mask_password(&password);
     let rows = vec![
         ("Host",     "localhost".to_string()),
         ("Port",     local_port.to_string()),
-        ("Username", db_creds.username.clone()),
+        ("Username", username.clone()),
         ("Password", masked_password),
-        ("Database", db_creds.database.clone()),
+        ("Database", effective_db.to_string()),
         ("Endpoint", rds_endpoint.clone()),
     ];
     print_info_box(&rows);
 
     // Copy password to clipboard
-    if try_copy_to_clipboard(&db_creds.password) {
+    if try_copy_to_clipboard(&password) {
         eprintln!("  \u{1F4CB} Password copied to clipboard\n");
     }
 
@@ -274,7 +337,7 @@ async fn run_rds_connect(
 }
 
 async fn run_service_connect(
-    clients: &rds_ssm_connect_lib::aws::credentials::AwsClients,
+    clients: &connection_app_lib::aws::credentials::AwsClients,
     project_config: &ProjectConfig,
     local_port: &str,
 ) -> Result<(), String> {
@@ -313,7 +376,7 @@ async fn run_service_connect(
                 .as_deref()
                 .ok_or("targetPattern is required for ec2-bastion")?;
             eprintln!("  \u{1F50D} Finding bastion and target EC2 instance...");
-            let bastion_id = find_bastion_instance(clients, project_config.bastion_pattern())
+            let bastion_id = find_bastion_instance(clients, project_config.bastion_pattern(), None)
                 .await
                 .map_err(|e| format!("Failed to find bastion: {}", e))?;
             let (_instance_id, private_ip) = find_ec2_instance(clients, pattern)
@@ -334,7 +397,7 @@ async fn run_service_connect(
                 .as_deref()
                 .ok_or("ecsService is required for ecs-bastion")?;
             eprintln!("  \u{1F50D} Finding bastion and ECS task...");
-            let bastion_id = find_bastion_instance(clients, project_config.bastion_pattern())
+            let bastion_id = find_bastion_instance(clients, project_config.bastion_pattern(), None)
                 .await
                 .map_err(|e| format!("Failed to find bastion: {}", e))?;
             let task_ip = find_ecs_task_ip(clients, cluster, service)
@@ -354,12 +417,32 @@ async fn run_service_connect(
         .parse()
         .map_err(|_| format!("Invalid port: {}", local_port))?;
 
-    let rows = vec![
+    let mut rows = vec![
         ("Host",    "localhost".to_string()),
         ("Port",    local_port.to_string()),
-        ("Service", service_type),
+        ("Service", service_type.clone()),
         ("Target",  target_type.to_string()),
     ];
+
+    // Show SSH command for SSH service type
+    if service_type == "SSH" {
+        let ssh_user = project_config
+            .ssh_username
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("ec2-user");
+        let mut cmd = format!(
+            "ssh -p {} {}@localhost -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+            local_port, ssh_user
+        );
+        if let Some(ref key_path) = project_config.ssh_key_path
+            && !key_path.is_empty()
+        {
+            cmd.push_str(&format!(" -i {}", key_path));
+        }
+        rows.push(("SSH Cmd", cmd));
+    }
+
     print_info_box(&rows);
 
     run_tunnel(stream_url, token_value, port_num).await

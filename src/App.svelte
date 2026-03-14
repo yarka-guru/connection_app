@@ -1,7 +1,7 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
-import { applyTheme, themes } from './lib/themes.js'
+import { applyTheme, themes, resolveTheme } from './lib/themes.js'
 import SavedConnections from './lib/SavedConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
@@ -13,6 +13,7 @@ let projects = $state([])
 let profiles = $state([])
 let selectedProject = $state('')
 let selectedProfile = $state('')
+let selectedDatabase = $state('')
 let connectionStatus = $state('disconnected')
 let statusMessage = $state('')
 let errorMessage = $state('')
@@ -38,6 +39,7 @@ let updateCheckMessage = $state('')
 let updateProgress = $state(null)
 let updateError = $state(null)
 
+let scheme = $state('dark')
 let activeTab = $state('rds')
 let currentTheme = $state('forest')
 let showSettings = $state(false)
@@ -61,6 +63,10 @@ let unlistenDisconnected = null
 let unlistenConnectionError = null
 let unlistenCloseRequested = null
 let unlistenUpdateProgress = null
+let unlistenConnectionHealth = null
+let connectionHealth = $state({})
+let systemSchemeCleanup = null
+let unlistenTrayQuickConnect = null
 
 // Global keyboard shortcuts
 function handleGlobalKeydown(e) {
@@ -134,15 +140,33 @@ async function initApp() {
     return
   }
 
-  // Load saved theme
+  // Load saved theme and scheme
   try {
-    const saved = localStorage.getItem('theme')
-    if (saved && themes[saved]) {
-      currentTheme = saved
-      applyTheme(saved)
+    const savedTheme = localStorage.getItem('theme')
+    const savedScheme = localStorage.getItem('scheme')
+    if (savedTheme && themes[savedTheme] && savedTheme !== 'light') {
+      currentTheme = savedTheme
     }
+    if (savedScheme && ['light', 'dark', 'system'].includes(savedScheme)) {
+      scheme = savedScheme
+    }
+    applyTheme(resolveTheme(scheme, currentTheme))
   } catch (_err) {
     // Non-fatal: use default theme
+  }
+
+  // Listen for OS color scheme changes (for "system" mode)
+  try {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    const handleSystemChange = () => {
+      if (scheme === 'system') {
+        applyTheme(resolveTheme('system', currentTheme))
+      }
+    }
+    mediaQuery.addEventListener('change', handleSystemChange)
+    systemSchemeCleanup = () => mediaQuery.removeEventListener('change', handleSystemChange)
+  } catch (_err) {
+    // Non-fatal: system scheme detection not available
   }
 
   // Check sandbox status — if sandboxed and no AWS access, show setup screen
@@ -161,14 +185,10 @@ async function initApp() {
 }
 
 async function setupListenersAndLoad() {
-  // Intercept window close — prompt if active connections, otherwise quit cleanly
+  // Intercept window close — hide to tray instead of quitting
   unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
     event.preventDefault()
-    if (activeConnections.length > 0) {
-      showCloseConfirm = true
-    } else {
-      try { await invoke('quit_app') } catch (_err) { appWindow?.destroy() }
-    }
+    await appWindow.hide()
   })
 
   // Set up named event listeners (direct from Rust backend)
@@ -190,10 +210,14 @@ async function setupListenersAndLoad() {
       activeConnections = activeConnections.filter(
         (c) => c.id !== connectionId,
       )
+      // Clean up health state for this connection
+      const { [connectionId]: _, ...rest } = connectionHealth
+      connectionHealth = rest
     }
     if (activeConnections.length === 0) {
       connectionStatus = 'disconnected'
       statusMessage = ''
+      connectionHealth = {}
     }
     connectingId = null
   }).then((fn) => { unlistenDisconnected = fn })
@@ -206,6 +230,19 @@ async function setupListenersAndLoad() {
   listen('update-progress', (ev) => {
     updateProgress = ev.payload
   }).then((fn) => { unlistenUpdateProgress = fn })
+
+  listen('connection-health', (ev) => {
+    const { connectionId, status, lastCheck } = ev.payload
+    connectionHealth = { ...connectionHealth, [connectionId]: { status, lastCheck } }
+  }).then((fn) => { unlistenConnectionHealth = fn })
+
+  listen('tray-quick-connect', (ev) => {
+    const savedId = ev.payload
+    const saved = savedConnections.find((c) => c.id === savedId)
+    if (saved) {
+      handleSavedConnectionConnect(saved)
+    }
+  }).then((fn) => { unlistenTrayQuickConnect = fn })
 
   // Load saved data + version with timeout
   try {
@@ -310,6 +347,9 @@ onDestroy(() => {
   unlistenConnectionError?.()
   unlistenCloseRequested?.()
   unlistenUpdateProgress?.()
+  unlistenConnectionHealth?.()
+  systemSchemeCleanup?.()
+  unlistenTrayQuickConnect?.()
 })
 
 async function confirmClose() {
@@ -387,6 +427,7 @@ async function handleConnect() {
       projectKey: selectedProject,
       profile: selectedProfile,
       localPort: null,
+      database: selectedDatabase || null,
       savedConnectionId: null,
     })
 
@@ -410,6 +451,7 @@ async function handleConnect() {
     lastConnectedConfig = {
       projectKey: selectedProject,
       profile: selectedProfile,
+      database: selectedDatabase || null,
     }
     showSavePrompt = true
     initSavePrompt()
@@ -431,6 +473,7 @@ async function handleSavedConnectionConnect(savedConnection) {
       projectKey: savedConnection.projectKey,
       profile: savedConnection.profile,
       localPort: null,
+      database: savedConnection.database || null,
       savedConnectionId: savedConnection.id,
     })
 
@@ -464,6 +507,7 @@ async function handleDisconnect() {
   try {
     await invoke('disconnect_all')
     activeConnections = []
+    connectionHealth = {}
     connectionStatus = 'disconnected'
     statusMessage = ''
     showSavePrompt = false
@@ -476,9 +520,12 @@ async function handleDisconnectOne(connectionId) {
   try {
     await invoke('disconnect', { connectionId })
     activeConnections = activeConnections.filter((c) => c.id !== connectionId)
+    const { [connectionId]: _, ...rest } = connectionHealth
+    connectionHealth = rest
     if (activeConnections.length === 0) {
       connectionStatus = 'disconnected'
       statusMessage = ''
+      connectionHealth = {}
     }
   } catch (err) {
     errorMessage = `Disconnect failed: ${err}`
@@ -489,6 +536,7 @@ async function handleDisconnectAll() {
   try {
     await invoke('disconnect_all')
     activeConnections = []
+    connectionHealth = {}
     connectionStatus = 'disconnected'
     statusMessage = ''
   } catch (err) {
@@ -510,6 +558,7 @@ async function handleSaveConnection() {
       name: saveConnectionName.trim(),
       projectKey: lastConnectedConfig.projectKey,
       profile: lastConnectedConfig.profile,
+      database: lastConnectedConfig.database || null,
     })
     savedConnections = [
       ...savedConnections.filter((c) => c.id !== saved.id),
@@ -564,6 +613,33 @@ async function handleReorderSavedConnections(ids) {
   }
 }
 
+async function handleMoveToGroup(id, group) {
+  try {
+    const updated = await invoke('move_connection_to_group', { id, group })
+    savedConnections = savedConnections.map((c) => (c.id === updated.id ? updated : c))
+  } catch (err) {
+    errorMessage = `Failed to move connection: ${err}`
+  }
+}
+
+async function handleRenameGroup(oldName, newName) {
+  try {
+    const updated = await invoke('rename_connection_group', { oldName, newName })
+    savedConnections = updated
+  } catch (err) {
+    errorMessage = `Failed to rename group: ${err}`
+  }
+}
+
+async function handleDeleteGroup(groupName) {
+  try {
+    const updated = await invoke('delete_connection_group', { groupName })
+    savedConnections = updated
+  } catch (err) {
+    errorMessage = `Failed to delete group: ${err}`
+  }
+}
+
 let isUpdating = $state(false)
 
 async function handleInstallUpdate() {
@@ -599,11 +675,16 @@ function handleDismissUpdate() {
 
 function handleProjectChange(newProject) {
   selectedProject = newProject
+  selectedDatabase = ''
   loadProfiles()
 }
 
 function handleProfileChange(newProfile) {
   selectedProfile = newProfile
+}
+
+function handleDatabaseChange(newDatabase) {
+  selectedDatabase = newDatabase
 }
 
 function dismissError() {
@@ -616,9 +697,19 @@ function dismissSavePrompt() {
 
 function handleThemeChange(themeName) {
   currentTheme = themeName
-  applyTheme(themeName)
+  applyTheme(resolveTheme(scheme, themeName))
   try {
     localStorage.setItem('theme', themeName)
+  } catch (_err) {
+    // Non-fatal
+  }
+}
+
+function handleSchemeChange(newScheme) {
+  scheme = newScheme
+  applyTheme(resolveTheme(newScheme, currentTheme))
+  try {
+    localStorage.setItem('scheme', newScheme)
   } catch (_err) {
     // Non-fatal
   }
@@ -635,7 +726,7 @@ const filteredProjects = $derived(
 // Computed: check if the selected project/profile is already saved
 const isAlreadySaved = $derived(
   savedConnections.some(
-    (c) => c.projectKey === selectedProject && c.profile === selectedProfile,
+    (c) => c.projectKey === selectedProject && c.profile === selectedProfile && (c.database || null) === (selectedDatabase || null),
   ),
 )
 </script>
@@ -683,7 +774,7 @@ const isAlreadySaved = $derived(
             Would you like to import projects from an existing <code>projects.json</code> file?
           </p>
           <p class="setup-hint">
-            If you previously used ConnectionApp, you can import your projects from <code>~/.rds-ssm-connect/projects.json</code>.
+            If you previously used an older version, you can import your projects from an existing <code>projects.json</code> file.
           </p>
           <div class="setup-actions">
             <button class="btn-grant" onclick={handleImportProjects} disabled={isImporting}>
@@ -801,11 +892,15 @@ const isAlreadySaved = $derived(
             {projects}
             {connectingId}
             {activeTab}
+            {connectionHealth}
             onConnect={handleSavedConnectionConnect}
             onDisconnect={handleDisconnectOne}
             onDelete={handleDeleteSavedConnection}
             onUpdate={handleUpdateSavedConnection}
             onReorder={handleReorderSavedConnections}
+            onMoveToGroup={handleMoveToGroup}
+            onRenameGroup={handleRenameGroup}
+            onDeleteGroup={handleDeleteGroup}
           />
         {/if}
 
@@ -815,10 +910,12 @@ const isAlreadySaved = $derived(
           {profiles}
           {selectedProject}
           {selectedProfile}
+          {selectedDatabase}
           isConnecting={connectionStatus === 'connecting'}
           isLoadingProjects={loadingProjects}
           onProjectChange={handleProjectChange}
           onProfileChange={handleProfileChange}
+          onDatabaseChange={handleDatabaseChange}
           onConnect={handleConnect}
         />
 
@@ -918,6 +1015,8 @@ const isAlreadySaved = $derived(
         onProjectsChanged={refreshProjects}
         {currentTheme}
         onThemeChange={handleThemeChange}
+        {scheme}
+        onSchemeChange={handleSchemeChange}
       />
     {/if}
   {/if}
@@ -961,6 +1060,13 @@ const isAlreadySaved = $derived(
     --press-scale: scale(0.97);
     --transition-fast: 0.15s ease;
     --transition-normal: 0.2s ease;
+    --input-bg: rgba(0, 0, 0, 0.3);
+    --button-text: white;
+    --border-subtle: rgba(255, 255, 255, 0.12);
+    --spinner-track: rgba(255, 255, 255, 0.3);
+    --spinner-color: white;
+    --overlay-bg: rgba(0, 0, 0, 0.8);
+    --title-gradient-start: #fff;
   }
 
   @media (prefers-reduced-transparency) {
@@ -1037,7 +1143,7 @@ const isAlreadySaved = $derived(
     padding: 10px 24px;
     font-size: 0.875rem;
     font-weight: 600;
-    color: white;
+    color: var(--button-text);
     background: var(--bg-button-gradient);
     border: none;
     border-radius: 10px;
@@ -1078,7 +1184,7 @@ const isAlreadySaved = $derived(
     margin: 0;
     font-size: 1.5rem;
     font-weight: 600;
-    background: linear-gradient(135deg, #fff 0%, var(--accent-primary-light) 100%);
+    background: linear-gradient(135deg, var(--title-gradient-start) 0%, var(--accent-primary-light) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -1184,7 +1290,7 @@ const isAlreadySaved = $derived(
   .save-input {
     width: 100%;
     padding: 10px 14px;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--input-bg);
     border: 1px solid rgba(var(--glass-rgb), 0.1);
     border-radius: 8px;
     color: var(--text-primary);
@@ -1344,7 +1450,7 @@ const isAlreadySaved = $derived(
 
   .settings-btn:hover {
     background: rgba(var(--glass-rgb), 0.05);
-    border-color: rgba(255, 255, 255, 0.12);
+    border-color: var(--border-subtle);
     color: var(--text-hover);
   }
 
@@ -1366,7 +1472,7 @@ const isAlreadySaved = $derived(
 
   .check-updates-btn:hover:not(:disabled) {
     background: rgba(var(--glass-rgb), 0.05);
-    border-color: rgba(255, 255, 255, 0.12);
+    border-color: var(--border-subtle);
     color: var(--text-hover);
   }
 
@@ -1383,7 +1489,7 @@ const isAlreadySaved = $derived(
     display: inline-block;
     width: 10px;
     height: 10px;
-    border: 1.5px solid rgba(255, 255, 255, 0.3);
+    border: 1.5px solid var(--spinner-track);
     border-top-color: var(--text-hover);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;

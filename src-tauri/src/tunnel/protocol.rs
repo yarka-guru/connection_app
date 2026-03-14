@@ -356,9 +356,22 @@ pub struct HandshakeCompletePayload {
 }
 
 /// Build the HandshakeResponse message.
+///
+/// `client_version` controls whether the SSM agent enables smux multiplexing:
+/// - `"1.0.0.0"` (basic mode): single TCP connection per tunnel
+/// - `"1.2.0.0"` (multiplexed mode): multiple TCP connections via smux framing
 pub fn build_handshake_response(
     request: &HandshakeRequestPayload,
     sequence_number: i64,
+) -> AgentMessage {
+    build_handshake_response_with_version(request, sequence_number, "1.0.0.0")
+}
+
+/// Build the HandshakeResponse message with a specific client version.
+pub fn build_handshake_response_with_version(
+    request: &HandshakeRequestPayload,
+    sequence_number: i64,
+    client_version: &str,
 ) -> AgentMessage {
     let processed = request
         .requested_client_actions
@@ -372,8 +385,7 @@ pub fn build_handshake_response(
         .collect();
 
     let response = HandshakeResponsePayload {
-        // Report low version to avoid triggering smux multiplexing
-        client_version: "1.0.0.0".to_string(),
+        client_version: client_version.to_string(),
         processed_client_actions: processed,
         errors: vec![],
     };

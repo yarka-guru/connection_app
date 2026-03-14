@@ -104,7 +104,8 @@ const gitignorePath = path.join(__dirname, '../.gitignore')
 try {
   const gitignore = fs.readFileSync(gitignorePath, 'utf-8')
   if (!gitignore.includes('latest.json')) {
-    console.warn('WARNING: latest.json is not in .gitignore — add it to avoid accidental commits')
+    console.warn(
+      'WARNING: latest.json is not in .gitignore — add it to avoid accidental commits',
+    )
   }
 } catch {}
-
