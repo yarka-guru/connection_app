@@ -24,13 +24,15 @@ jobs:
     steps:
       - name: Get version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "VERSION=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "VERSION=$INPUT_VERSION" >> $GITHUB_OUTPUT
           else
             # Extract version from the Release workflow's head branch (tag)
-            TAG="${{ github.event.workflow_run.head_branch }}"
-            echo "VERSION=${TAG#v}" >> $GITHUB_OUTPUT
+            echo "VERSION=${HEAD_BRANCH#v}" >> $GITHUB_OUTPUT
           fi
 
       - name: Download release assets
