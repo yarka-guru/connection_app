@@ -249,15 +249,15 @@ impl TunnelManager {
         })?;
 
         // Determine port
-        let port_to_use = local_port
+        let requested_port = local_port
             .map(|p| p.to_string())
             .unwrap_or_else(|| get_local_port(profile, project_config));
 
-        let port_num: u16 = port_to_use
+        let mut port_num: u16 = requested_port
             .parse()
-            .map_err(|_| AppError::General(format!("Invalid port number: {}", port_to_use)))?;
+            .map_err(|_| AppError::General(format!("Invalid port number: {}", requested_port)))?;
 
-        // Strict port check
+        // Collect ports already used by our active connections
         let all_used_ports: std::collections::HashSet<u16> = {
             let guard = self.connections.lock().await;
             let active_ports: Vec<u16> = guard
@@ -272,14 +272,48 @@ impl TunnelManager {
                 .collect()
         };
 
+        // If our own app holds the port, auto-increment to find the next free one.
+        // If an external process holds it, report the error so the user can decide.
+        let user_specified_port = local_port.is_some();
         if all_used_ports.contains(&port_num) || !Self::is_port_available(port_num) {
-            let holder = get_port_holder(port_num)
-                .unwrap_or_else(|| "another process".to_string());
-            return Err(AppError::Tunnel(format!(
-                "Port {} is already in use by {}. Close it or change the port in project settings.",
-                port_to_use, holder
-            )));
+            if user_specified_port {
+                // User explicitly requested this port — don't auto-increment
+                let holder = get_port_holder(port_num)
+                    .unwrap_or_else(|| "another process".to_string());
+                return Err(AppError::Tunnel(format!(
+                    "Port {} is already in use by {}. Close it or change the port in project settings.",
+                    port_num, holder
+                )));
+            }
+
+            // Auto-increment: try up to 100 ports above the requested one
+            let mut found = false;
+            for offset in 1..=100u16 {
+                let candidate = port_num.saturating_add(offset);
+                if candidate > 65534 {
+                    break;
+                }
+                if !all_used_ports.contains(&candidate) && Self::is_port_available(candidate) {
+                    log::info!(
+                        "Port {} in use, auto-assigned port {} instead",
+                        port_num, candidate
+                    );
+                    port_num = candidate;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                let holder = get_port_holder(port_num)
+                    .unwrap_or_else(|| "another process".to_string());
+                return Err(AppError::Tunnel(format!(
+                    "Port {} is already in use by {}. No free ports found nearby.",
+                    requested_port, holder
+                )));
+            }
         }
+
+        let port_to_use = port_num.to_string();
 
         // Generate connection ID
         let connection_id = format!("conn_{}", &uuid::Uuid::new_v4().to_string()[..8]);
