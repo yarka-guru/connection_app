@@ -51,6 +51,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     // Migrate legacy ~/.rds-ssm-connect/ → ~/.connection-app/
     connection_app_lib::config::projects::migrate_legacy_config();
 
