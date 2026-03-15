@@ -5,14 +5,15 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 env:
   CARGO_INCREMENTAL: 0
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -127,8 +128,6 @@ jobs:
     needs: build
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v5
 
@@ -149,18 +148,21 @@ jobs:
           merge-multiple: true
 
       - name: Generate latest.json
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          REPO: ${{ github.repository }}
         run: |
           echo "=== Downloaded signatures ==="
           ls -la sigs/
           echo "=== Signature contents ==="
           for f in sigs/*.sig; do echo "--- $f ---"; cat "$f"; done
-          node scripts/generate-update-json.js ${{ steps.version.outputs.VERSION }} https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.VERSION }} sigs
+          node scripts/generate-update-json.js "$VERSION" "https://github.com/${REPO}/releases/download/v${VERSION}" sigs
 
       - name: Upload latest.json to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          TAG="v${{ steps.version.outputs.VERSION }}"
           echo "=== latest.json content ==="
           cat latest.json
-          gh release upload "$TAG" latest.json --clobber
+          gh release upload "v${VERSION}" latest.json --clobber
