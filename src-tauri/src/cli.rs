@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long)]
     port: Option<String>,
 
+    /// Enable debug logging (RUST_LOG levels)
+    #[arg(long)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -51,12 +55,16 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    let cli = Cli::parse();
+
+    if cli.debug {
+        env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+    }
 
     // Migrate legacy ~/.rds-ssm-connect/ → ~/.connection-app/
     connection_app_lib::config::projects::migrate_legacy_config();
-
-    let cli = Cli::parse();
 
     if let Some(command) = &cli.command {
         match command {
