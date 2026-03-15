@@ -540,6 +540,7 @@ pub async fn start_native_port_forwarding(
     });
 
     // --- Main loop: accept TCP connections ---
+    let mut is_first_connection = true;
     loop {
         if cancel.is_cancelled() || session_cancel.is_cancelled() {
             break;
@@ -589,6 +590,38 @@ pub async fn start_native_port_forwarding(
         // Drain any stale data left in the channel from the previous TCP connection
         // (response data in-flight when the previous client disconnected).
         while tcp_data_rx.try_recv().is_ok() {}
+
+        // Re-send SYN to tell the SSM agent to reconnect to the remote port.
+        // The initial SYN was sent during setup, but after a client disconnect we
+        // send FLAG_DISCONNECT_TO_PORT which tears down the agent's remote TCP
+        // connection. Without a new SYN, the agent has nothing to forward to.
+        if !is_first_connection {
+            let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
+            let syn_msg = build_syn_message(syn_seq);
+            let serialized = syn_msg.serialize();
+            {
+                let mut ob = outgoing_buffer.lock().await;
+                ob.insert(
+                    syn_seq,
+                    OutgoingEntry {
+                        message: serialized.clone(),
+                        sent_at: std::time::Instant::now(),
+                        retransmit_count: 0,
+                    },
+                );
+            }
+            let mut ws = ws_write.lock().await;
+            if ws
+                .send(Message::Binary(serialized.into()))
+                .await
+                .is_err()
+            {
+                session_cancel.cancel();
+                break;
+            }
+            log::info!("Re-sent SYN for new TCP client connection");
+        }
+        is_first_connection = false;
 
         tcp_connected.store(true, Ordering::Relaxed);
 
