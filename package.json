@@ -1,6 +1,6 @@
 {
   "name": "connection_app",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Secure tunneling through AWS SSM",
   "license": "MIT",
   "author": "Iaroslav Pyrogov",

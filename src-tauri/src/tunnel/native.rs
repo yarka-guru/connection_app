@@ -1,8 +1,8 @@
 use crate::tunnel::protocol::{
     build_acknowledge, build_data_message, build_flag_message, build_syn_message, AgentMessage,
-    ACKNOWLEDGE, CHANNEL_CLOSED, FLAG_ACK, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DISCONNECT_TO_PORT,
-    FLAG_TERMINATE_SESSION, OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT,
-    STREAM_DATA_PAYLOAD_SIZE,
+    CHANNEL_CLOSED, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DATA, FLAG_DISCONNECT_TO_PORT,
+    FLAG_TERMINATE_SESSION, INPUT_STREAM_DATA, OUTPUT_STREAM_DATA,
+    PAYLOAD_FLAG, PAYLOAD_OUTPUT, STREAM_DATA_PAYLOAD_SIZE,
 };
 use crate::tunnel::smux::{self, SmuxSession};
 use crate::tunnel::websocket::{open_data_channel, open_data_channel_with_version};
@@ -46,11 +46,19 @@ const MAX_BUFFER_SIZE: usize = 10_000;
 const WS_PONG_MISS_THRESHOLD: u64 = 3;
 
 /// Send SSM-level keepalive every N ping ticks.
-/// WebSocket pings are transport-level — the SSM relay may not count them
-/// as session activity. Without SSM-level messages, the session can idle
+/// WebSocket pings are transport-level — the SSM relay does NOT count them
+/// as session activity. Without SSM-level messages, the session idles
 /// out (default 20 min) even though the WebSocket is alive.
-/// 10 ticks × 30s = every 5 minutes.
-const SSM_KEEPALIVE_TICKS: u64 = 10;
+/// 4 ticks × 30s = every 2 minutes — gives ~10 keepalives before the
+/// 20-min timeout, so even a few silent failures won't kill the session.
+const SSM_KEEPALIVE_TICKS: u64 = 4;
+
+/// Max seconds without any SSM-level message (data, ack, etc.) before
+/// declaring the tunnel dead. This catches the case where the SSM relay
+/// silently stops forwarding without closing the WebSocket — pings still
+/// get pongs (transport is alive) but no application data flows.
+/// 6 minutes = 3 missed keepalive cycles (at 2-min interval).
+const SSM_ACTIVITY_TIMEOUT_SECS: i64 = 360;
 
 /// Outgoing message buffer entry.
 struct OutgoingEntry {
@@ -196,6 +204,11 @@ pub async fn start_native_port_forwarding(
     // Stored as seconds since UNIX epoch (AtomicI64 for lock-free access).
     let last_pong_time = Arc::new(AtomicI64::new(epoch_secs()));
 
+    // SSM activity watchdog: track when the last SSM-level message was received.
+    // If the relay silently stops forwarding (without closing the WebSocket),
+    // pings still get pongs but no SSM data flows — this detects that case.
+    let last_ssm_activity = Arc::new(AtomicI64::new(epoch_secs()));
+
     // Outgoing buffer for retransmission
     let outgoing_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, OutgoingEntry>::new()));
 
@@ -238,23 +251,8 @@ pub async fn start_native_port_forwarding(
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
     let last_pong_ping = last_pong_time.clone();
-    // Pre-build SSM keepalive message (acknowledge with no-op content).
-    // This goes through the SSM relay as a real protocol message, resetting
-    // the session idle timer. The agent ignores acks for unknown sequences.
-    let ssm_keepalive_bytes = AgentMessage::new(
-        ACKNOWLEDGE,
-        0,
-        FLAG_ACK,
-        0,
-        serde_json::to_vec(&serde_json::json!({
-            "AcknowledgedMessageType": "",
-            "AcknowledgedMessageId": "",
-            "AcknowledgedMessageSequenceNumber": 0,
-            "IsSequentialMessage": false,
-        }))
-        .unwrap_or_default(),
-    )
-    .serialize();
+    let last_ssm_ping = last_ssm_activity.clone();
+    let outgoing_seq_ping = outgoing_seq.clone();
     let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
@@ -281,6 +279,23 @@ pub async fn start_native_port_forwarding(
                 break;
             }
 
+            // SSM activity watchdog: if we've been sending keepalives but getting
+            // no SSM-level responses, the relay has silently stopped forwarding.
+            // Only check after we've had time to send a few keepalives.
+            if tick_count > SSM_KEEPALIVE_TICKS * 2 {
+                let last_activity = last_ssm_ping.load(Ordering::Relaxed);
+                let ssm_stale = epoch_secs() - last_activity;
+                if ssm_stale > SSM_ACTIVITY_TIMEOUT_SECS {
+                    log::error!(
+                        "No SSM-level activity for {}s (threshold {}s), tunnel dead",
+                        ssm_stale,
+                        SSM_ACTIVITY_TIMEOUT_SECS
+                    );
+                    session_cancel_ping.cancel();
+                    break;
+                }
+            }
+
             let mut ws = ws_write_ping.lock().await;
             if ws
                 .send(Message::Ping(b"keepalive".to_vec().into()))
@@ -290,13 +305,29 @@ pub async fn start_native_port_forwarding(
                 break;
             }
 
-            // SSM-level keepalive: send a no-op acknowledge through the SSM relay
-            // to reset the session idle timer (default 20 min). WebSocket pings
-            // are transport-level and may not count as session activity.
+            // SSM-level keepalive: send an input_stream_data message through the
+            // SSM relay to reset the session idle timer (default 20 min).
+            // WebSocket pings are transport-level and do NOT count as session
+            // activity. We use input_stream_data (not acknowledge) because the
+            // relay definitively tracks data messages as activity. The empty
+            // payload is harmless — the agent ACKs it but has nothing to forward.
             if tick_count.is_multiple_of(SSM_KEEPALIVE_TICKS) {
-                let _ = ws
-                    .send(Message::Binary(ssm_keepalive_bytes.clone().into()))
-                    .await;
+                let seq = outgoing_seq_ping.fetch_add(1, Ordering::Relaxed);
+                let keepalive_msg = AgentMessage::new(
+                    INPUT_STREAM_DATA,
+                    seq,
+                    FLAG_DATA,
+                    PAYLOAD_OUTPUT,
+                    Vec::new(),
+                );
+                if let Err(e) = ws
+                    .send(Message::Binary(keepalive_msg.serialize().into()))
+                    .await
+                {
+                    log::warn!("SSM keepalive send failed: {}", e);
+                    break;
+                }
+                log::debug!("SSM keepalive sent (seq={})", seq);
             }
         }
     });
@@ -366,6 +397,7 @@ pub async fn start_native_port_forwarding(
     let rtt_estimator_ack = rtt_estimator.clone();
     let tcp_connected_ws = tcp_connected.clone();
     let last_pong_ws = last_pong_time.clone();
+    let last_ssm_ws = last_ssm_activity.clone();
 
     let ws_read_handle = tokio::spawn(async move {
         let mut ws = ws_read_task.lock().await;
@@ -395,6 +427,9 @@ pub async fn start_native_port_forwarding(
 
             match msg {
                 Message::Binary(data) => {
+                    // Any SSM protocol message = relay is alive and forwarding
+                    last_ssm_ws.store(epoch_secs(), Ordering::Relaxed);
+
                     let agent_msg = match AgentMessage::deserialize(&data) {
                         Ok(m) => m,
                         Err(e) => {
@@ -900,6 +935,7 @@ pub async fn start_multiplexed_port_forwarding(
     let expected_incoming_seq = Arc::new(AtomicI64::new(initial_incoming_seq));
     let session_cancel = CancellationToken::new();
     let last_pong_time = Arc::new(AtomicI64::new(epoch_secs()));
+    let last_ssm_activity = Arc::new(AtomicI64::new(epoch_secs()));
 
     // Outgoing buffer for SSM-level retransmission
     let outgoing_buffer = Arc::new(tokio::sync::Mutex::new(BTreeMap::<i64, OutgoingEntry>::new()));
@@ -945,20 +981,8 @@ pub async fn start_multiplexed_port_forwarding(
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
     let last_pong_ping = last_pong_time.clone();
-    let ssm_keepalive_bytes = AgentMessage::new(
-        crate::tunnel::protocol::ACKNOWLEDGE,
-        0,
-        crate::tunnel::protocol::FLAG_ACK,
-        0,
-        serde_json::to_vec(&serde_json::json!({
-            "AcknowledgedMessageType": "",
-            "AcknowledgedMessageId": "",
-            "AcknowledgedMessageSequenceNumber": 0,
-            "IsSequentialMessage": false,
-        }))
-        .unwrap_or_default(),
-    )
-    .serialize();
+    let last_ssm_ping = last_ssm_activity.clone();
+    let outgoing_seq_ping = outgoing_seq.clone();
     let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
@@ -982,6 +1006,21 @@ pub async fn start_multiplexed_port_forwarding(
                 break;
             }
 
+            // SSM activity watchdog (see basic mode comment for rationale)
+            if tick_count > SSM_KEEPALIVE_TICKS * 2 {
+                let last_activity = last_ssm_ping.load(Ordering::Relaxed);
+                let ssm_stale = epoch_secs() - last_activity;
+                if ssm_stale > SSM_ACTIVITY_TIMEOUT_SECS {
+                    log::error!(
+                        "No SSM-level activity for {}s (threshold {}s), tunnel dead (mux)",
+                        ssm_stale,
+                        SSM_ACTIVITY_TIMEOUT_SECS
+                    );
+                    session_cancel_ping.cancel();
+                    break;
+                }
+            }
+
             let mut ws = ws_write_ping.lock().await;
             if ws
                 .send(Message::Ping(b"keepalive".to_vec().into()))
@@ -991,10 +1030,24 @@ pub async fn start_multiplexed_port_forwarding(
                 break;
             }
 
+            // SSM-level keepalive (see basic mode comment for rationale)
             if tick_count.is_multiple_of(SSM_KEEPALIVE_TICKS) {
-                let _ = ws
-                    .send(Message::Binary(ssm_keepalive_bytes.clone().into()))
-                    .await;
+                let seq = outgoing_seq_ping.fetch_add(1, Ordering::Relaxed);
+                let keepalive_msg = crate::tunnel::protocol::AgentMessage::new(
+                    crate::tunnel::protocol::INPUT_STREAM_DATA,
+                    seq,
+                    crate::tunnel::protocol::FLAG_DATA,
+                    crate::tunnel::protocol::PAYLOAD_OUTPUT,
+                    Vec::new(),
+                );
+                if let Err(e) = ws
+                    .send(Message::Binary(keepalive_msg.serialize().into()))
+                    .await
+                {
+                    log::warn!("SSM keepalive send failed (mux): {}", e);
+                    break;
+                }
+                log::debug!("SSM keepalive sent (mux, seq={})", seq);
             }
         }
     });
@@ -1068,6 +1121,7 @@ pub async fn start_multiplexed_port_forwarding(
     let outgoing_buf_ack = outgoing_buffer.clone();
     let rtt_estimator_ack = rtt_estimator.clone();
     let last_pong_ws = last_pong_time.clone();
+    let last_ssm_ws = last_ssm_activity.clone();
 
     let ws_read_handle = tokio::spawn(async move {
         let mut ws = ws_read_task.lock().await;
@@ -1097,6 +1151,9 @@ pub async fn start_multiplexed_port_forwarding(
 
             match msg {
                 Message::Binary(data) => {
+                    // Any SSM protocol message = relay is alive and forwarding
+                    last_ssm_ws.store(epoch_secs(), Ordering::Relaxed);
+
                     let agent_msg = match AgentMessage::deserialize(&data) {
                         Ok(m) => m,
                         Err(e) => {

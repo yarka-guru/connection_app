@@ -1,6 +1,6 @@
 [package]
 name = "connection-app"
-version = "3.2.1"
+version = "3.2.2"
 description = "Secure tunneling through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
