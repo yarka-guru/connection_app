@@ -1,8 +1,8 @@
 use crate::tunnel::protocol::{
     build_acknowledge, build_data_message, build_flag_message, build_syn_message, AgentMessage,
     CHANNEL_CLOSED, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DATA, FLAG_DISCONNECT_TO_PORT,
-    FLAG_TERMINATE_SESSION, INPUT_STREAM_DATA, OUTPUT_STREAM_DATA,
-    PAYLOAD_FLAG, PAYLOAD_OUTPUT, STREAM_DATA_PAYLOAD_SIZE,
+    FLAG_TERMINATE_SESSION, INPUT_STREAM_DATA, OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT,
+    STREAM_DATA_PAYLOAD_SIZE,
 };
 use crate::tunnel::smux::{self, SmuxSession};
 use crate::tunnel::websocket::{open_data_channel, open_data_channel_with_version};
@@ -253,6 +253,7 @@ pub async fn start_native_port_forwarding(
     let last_pong_ping = last_pong_time.clone();
     let last_ssm_ping = last_ssm_activity.clone();
     let outgoing_seq_ping = outgoing_seq.clone();
+    let outgoing_buffer_ping = outgoing_buffer.clone();
     let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
@@ -305,23 +306,36 @@ pub async fn start_native_port_forwarding(
                 break;
             }
 
-            // SSM-level keepalive: send an input_stream_data message through the
-            // SSM relay to reset the session idle timer (default 20 min).
-            // WebSocket pings are transport-level and do NOT count as session
-            // activity. We use input_stream_data (not acknowledge) because the
-            // relay definitively tracks data messages as activity. The empty
-            // payload is harmless — the agent ACKs it but has nothing to forward.
+            // SSM-level keepalive: send input_stream_data with PAYLOAD_FLAG and
+            // an undefined flag value (0). The relay counts input_stream_data as
+            // session activity (resetting the 20-min idle timer). The agent
+            // receives it, sees PAYLOAD_FLAG, reads the flag value (0), finds no
+            // matching handler, and ignores it — no data reaches the remote host.
+            // Must use the shared sequence counter and outgoing buffer so the
+            // retransmission logic can fill gaps if a keepalive is lost.
             if tick_count.is_multiple_of(SSM_KEEPALIVE_TICKS) {
                 let seq = outgoing_seq_ping.fetch_add(1, Ordering::Relaxed);
                 let keepalive_msg = AgentMessage::new(
                     INPUT_STREAM_DATA,
                     seq,
                     FLAG_DATA,
-                    PAYLOAD_OUTPUT,
-                    Vec::new(),
+                    PAYLOAD_FLAG,
+                    vec![0, 0, 0, 0], // flag value 0 = no-op (undefined)
                 );
+                let serialized = keepalive_msg.serialize();
+                {
+                    let mut ob = outgoing_buffer_ping.lock().await;
+                    ob.insert(
+                        seq,
+                        OutgoingEntry {
+                            message: serialized.clone(),
+                            sent_at: std::time::Instant::now(),
+                            retransmit_count: 0,
+                        },
+                    );
+                }
                 if let Err(e) = ws
-                    .send(Message::Binary(keepalive_msg.serialize().into()))
+                    .send(Message::Binary(serialized.into()))
                     .await
                 {
                     log::warn!("SSM keepalive send failed: {}", e);
@@ -983,6 +997,7 @@ pub async fn start_multiplexed_port_forwarding(
     let last_pong_ping = last_pong_time.clone();
     let last_ssm_ping = last_ssm_activity.clone();
     let outgoing_seq_ping = outgoing_seq.clone();
+    let outgoing_buffer_ping = outgoing_buffer.clone();
     let ping_handle = tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
@@ -1037,11 +1052,23 @@ pub async fn start_multiplexed_port_forwarding(
                     crate::tunnel::protocol::INPUT_STREAM_DATA,
                     seq,
                     crate::tunnel::protocol::FLAG_DATA,
-                    crate::tunnel::protocol::PAYLOAD_OUTPUT,
-                    Vec::new(),
+                    crate::tunnel::protocol::PAYLOAD_FLAG,
+                    vec![0, 0, 0, 0],
                 );
+                let serialized = keepalive_msg.serialize();
+                {
+                    let mut ob = outgoing_buffer_ping.lock().await;
+                    ob.insert(
+                        seq,
+                        OutgoingEntry {
+                            message: serialized.clone(),
+                            sent_at: std::time::Instant::now(),
+                            retransmit_count: 0,
+                        },
+                    );
+                }
                 if let Err(e) = ws
-                    .send(Message::Binary(keepalive_msg.serialize().into()))
+                    .send(Message::Binary(serialized.into()))
                     .await
                 {
                     log::warn!("SSM keepalive send failed (mux): {}", e);
