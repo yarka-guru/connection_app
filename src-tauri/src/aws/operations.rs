@@ -239,7 +239,7 @@ pub async fn get_rds_endpoint(
                 let status = cluster.status().unwrap_or_default();
                 let identifier = cluster.db_cluster_identifier().unwrap_or_default();
 
-                if status == "available" && identifier.ends_with(rds_pattern) {
+                if status == "available" && identifier.contains(rds_pattern) {
                     return Ok(cluster.endpoint().map(|e| e.to_string()));
                 }
             }
@@ -293,7 +293,7 @@ pub async fn get_rds_port(
                 let identifier = cluster.db_cluster_identifier().unwrap_or_default();
 
                 if status == "available"
-                    && identifier.ends_with(rds_pattern)
+                    && identifier.contains(rds_pattern)
                     && let Some(port) = cluster.port()
                 {
                     return Ok(port.to_string());

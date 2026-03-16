@@ -1134,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "connection-app"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
