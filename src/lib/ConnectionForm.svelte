@@ -83,7 +83,7 @@ function handleConnectClick() {
 
     <div class="field-group">
       <label for="profile">
-        <span class="label-text">Environment</span>
+        <span class="label-text">AWS Profile</span>
       </label>
       <div class="select-wrapper">
         <select
@@ -92,7 +92,7 @@ function handleConnectClick() {
           onchange={handleProfileSelect}
           disabled={!selectedProject || isConnecting}
         >
-          <option value="">Choose an environment</option>
+          <option value="">Choose an AWS profile</option>
           {#each profiles as profile}
             <option value={profile}>{profile}</option>
           {/each}

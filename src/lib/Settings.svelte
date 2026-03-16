@@ -1,10 +1,17 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { trapFocus, safeTimeout } from './utils.js'
-import { themes, themeNames } from './themes.js'
+import { themes, darkThemeNames, lightThemeNames } from './themes.js'
 import ThemeSwitcher from './ThemeSwitcher.svelte'
 
-const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, scheme = 'dark', onSchemeChange } = $props()
+const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, currentLightTheme = 'light', onLightThemeChange, scheme = 'dark', onSchemeChange } = $props()
+
+// Collapsible section state for project form
+let sectionGeneral = $state(true)
+let sectionDatabase = $state(true)
+let sectionService = $state(true)
+let sectionRouting = $state(false)
+let sectionPorts = $state(false)
 
 let activeTab = $state('projects')
 let awsProfiles = $state([])
@@ -574,27 +581,67 @@ onDestroy(() => {
         <div class="appearance-tab">
           <ThemeSwitcher {scheme} {onSchemeChange} />
           {#if scheme !== 'light'}
-            <div class="dark-theme-label">Dark theme</div>
+            <div class="theme-section-label">Dark Themes</div>
             <div class="theme-grid">
-              {#each themeNames as key}
+              {#each darkThemeNames as key}
                 {@const theme = themes[key]}
                 <button
-                  class="theme-card"
+                  class="theme-preview-card"
                   class:selected={currentTheme === key}
                   onclick={() => onThemeChange?.(key)}
                 >
-                  <div class="theme-swatches">
-                    <span class="swatch" style="background: {theme.vars['--bg-primary']}"></span>
-                    <span class="swatch" style="background: {theme.vars['--accent-primary']}"></span>
-                    <span class="swatch" style="background: {theme.vars['--accent-secondary']}"></span>
+                  <div class="preview-mockup" style="background: {theme.vars['--bg-primary']}">
+                    <div class="preview-header" style="background: linear-gradient(90deg, {theme.vars['--accent-primary']}, {theme.vars['--accent-secondary']})"></div>
+                    <div class="preview-body">
+                      <div class="preview-line" style="background: {theme.vars['--text-primary']}; width: 70%"></div>
+                      <div class="preview-line" style="background: {theme.vars['--text-secondary']}; width: 50%"></div>
+                      <div class="preview-btn" style="background: {theme.vars['--bg-button-gradient']}"></div>
+                    </div>
                   </div>
-                  <span class="theme-name">{theme.name}</span>
+                  <span class="theme-card-name">{theme.name}</span>
+                  {#if currentTheme === key}
+                    <div class="theme-check">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </div>
+                  {/if}
                 </button>
               {/each}
             </div>
-            {#if scheme === 'system'}
-              <p class="scheme-hint">The dark theme above is used when your system is in dark mode.</p>
-            {/if}
+          {/if}
+          {#if scheme !== 'dark'}
+            <div class="theme-section-label">Light Themes</div>
+            <div class="theme-grid">
+              {#each lightThemeNames as key}
+                {@const theme = themes[key]}
+                <button
+                  class="theme-preview-card"
+                  class:selected={currentLightTheme === key}
+                  onclick={() => onLightThemeChange?.(key)}
+                >
+                  <div class="preview-mockup" style="background: {theme.vars['--bg-primary']}">
+                    <div class="preview-header" style="background: linear-gradient(90deg, {theme.vars['--accent-primary']}, {theme.vars['--accent-secondary']})"></div>
+                    <div class="preview-body">
+                      <div class="preview-line" style="background: {theme.vars['--text-primary']}; width: 70%"></div>
+                      <div class="preview-line" style="background: {theme.vars['--text-secondary']}; width: 50%"></div>
+                      <div class="preview-btn" style="background: {theme.vars['--bg-button-gradient']}"></div>
+                    </div>
+                  </div>
+                  <span class="theme-card-name">{theme.name}</span>
+                  {#if currentLightTheme === key}
+                    <div class="theme-check">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </div>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+          {#if scheme === 'system'}
+            <p class="scheme-hint">Your dark and light themes are used based on your system's appearance setting.</p>
           {/if}
         </div>
       {/if}
@@ -649,212 +696,291 @@ onDestroy(() => {
         <h3>{editingProject.isNew ? 'Add Project' : 'Edit Project'}</h3>
 
         <div class="project-form-scroll">
-          <div class="form-group">
-            <label for="project-key">Project Key</label>
-            <input
-              id="project-key"
-              type="text"
-              bind:value={projectKey}
-              placeholder="my-project"
-              disabled={!editingProject.isNew}
-            />
-            {#if editingProject.isNew}
-              <span class="field-hint">Lowercase letters, digits, and hyphens</span>
+          <!-- General Section (always open) -->
+          <div class="form-section">
+            <button type="button" class="section-header" onclick={() => sectionGeneral = !sectionGeneral}>
+              <svg class="section-chevron" class:open={sectionGeneral} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="section-title">General</span>
+            </button>
+            {#if sectionGeneral}
+              <div class="section-body">
+                <div class="form-group">
+                  <label for="project-key">Project Key</label>
+                  <input
+                    id="project-key"
+                    type="text"
+                    bind:value={projectKey}
+                    placeholder="my-project"
+                    disabled={!editingProject.isNew}
+                  />
+                  {#if editingProject.isNew}
+                    <span class="field-hint">Lowercase letters, digits, and hyphens</span>
+                  {/if}
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="project-name">Name</label>
+                    <input id="project-name" type="text" bind:value={projectName} placeholder="My Project" />
+                  </div>
+                  <div class="form-group">
+                    <label for="project-region">Region</label>
+                    <input id="project-region" type="text" bind:value={projectRegion} placeholder="us-east-1" />
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="project-connection-type">Connection Type</label>
+                  <div class="type-toggle">
+                    <button
+                      type="button"
+                      class="type-btn"
+                      class:active={projectConnectionType === 'rds'}
+                      onclick={() => { projectConnectionType = 'rds'; if (projectDefaultPort === '5900' || projectDefaultPort === '3389') { projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432' } }}
+                    >RDS Database</button>
+                    <button
+                      type="button"
+                      class="type-btn"
+                      class:active={projectConnectionType === 'service'}
+                      onclick={() => { projectConnectionType = 'service'; if (projectDefaultPort === '5432' || projectDefaultPort === '3306') { projectDefaultPort = '5900' } }}
+                    >VNC/RDP Service</button>
+                  </div>
+                </div>
+              </div>
             {/if}
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label for="project-name">Name</label>
-              <input id="project-name" type="text" bind:value={projectName} placeholder="My Project" />
-            </div>
-            <div class="form-group">
-              <label for="project-region">Region</label>
-              <input id="project-region" type="text" bind:value={projectRegion} placeholder="us-east-1" />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="project-connection-type">Connection Type</label>
-            <div class="type-toggle">
-              <button
-                type="button"
-                class="type-btn"
-                class:active={projectConnectionType === 'rds'}
-                onclick={() => { projectConnectionType = 'rds'; if (projectDefaultPort === '5900' || projectDefaultPort === '3389') { projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432' } }}
-              >RDS Database</button>
-              <button
-                type="button"
-                class="type-btn"
-                class:active={projectConnectionType === 'service'}
-                onclick={() => { projectConnectionType = 'service'; if (projectDefaultPort === '5432' || projectDefaultPort === '3306') { projectDefaultPort = '5900' } }}
-              >VNC/RDP Service</button>
-            </div>
-          </div>
-
+          <!-- Database Section (RDS only) -->
           {#if projectConnectionType === 'rds'}
-            <div class="form-row">
-              <div class="form-group">
-                <label for="project-database">Database</label>
-                <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
-              </div>
-              <div class="form-group">
-                <label for="project-secret-prefix">Secret Prefix</label>
-                <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
-              </div>
-            </div>
+            <div class="form-section">
+              <button type="button" class="section-header" onclick={() => sectionDatabase = !sectionDatabase}>
+                <svg class="section-chevron" class:open={sectionDatabase} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="section-title">Database</span>
+                <span class="section-badge">RDS</span>
+              </button>
+              {#if sectionDatabase}
+                <div class="section-body">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="project-database">Database</label>
+                      <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
+                    </div>
+                    <div class="form-group">
+                      <label for="project-secret-prefix">Secret Prefix</label>
+                      <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
+                      <span class="field-hint">Prefix to find credentials in Secrets Manager</span>
+                    </div>
+                  </div>
 
-            <div class="form-group databases-group">
-              <label>
-                Databases
-                <span class="label-hint">(optional, for multi-database selection)</span>
-              </label>
-              {#if projectDatabases.length > 0}
-                <div class="databases-list">
-                  {#each projectDatabases as db, i}
-                    <div class="database-entry">
-                      <input
-                        type="text"
-                        value={db}
-                        oninput={(e) => updateDatabase(i, e.target.value)}
-                        placeholder="database name"
-                      />
-                      <button type="button" class="btn-icon-remove" onclick={() => removeDatabase(i)} title="Remove database">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <div class="form-group databases-group">
+                    <label>
+                      Databases
+                      <span class="label-hint">(optional, for multi-database selection)</span>
+                    </label>
+                    {#if projectDatabases.length > 0}
+                      <div class="databases-list">
+                        {#each projectDatabases as db, i}
+                          <div class="database-entry">
+                            <input
+                              type="text"
+                              value={db}
+                              oninput={(e) => updateDatabase(i, e.target.value)}
+                              placeholder="database name"
+                            />
+                            <button type="button" class="btn-icon-remove" onclick={() => removeDatabase(i)} title="Remove database">
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            </button>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+                    <button type="button" class="btn-add-item" onclick={addDatabase}>+ Add Database</button>
+                  </div>
+
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="project-rds-type">RDS Type</label>
+                      <select id="project-rds-type" bind:value={projectRdsType}>
+                        <option value="cluster">Cluster (Aurora)</option>
+                        <option value="instance">Instance</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="project-engine">Engine</label>
+                      <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
+                        <option value="postgres">PostgreSQL</option>
+                        <option value="mysql">MySQL</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="project-rds-pattern">RDS Pattern</label>
+                    <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
+                    <span class="field-hint">Substring to match in cluster/instance name</span>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Service Section (Service only) -->
+          {#if projectConnectionType === 'service'}
+            <div class="form-section">
+              <button type="button" class="section-header" onclick={() => sectionService = !sectionService}>
+                <svg class="section-chevron" class:open={sectionService} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="section-title">Service</span>
+                <span class="section-badge">{(projectServiceType || 'vnc').toUpperCase()}</span>
+              </button>
+              {#if sectionService}
+                <div class="section-body">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="project-service-type">Service Type</label>
+                      <select id="project-service-type" bind:value={projectServiceType}>
+                        <option value="vnc">VNC</option>
+                        <option value="rdp">RDP</option>
+                        <option value="ssh">SSH</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="project-remote-port">Remote Port</label>
+                      <input id="project-remote-port" type="text" bind:value={projectRemotePort} placeholder={projectServiceType === 'rdp' ? '3389' : '5900'} />
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="project-target-type">Target Type</label>
+                    <select id="project-target-type" bind:value={projectTargetType}>
+                      <option value="ec2-direct">EC2 Direct (SSM Agent)</option>
+                      <option value="ec2-bastion">EC2 via Bastion</option>
+                      <option value="ecs-bastion">ECS via Bastion</option>
+                    </select>
+                    <span class="field-hint">
+                      {#if projectTargetType === 'ec2-direct'}
+                        Connects directly to EC2 instance (requires SSM Agent)
+                      {:else if projectTargetType === 'ec2-bastion'}
+                        Tunnels through bastion to EC2 instance private IP
+                      {:else}
+                        Tunnels through bastion to ECS task private IP
+                      {/if}
+                    </span>
+                  </div>
+
+                  {#if projectTargetType === 'ec2-direct' || projectTargetType === 'ec2-bastion'}
+                    <div class="form-group">
+                      <label for="project-target-pattern">EC2 Name Pattern</label>
+                      <input id="project-target-pattern" type="text" bind:value={projectTargetPattern} placeholder="*my-server*" />
+                      <span class="field-hint">EC2 Name tag filter (supports * and ? wildcards)</span>
+                    </div>
+                  {:else}
+                    <div class="form-row">
+                      <div class="form-group">
+                        <label for="project-ecs-cluster">ECS Cluster</label>
+                        <input id="project-ecs-cluster" type="text" bind:value={projectEcsCluster} placeholder="my-cluster" />
+                      </div>
+                      <div class="form-group">
+                        <label for="project-ecs-service">ECS Service</label>
+                        <input id="project-ecs-service" type="text" bind:value={projectEcsService} placeholder="my-service" />
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if projectServiceType === 'ssh'}
+                    <div class="form-row">
+                      <div class="form-group">
+                        <label for="project-ssh-username">SSH Username</label>
+                        <input id="project-ssh-username" type="text" bind:value={projectSshUsername} placeholder="ec2-user (default)" />
+                        <span class="field-hint">Remote SSH username (defaults to ec2-user)</span>
+                      </div>
+                      <div class="form-group">
+                        <label for="project-ssh-key-path">SSH Key Path</label>
+                        <input id="project-ssh-key-path" type="text" bind:value={projectSshKeyPath} placeholder="~/.ssh/id_rsa (optional)" />
+                        <span class="field-hint">Path to private key (uses SSH agent if empty)</span>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- AWS Routing Section (collapsed by default) -->
+          <div class="form-section">
+            <button type="button" class="section-header" onclick={() => sectionRouting = !sectionRouting}>
+              <svg class="section-chevron" class:open={sectionRouting} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="section-title">AWS Routing</span>
+            </button>
+            {#if sectionRouting}
+              <div class="section-body">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="project-profile-filter">AWS Profile Filter</label>
+                    <input id="project-profile-filter" type="text" bind:value={projectProfileFilter} placeholder="(optional)" />
+                    <span class="field-hint">Only show profiles containing this text</span>
+                  </div>
+                  <div class="form-group">
+                    <label for="project-default-port">Default Port</label>
+                    <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder={projectConnectionType === 'rds' ? '5432' : '5900'} />
+                  </div>
+                </div>
+
+                {#if projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct'}
+                  <div class="form-group">
+                    <label for="project-bastion-pattern">Bastion Name Pattern</label>
+                    <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
+                    <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <!-- Per-Environment Ports Section (collapsed by default) -->
+          <div class="form-section">
+            <button type="button" class="section-header" onclick={() => sectionPorts = !sectionPorts}>
+              <svg class="section-chevron" class:open={sectionPorts} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="section-title">Per-Environment Ports</span>
+              {#if projectPortMappings.filter(m => m.suffix.trim() && m.port.trim()).length > 0}
+                <span class="section-badge">{projectPortMappings.filter(m => m.suffix.trim() && m.port.trim()).length}</span>
+              {/if}
+            </button>
+            {#if sectionPorts}
+              <div class="section-body">
+                <span class="field-hint" style="margin-bottom: 10px; display: block;">Override the default port per AWS profile. Suffix matches the end of profile name.</span>
+                <div class="port-mappings">
+                  <div class="port-mappings-header">
+                    <div class="port-column-headers">
+                      <span class="port-col-header">Profile Suffix</span>
+                      <span class="port-col-header">Local Port</span>
+                    </div>
+                    <button class="btn-add-small" onclick={addPortMapping} type="button">+ Add</button>
+                  </div>
+                  {#each projectPortMappings as mapping, i}
+                    <div class="port-mapping-row">
+                      <input type="text" bind:value={mapping.suffix} placeholder="profile-suffix" />
+                      <input type="text" bind:value={mapping.port} placeholder="port" />
+                      <button class="btn-remove" onclick={() => removePortMapping(i)} type="button" aria-label="Remove mapping">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                          <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
                       </button>
                     </div>
                   {/each}
                 </div>
-              {/if}
-              <button type="button" class="btn-add-item" onclick={addDatabase}>+ Add Database</button>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label for="project-rds-type">RDS Type</label>
-                <select id="project-rds-type" bind:value={projectRdsType}>
-                  <option value="cluster">Cluster (Aurora)</option>
-                  <option value="instance">Instance</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label for="project-engine">Engine</label>
-                <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
-                  <option value="postgres">PostgreSQL</option>
-                  <option value="mysql">MySQL</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="project-rds-pattern">RDS Pattern</label>
-              <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
-            </div>
-          {:else}
-            <div class="form-row">
-              <div class="form-group">
-                <label for="project-service-type">Service Type</label>
-                <select id="project-service-type" bind:value={projectServiceType}>
-                  <option value="vnc">VNC</option>
-                  <option value="rdp">RDP</option>
-                  <option value="ssh">SSH</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label for="project-remote-port">Remote Port</label>
-                <input id="project-remote-port" type="text" bind:value={projectRemotePort} placeholder={projectServiceType === 'rdp' ? '3389' : '5900'} />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="project-target-type">Target Type</label>
-              <select id="project-target-type" bind:value={projectTargetType}>
-                <option value="ec2-direct">EC2 Direct (SSM Agent)</option>
-                <option value="ec2-bastion">EC2 via Bastion</option>
-                <option value="ecs-bastion">ECS via Bastion</option>
-              </select>
-              <span class="field-hint">
-                {#if projectTargetType === 'ec2-direct'}
-                  Connects directly to EC2 instance (requires SSM Agent)
-                {:else if projectTargetType === 'ec2-bastion'}
-                  Tunnels through bastion to EC2 instance private IP
-                {:else}
-                  Tunnels through bastion to ECS task private IP
-                {/if}
-              </span>
-            </div>
-
-            {#if projectTargetType === 'ec2-direct' || projectTargetType === 'ec2-bastion'}
-              <div class="form-group">
-                <label for="project-target-pattern">EC2 Name Pattern</label>
-                <input id="project-target-pattern" type="text" bind:value={projectTargetPattern} placeholder="*my-server*" />
-                <span class="field-hint">EC2 Name tag filter (supports * and ? wildcards)</span>
-              </div>
-            {:else}
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="project-ecs-cluster">ECS Cluster</label>
-                  <input id="project-ecs-cluster" type="text" bind:value={projectEcsCluster} placeholder="my-cluster" />
-                </div>
-                <div class="form-group">
-                  <label for="project-ecs-service">ECS Service</label>
-                  <input id="project-ecs-service" type="text" bind:value={projectEcsService} placeholder="my-service" />
-                </div>
               </div>
             {/if}
-
-            {#if projectServiceType === 'ssh'}
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="project-ssh-username">SSH Username</label>
-                  <input id="project-ssh-username" type="text" bind:value={projectSshUsername} placeholder="ec2-user (default)" />
-                  <span class="field-hint">Remote SSH username (defaults to ec2-user)</span>
-                </div>
-                <div class="form-group">
-                  <label for="project-ssh-key-path">SSH Key Path</label>
-                  <input id="project-ssh-key-path" type="text" bind:value={projectSshKeyPath} placeholder="~/.ssh/id_rsa (optional)" />
-                  <span class="field-hint">Path to private key (uses SSH agent if empty)</span>
-                </div>
-              </div>
-            {/if}
-          {/if}
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="project-profile-filter">Profile Filter</label>
-              <input id="project-profile-filter" type="text" bind:value={projectProfileFilter} placeholder="(optional)" />
-            </div>
-            <div class="form-group">
-              <label for="project-default-port">Default Port</label>
-              <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder={projectConnectionType === 'rds' ? '5432' : '5900'} />
-            </div>
-          </div>
-
-          {#if projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct'}
-            <div class="form-group">
-              <label for="project-bastion-pattern">Bastion Name Pattern</label>
-              <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
-              <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
-            </div>
-          {/if}
-
-          <div class="port-mappings">
-            <div class="port-mappings-header">
-              <span class="port-mappings-label">Port Mappings</span>
-              <button class="btn-add-small" onclick={addPortMapping} type="button">+ Add</button>
-            </div>
-            {#each projectPortMappings as mapping, i}
-              <div class="port-mapping-row">
-                <input type="text" bind:value={mapping.suffix} placeholder="env suffix" />
-                <input type="text" bind:value={mapping.port} placeholder="port" />
-                <button class="btn-remove" onclick={() => removePortMapping(i)} type="button" aria-label="Remove mapping">
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                  </svg>
-                </button>
-              </div>
-            {/each}
           </div>
         </div>
 
@@ -1363,8 +1489,64 @@ onDestroy(() => {
     flex: 1;
   }
 
+  /* Collapsible form sections */
+  .form-section {
+    border: 1px solid rgba(var(--glass-rgb), 0.08);
+    border-radius: 10px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  .section-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: rgba(var(--glass-rgb), 0.03);
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .section-header:hover {
+    background: rgba(var(--glass-rgb), 0.06);
+  }
+
+  .section-chevron {
+    color: var(--text-muted);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+  }
+
+  .section-chevron.open {
+    transform: rotate(90deg);
+  }
+
+  .section-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+  }
+
+  .section-badge {
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: var(--accent-primary);
+    background: rgba(var(--accent-primary-rgb), 0.12);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+  }
+
+  .section-body {
+    padding: 12px;
+    border-top: 1px solid rgba(var(--glass-rgb), 0.06);
+  }
+
   .port-mappings {
-    margin-bottom: 16px;
+    margin-bottom: 0;
   }
 
   .port-mappings-header {
@@ -1374,10 +1556,19 @@ onDestroy(() => {
     margin-bottom: 8px;
   }
 
-  .port-mappings-label {
-    font-size: 0.8rem;
+  .port-column-headers {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+  }
+
+  .port-col-header {
+    flex: 1;
+    font-size: 0.7rem;
     font-weight: 500;
-    color: var(--text-hover);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .btn-add-small {
@@ -1466,55 +1657,7 @@ onDestroy(() => {
     padding: 8px 0;
   }
 
-  .theme-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-  }
-
-  .theme-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    padding: 16px;
-    background: rgba(var(--glass-rgb), 0.04);
-    border: 2px solid rgba(var(--glass-rgb), 0.08);
-    border-radius: 12px;
-    cursor: pointer;
-    transition: border-color 0.2s, background-color 0.2s;
-  }
-
-  .theme-card:hover {
-    background: rgba(var(--glass-rgb), 0.07);
-    border-color: rgba(var(--glass-rgb), 0.15);
-  }
-
-  .theme-card.selected {
-    border-color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.08);
-  }
-
-  .theme-swatches {
-    display: flex;
-    gap: 6px;
-  }
-
-  .swatch {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    border: 2px solid var(--border-subtle);
-  }
-
-  .theme-name {
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--text-primary);
-    text-transform: capitalize;
-  }
-
-  .dark-theme-label {
+  .theme-section-label {
     font-size: 0.8rem;
     font-weight: 500;
     color: var(--text-secondary);
@@ -1523,8 +1666,97 @@ onDestroy(() => {
     letter-spacing: 0.05em;
   }
 
+  .theme-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .theme-preview-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    background: rgba(var(--glass-rgb), 0.04);
+    border: 2px solid rgba(var(--glass-rgb), 0.08);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+  }
+
+  .theme-preview-card:hover {
+    background: rgba(var(--glass-rgb), 0.07);
+    border-color: rgba(var(--glass-rgb), 0.15);
+  }
+
+  .theme-preview-card.selected {
+    border-color: var(--accent-primary);
+    border-width: 2px;
+    background: rgba(var(--accent-primary-rgb), 0.08);
+  }
+
+  .preview-mockup {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(128, 128, 128, 0.15);
+  }
+
+  .preview-header {
+    height: 4px;
+    flex-shrink: 0;
+  }
+
+  .preview-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 8px;
+  }
+
+  .preview-line {
+    height: 3px;
+    border-radius: 2px;
+    opacity: 0.8;
+  }
+
+  .preview-btn {
+    height: 6px;
+    width: 60%;
+    border-radius: 3px;
+    margin-top: 2px;
+  }
+
+  .theme-card-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .theme-check {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 18px;
+    height: 18px;
+    background: var(--accent-primary);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+  }
+
   .scheme-hint {
-    margin: 12px 0 0;
+    margin: 0 0 8px;
     font-size: 0.78rem;
     color: var(--text-muted);
     line-height: 1.4;

@@ -1,7 +1,7 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
-import { applyTheme, themes, resolveTheme } from './lib/themes.js'
+import { applyTheme, themes, resolveTheme, lightThemeNames } from './lib/themes.js'
 import SavedConnections from './lib/SavedConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
@@ -42,6 +42,7 @@ let updateError = $state(null)
 let scheme = $state('dark')
 let activeTab = $state('rds')
 let currentTheme = $state('forest')
+let currentLightTheme = $state('light')
 let showSettings = $state(false)
 let showSetupScreen = $state(false)
 let setupError = $state('')
@@ -144,13 +145,17 @@ async function initApp() {
   try {
     const savedTheme = localStorage.getItem('theme')
     const savedScheme = localStorage.getItem('scheme')
-    if (savedTheme && themes[savedTheme] && savedTheme !== 'light') {
+    const savedLightTheme = localStorage.getItem('lightTheme')
+    if (savedTheme && themes[savedTheme] && !lightThemeNames.includes(savedTheme)) {
       currentTheme = savedTheme
+    }
+    if (savedLightTheme && themes[savedLightTheme] && lightThemeNames.includes(savedLightTheme)) {
+      currentLightTheme = savedLightTheme
     }
     if (savedScheme && ['light', 'dark', 'system'].includes(savedScheme)) {
       scheme = savedScheme
     }
-    applyTheme(resolveTheme(scheme, currentTheme))
+    applyTheme(resolveTheme(scheme, currentTheme, currentLightTheme))
   } catch (_err) {
     // Non-fatal: use default theme
   }
@@ -160,7 +165,7 @@ async function initApp() {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
     const handleSystemChange = () => {
       if (scheme === 'system') {
-        applyTheme(resolveTheme('system', currentTheme))
+        applyTheme(resolveTheme('system', currentTheme, currentLightTheme))
       }
     }
     mediaQuery.addEventListener('change', handleSystemChange)
@@ -697,7 +702,7 @@ function dismissSavePrompt() {
 
 function handleThemeChange(themeName) {
   currentTheme = themeName
-  applyTheme(resolveTheme(scheme, themeName))
+  applyTheme(resolveTheme(scheme, themeName, currentLightTheme))
   try {
     localStorage.setItem('theme', themeName)
   } catch (_err) {
@@ -705,9 +710,19 @@ function handleThemeChange(themeName) {
   }
 }
 
+function handleLightThemeChange(themeName) {
+  currentLightTheme = themeName
+  applyTheme(resolveTheme(scheme, currentTheme, themeName))
+  try {
+    localStorage.setItem('lightTheme', themeName)
+  } catch (_err) {
+    // Non-fatal
+  }
+}
+
 function handleSchemeChange(newScheme) {
   scheme = newScheme
-  applyTheme(resolveTheme(newScheme, currentTheme))
+  applyTheme(resolveTheme(newScheme, currentTheme, currentLightTheme))
   try {
     localStorage.setItem('scheme', newScheme)
   } catch (_err) {
@@ -1015,6 +1030,8 @@ const isAlreadySaved = $derived(
         onProjectsChanged={refreshProjects}
         {currentTheme}
         onThemeChange={handleThemeChange}
+        {currentLightTheme}
+        onLightThemeChange={handleLightThemeChange}
         {scheme}
         onSchemeChange={handleSchemeChange}
       />
@@ -1024,39 +1041,41 @@ const isAlreadySaved = $derived(
 
 <style>
   :global(:root) {
-    --bg-primary: #141e17;
-    --bg-secondary: #1a2b1f;
-    --bg-tertiary: #182a1d;
-    --bg-card: rgba(26, 43, 31, 0.85);
-    --bg-card-inner: rgba(28, 40, 30, 0.9);
-    --accent-primary: #d4a853;
-    --accent-primary-light: #e2c87a;
-    --accent-primary-rgb: 212, 168, 83;
-    --accent-secondary: #7aab6d;
-    --accent-secondary-rgb: 122, 171, 109;
-    --text-primary: #d5ddd3;
-    --text-secondary: #8a9488;
-    --text-muted: #6b7d6a;
-    --text-hover: #9baa98;
-    --text-inactive: #7d8f7a;
-    --color-error: #c9614a;
-    --color-error-dark: #b0503c;
-    --color-error-soft: #d4836b;
-    --color-error-light: #e0a08a;
-    --color-error-rgb: 201, 97, 74;
-    --color-success: #7aab6d;
-    --color-success-soft: #8bbd7a;
-    --glass-rgb: 200, 220, 195;
-    --glass-bg: rgba(200, 220, 195, 0.04);
-    --glass-bg-hover: rgba(200, 220, 195, 0.07);
-    --glass-border: rgba(122, 171, 109, 0.08);
-    --glass-border-hover: rgba(122, 171, 109, 0.14);
+    --bg-primary: #080808;
+    --bg-secondary: #101010;
+    --bg-tertiary: #0c0c0c;
+    --bg-card: rgba(16, 16, 16, 0.85);
+    --bg-card-inner: rgba(12, 12, 12, 0.9);
+    --accent-primary: #10b981;
+    --accent-primary-light: #34d399;
+    --accent-primary-rgb: 16, 185, 129;
+    --accent-secondary: #34d399;
+    --accent-secondary-rgb: 52, 211, 153;
+    --text-primary: #e5e5e5;
+    --text-secondary: #9e9e9e;
+    --text-muted: #6b6b6b;
+    --text-hover: #b5b5b5;
+    --text-inactive: #808080;
+    --color-error: #ef4444;
+    --color-error-dark: #dc2626;
+    --color-error-soft: #f87171;
+    --color-error-light: #fca5a5;
+    --color-error-rgb: 239, 68, 68;
+    --color-success: #10b981;
+    --color-success-soft: #34d399;
+    --glass-rgb: 180, 220, 200;
+    --glass-bg: rgba(180, 220, 200, 0.04);
+    --glass-bg-hover: rgba(180, 220, 200, 0.07);
+    --glass-border: rgba(16, 185, 129, 0.1);
+    --glass-border-hover: rgba(16, 185, 129, 0.18);
     --glass-blur: blur(16px) saturate(1.8);
     --glass-blur-heavy: blur(32px) saturate(1.8);
-    --glass-inner-glow: inset 0 1px 0 rgba(200, 220, 195, 0.06);
+    --glass-inner-glow: inset 0 1px 0 rgba(180, 220, 200, 0.06);
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    --bg-button-gradient: linear-gradient(135deg, #d4a853 0%, #7aab6d 100%);
-    --bg-button-gradient-shadow: rgba(212, 168, 83, 0.3);
+    --bg-button-gradient: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+    --bg-button-gradient-shadow: rgba(16, 185, 129, 0.3);
+    --bg-pattern: radial-gradient(circle, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+    --bg-pattern-size: 20px 20px;
     --press-scale: scale(0.97);
     --transition-fast: 0.15s ease;
     --transition-normal: 0.2s ease;
@@ -1071,8 +1090,8 @@ const isAlreadySaved = $derived(
 
   @media (prefers-reduced-transparency) {
     :global(:root) {
-      --glass-bg: rgba(26, 43, 31, 0.95);
-      --glass-bg-hover: rgba(32, 52, 36, 0.95);
+      --glass-bg: rgba(16, 16, 16, 0.95);
+      --glass-bg-hover: rgba(24, 24, 24, 0.95);
       --glass-blur: none;
       --glass-blur-heavy: none;
     }
@@ -1093,7 +1112,8 @@ const isAlreadySaved = $derived(
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
-    background: linear-gradient(145deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--bg-tertiary) 100%);
+    background: var(--bg-pattern), linear-gradient(145deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--bg-tertiary) 100%);
+    background-size: var(--bg-pattern-size, auto), auto;
     min-height: 100vh;
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
