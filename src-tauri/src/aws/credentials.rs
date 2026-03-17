@@ -6,6 +6,7 @@ use aws_sdk_rds as rds;
 use aws_sdk_secretsmanager as secretsmanager;
 use aws_sdk_ssm as ssm;
 use aws_sdk_sts as sts;
+use std::sync::OnceLock;
 
 /// All AWS service clients for a given profile+region.
 pub struct AwsClients {
@@ -46,13 +47,49 @@ pub enum AuthType {
     Unknown,
 }
 
+/// Cached custom CA cert bytes loaded from SSL_CERT_FILE env var.
+static CUSTOM_CA_CERTS: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+
+/// Load custom CA certificates from SSL_CERT_FILE env var (if set).
+pub fn load_custom_ca_certs() -> &'static Option<Vec<u8>> {
+    CUSTOM_CA_CERTS.get_or_init(|| {
+        let path = std::env::var("SSL_CERT_FILE").ok()?;
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                log::info!("Loaded custom CA certs from SSL_CERT_FILE={}", path);
+                Some(bytes)
+            }
+            Err(e) => {
+                log::warn!("Failed to read SSL_CERT_FILE={}: {}", path, e);
+                None
+            }
+        }
+    })
+}
+
 /// Build AWS SDK config for a given profile and region.
 /// Uses the aws-config crate which handles the full credential chain
 /// including SSO, assume-role, process credentials, etc.
+/// Supports SSL_CERT_FILE env var for custom CA certs (corporate proxies).
 pub async fn build_aws_config(profile: &str, region: &str) -> aws_config::SdkConfig {
-    let loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(region.to_string()))
         .profile_name(profile);
+
+    if let Some(ca_bytes) = load_custom_ca_certs() {
+        use aws_smithy_http_client::tls;
+        let trust_store = tls::TrustStore::default()
+            .with_pem_certificate(ca_bytes.clone());
+        let tls_context = tls::TlsContext::builder()
+            .with_trust_store(trust_store)
+            .build()
+            .expect("valid TLS context");
+        let http_client = aws_smithy_http_client::Builder::new()
+            .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
+            .tls_context(tls_context)
+            .build_https();
+        loader = loader.http_client(http_client);
+    }
 
     loader.load().await
 }

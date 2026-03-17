@@ -675,7 +675,7 @@ function handleGroupHeaderKeydown(e, groupName) {
           {#if info.password}
             <div class="detail-row">
               <span class="detail-label">Password</span>
-              <code class="detail-value password">{revealedPasswords.has(connection.id) ? info.password : maskPassword(info.password)}</code>
+              <code class="detail-value password" class:revealed={revealedPasswords.has(connection.id)}>{revealedPasswords.has(connection.id) ? info.password : maskPassword(info.password)}</code>
               <button
                 class="icon-btn"
                 title={revealedPasswords.has(connection.id) ? 'Hide password' : 'Show password'}
@@ -1367,6 +1367,13 @@ function handleGroupHeaderKeydown(e, groupName) {
   .detail-value.password {
     color: var(--accent-primary);
     letter-spacing: 0.1em;
+  }
+
+  .detail-value.password.revealed {
+    overflow: visible;
+    white-space: normal;
+    word-break: break-all;
+    letter-spacing: normal;
   }
 
   .icon-btn {

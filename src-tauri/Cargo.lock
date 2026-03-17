@@ -1146,6 +1146,7 @@ dependencies = [
  "aws-sdk-ssooidc",
  "aws-sdk-sts",
  "aws-sigv4",
+ "aws-smithy-http-client",
  "base64 0.22.1",
  "byteorder",
  "chrono",
