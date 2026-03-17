@@ -67,6 +67,7 @@ let editingGroupName = $state(null)
 let editGroupNameValue = $state('')
 let movingConnectionId = $state(null)
 let dragOverGroup = $state(null)
+let revealedPasswords = $state(new Set())
 
 function getProjectName(projectKey) {
   const project = projects.find((p) => p.key === projectKey)
@@ -674,7 +675,23 @@ function handleGroupHeaderKeydown(e, groupName) {
           {#if info.password}
             <div class="detail-row">
               <span class="detail-label">Password</span>
-              <code class="detail-value password">{maskPassword(info.password)}</code>
+              <code class="detail-value password">{revealedPasswords.has(connection.id) ? info.password : maskPassword(info.password)}</code>
+              <button
+                class="icon-btn"
+                title={revealedPasswords.has(connection.id) ? 'Hide password' : 'Show password'}
+                onclick={() => {
+                  const next = new Set(revealedPasswords)
+                  if (next.has(connection.id)) next.delete(connection.id)
+                  else next.add(connection.id)
+                  revealedPasswords = next
+                }}
+              >
+                {#if revealedPasswords.has(connection.id)}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                {:else}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                {/if}
+              </button>
               <CopyButton value={info.password} label="Copy password" />
             </div>
           {/if}
@@ -1350,6 +1367,26 @@ function handleGroupHeaderKeydown(e, groupName) {
   .detail-value.password {
     color: var(--accent-primary);
     letter-spacing: 0.1em;
+  }
+
+  .icon-btn {
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+    flex-shrink: 0;
+  }
+
+  .icon-btn:hover {
+    background: rgba(var(--glass-rgb), 0.05);
+    color: var(--text-hover);
   }
 
   .conn-string-row {

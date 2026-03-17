@@ -343,7 +343,7 @@ async fn run_rds_connect(
         eprintln!("  \u{1F4CB} Password copied to clipboard\n");
     }
 
-    run_tunnel(stream_url, token_value, port_num).await
+    run_tunnel(stream_url, token_value, port_num, Some(password)).await
 }
 
 async fn run_service_connect(
@@ -455,7 +455,7 @@ async fn run_service_connect(
 
     print_info_box(&rows);
 
-    run_tunnel(stream_url, token_value, port_num).await
+    run_tunnel(stream_url, token_value, port_num, None).await
 }
 
 fn extract_session_info(
@@ -488,8 +488,17 @@ fn print_info_box(rows: &[(&str, String)]) {
     eprintln!("  \u{2514}{}\u{2518}\n", "\u{2500}".repeat(box_width));
 }
 
-async fn run_tunnel(stream_url: String, token_value: String, port_num: u16) -> Result<(), String> {
-    eprintln!("  Press Ctrl+C to disconnect.\n");
+async fn run_tunnel(
+    stream_url: String,
+    token_value: String,
+    port_num: u16,
+    password: Option<String>,
+) -> Result<(), String> {
+    if password.is_some() {
+        eprintln!("  Commands: [p] show password  [c] copy password  [Ctrl+C] disconnect\n");
+    } else {
+        eprintln!("  Press Ctrl+C to disconnect.\n");
+    }
 
     let cancel = CancellationToken::new();
     let cancel_signal = cancel.clone();
@@ -499,6 +508,46 @@ async fn run_tunnel(stream_url: String, token_value: String, port_num: u16) -> R
         eprintln!("\n  \u{1F6D1} Disconnecting...");
         cancel_signal.cancel();
     });
+
+    // Spawn interactive command reader if password is available
+    if let Some(pw) = password {
+        let cancel_reader = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            use std::io::{BufRead, Write};
+            let stdin = std::io::stdin();
+            let mut stdout = std::io::stderr();
+            loop {
+                if cancel_reader.is_cancelled() {
+                    break;
+                }
+                let mut input = String::new();
+                if stdin.lock().read_line(&mut input).is_err() {
+                    break;
+                }
+                let cmd = input.trim().to_lowercase();
+                match cmd.as_str() {
+                    "p" | "password" | "show" => {
+                        let _ = writeln!(stdout, "\n  \u{1F513} Password: {}\n", pw);
+                    }
+                    "c" | "copy" => {
+                        if try_copy_to_clipboard(&pw) {
+                            let _ = writeln!(stdout, "\n  \u{1F4CB} Password copied to clipboard\n");
+                        } else {
+                            let _ = writeln!(stdout, "\n  \u{26A0}\u{FE0F}  Failed to copy to clipboard\n");
+                        }
+                    }
+                    "" => {} // ignore empty lines
+                    _ => {
+                        let _ = writeln!(
+                            stdout,
+                            "  Unknown command '{}'. Use [p] show password, [c] copy password",
+                            cmd
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     start_native_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
 

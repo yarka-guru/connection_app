@@ -27,6 +27,7 @@ let savedConnections = $state([])
 let activeConnections = $state([])
 let updateInfo = $state(null)
 let showUpdateBanner = $state(true)
+let updateBannerEl = $state(null)
 let currentVersion = $state('')
 let connectingId = $state(null) // Track which saved connection is being connected
 let showSavePrompt = $state(false)
@@ -384,6 +385,10 @@ async function checkForUpdates() {
     updateInfo = await invoke('check_for_updates')
     if (updateInfo?.updateAvailable) {
       showUpdateBanner = true
+      // Scroll to banner after DOM updates
+      requestAnimationFrame(() => {
+        updateBannerEl?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
     } else {
       updateCheckMessage = 'You are up to date!'
       cancelUpdateMsgTimeout?.()
@@ -832,6 +837,7 @@ const isAlreadySaved = $derived(
   {:else}
     <div class="app-container">
       {#if (showUpdateBanner && updateInfo?.updateAvailable) || updateError}
+        <div bind:this={updateBannerEl}>
         <UpdateBanner
           {updateInfo}
           {isUpdating}
@@ -843,6 +849,7 @@ const isAlreadySaved = $derived(
           onDismiss={handleDismissUpdate}
           onManualDownload={handleManualDownload}
         />
+        </div>
       {/if}
 
       <header class="app-header">

@@ -6,6 +6,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// Format an AWS SDK error with the full error chain for diagnostics.
+fn format_sdk_error(context: &str, err: &dyn std::error::Error) -> String {
+    let mut msg = format!("{}: {}", context, err);
+    let mut source = err.source();
+    while let Some(cause) = source {
+        msg.push_str(&format!(" → {}", cause));
+        source = cause.source();
+    }
+    msg
+}
+
 const CLIENT_NAME: &str = "rds-connect-app";
 const CLIENT_TYPE: &str = "public";
 const TOKEN_EXPIRY_BUFFER_MS: i64 = 5 * 60 * 1000; // 5 minutes
@@ -190,7 +201,7 @@ async fn register_client(
         .client_type(CLIENT_TYPE)
         .send()
         .await
-        .map_err(|e| AppError::Sso(format!("Failed to register OIDC client: {}", e)))?;
+        .map_err(|e| AppError::Sso(format_sdk_error("Failed to register OIDC client", &e)))?;
 
     let client_id = response
         .client_id()
@@ -234,7 +245,7 @@ async fn start_device_authorization(
         .start_url(start_url)
         .send()
         .await
-        .map_err(|e| AppError::Sso(format!("Failed to start device authorization: {}", e)))?;
+        .map_err(|e| AppError::Sso(format_sdk_error("Failed to start device authorization", &e)))?;
 
     Ok(DeviceAuth {
         device_code: response
