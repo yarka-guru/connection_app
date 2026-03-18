@@ -67,31 +67,38 @@ pub fn load_custom_ca_certs() -> &'static Option<Vec<u8>> {
     })
 }
 
+/// Build a TLS trust store with native OS root certificates and optional SSL_CERT_FILE certs.
+/// This ensures corporate proxy CAs installed in the OS certificate store are trusted.
+pub fn build_trust_store() -> aws_smithy_http_client::tls::TrustStore {
+    use aws_smithy_http_client::tls;
+    let mut trust_store = tls::TrustStore::default();
+    if let Some(ca_bytes) = load_custom_ca_certs() {
+        trust_store = trust_store.with_pem_certificate(ca_bytes.clone());
+    }
+    trust_store
+}
+
 /// Build AWS SDK config for a given profile and region.
 /// Uses the aws-config crate which handles the full credential chain
 /// including SSO, assume-role, process credentials, etc.
-/// Supports SSL_CERT_FILE env var for custom CA certs (corporate proxies).
+/// Always uses native OS root certificates + optional SSL_CERT_FILE certs.
 pub async fn build_aws_config(profile: &str, region: &str) -> aws_config::SdkConfig {
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+    use aws_smithy_http_client::tls;
+    let tls_context = tls::TlsContext::builder()
+        .with_trust_store(build_trust_store())
+        .build()
+        .expect("valid TLS context");
+    let http_client = aws_smithy_http_client::Builder::new()
+        .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
+        .tls_context(tls_context)
+        .build_https();
+
+    aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(region.to_string()))
-        .profile_name(profile);
-
-    if let Some(ca_bytes) = load_custom_ca_certs() {
-        use aws_smithy_http_client::tls;
-        let trust_store = tls::TrustStore::default()
-            .with_pem_certificate(ca_bytes.clone());
-        let tls_context = tls::TlsContext::builder()
-            .with_trust_store(trust_store)
-            .build()
-            .expect("valid TLS context");
-        let http_client = aws_smithy_http_client::Builder::new()
-            .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
-            .tls_context(tls_context)
-            .build_https();
-        loader = loader.http_client(http_client);
-    }
-
-    loader.load().await
+        .profile_name(profile)
+        .http_client(http_client)
+        .load()
+        .await
 }
 
 /// Create all AWS clients for a profile+region.

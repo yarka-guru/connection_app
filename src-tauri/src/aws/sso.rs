@@ -362,26 +362,26 @@ pub async fn perform_sso_login(
     handler: &dyn SsoEventHandler,
     connection_id: Option<&str>,
 ) -> Result<(), AppError> {
-    let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(sso_region.to_string()))
-        .no_credentials();
-
-    if let Some(ca_bytes) = crate::aws::credentials::load_custom_ca_certs() {
+    let tls_context = {
         use aws_smithy_http_client::tls;
-        let trust_store = tls::TrustStore::default()
-            .with_pem_certificate(ca_bytes.clone());
-        let tls_context = tls::TlsContext::builder()
-            .with_trust_store(trust_store)
+        tls::TlsContext::builder()
+            .with_trust_store(crate::aws::credentials::build_trust_store())
             .build()
-            .expect("valid TLS context");
-        let http_client = aws_smithy_http_client::Builder::new()
-            .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
-            .tls_context(tls_context)
-            .build_https();
-        config_loader = config_loader.http_client(http_client);
-    }
+            .expect("valid TLS context")
+    };
+    let http_client = aws_smithy_http_client::Builder::new()
+        .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
+            aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
+        ))
+        .tls_context(tls_context)
+        .build_https();
 
-    let config = config_loader.load().await;
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(sso_region.to_string()))
+        .no_credentials()
+        .http_client(http_client)
+        .load()
+        .await;
     let sso_oidc_client = ssooidc::Client::new(&config);
 
     handler.on_status("Registering SSO client...", connection_id);
