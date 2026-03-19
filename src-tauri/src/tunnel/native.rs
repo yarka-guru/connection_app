@@ -5,7 +5,7 @@ use crate::tunnel::protocol::{
     STREAM_DATA_PAYLOAD_SIZE,
 };
 use crate::tunnel::smux::{self, SmuxSession};
-use crate::tunnel::websocket::{open_data_channel, open_data_channel_with_version};
+use crate::tunnel::websocket::{open_data_channel, open_data_channel_with_version, SsmDataChannel};
 use byteorder::{BigEndian, ByteOrder};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::BTreeMap;
@@ -113,6 +113,17 @@ pub async fn start_native_port_forwarding(
         "SSM data channel open, agent version: {}",
         channel.agent_version
     );
+    start_basic_port_forwarding(channel, local_port, cancel, ready_tx).await
+}
+
+/// Basic (non-multiplexed) port forwarding using a pre-opened SSM data channel.
+/// Handles one TCP connection at a time serially.
+async fn start_basic_port_forwarding(
+    channel: SsmDataChannel,
+    local_port: u16,
+    cancel: tokio_util::sync::CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
 
     // Extract sequence numbers before moving ws
     let initial_outgoing_seq = channel.outgoing_seq;
@@ -867,11 +878,10 @@ pub async fn start_multiplexed_port_forwarding(
             "Agent version {} does not support smux, falling back to basic mode",
             channel.agent_version
         );
-        // Fall back: close this channel and re-open in basic mode.
-        // This is a rare edge case (agent downgraded after session started).
-        drop(channel);
-        return start_native_port_forwarding(stream_url, token_value, local_port, cancel, ready_tx)
-            .await;
+        // Reuse the existing channel — session tokens are single-use so we can't
+        // open a new connection. The agent didn't enable smux framing (version too old),
+        // so basic mode works directly on this channel.
+        return start_basic_port_forwarding(channel, local_port, cancel, ready_tx).await;
     }
 
     let initial_outgoing_seq = channel.outgoing_seq;
@@ -967,7 +977,8 @@ pub async fn start_multiplexed_port_forwarding(
     // Create the smux session
     let smux_session = Arc::new(SmuxSession::new(smux_frame_tx.clone(), session_cancel.clone()));
 
-    // Send SYN flag to SSM agent (same as basic mode)
+    // Send SYN flag — required in both basic and mux modes to tell the agent
+    // that the client is ready for port forwarding.
     {
         let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
         let syn_msg = build_syn_message(syn_seq);
@@ -1212,10 +1223,11 @@ pub async fn start_multiplexed_port_forwarding(
                                 if agent_msg.payload_type == PAYLOAD_OUTPUT {
                                     let _ = ssm_payload_tx.send(agent_msg.payload).await;
                                 } else if agent_msg.payload_type == PAYLOAD_FLAG {
-                                    // Handle SSM-level flags (shouldn't happen much in mux mode)
+                                    // Handle SSM-level flags
                                     if agent_msg.payload.len() >= 4 {
                                         let flag_value =
                                             BigEndian::read_u32(&agent_msg.payload[..4]);
+                                        log::info!("SSM flag received: {}", flag_value);
                                         if flag_value == FLAG_CONNECT_TO_PORT_ERROR {
                                             log::error!(
                                                 "Agent failed to connect to remote port"
@@ -1264,7 +1276,12 @@ pub async fn start_multiplexed_port_forwarding(
                             }
                         }
                         CHANNEL_CLOSED => {
-                            log::info!("Channel closed by agent");
+                            let reason = if agent_msg.payload.is_empty() {
+                                "(no payload)".to_string()
+                            } else {
+                                String::from_utf8_lossy(&agent_msg.payload).to_string()
+                            };
+                            log::info!("Channel closed by agent: {}", reason);
                             session_cancel_ws.cancel();
                             break;
                         }
@@ -1275,6 +1292,7 @@ pub async fn start_multiplexed_port_forwarding(
                     last_pong_ws.store(epoch_secs(), Ordering::Relaxed);
                 }
                 Message::Close(_) => {
+                    log::info!("WebSocket Close frame received");
                     session_cancel_ws.cancel();
                     break;
                 }

@@ -16,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 // --- Smux protocol constants ---
 
-/// Smux protocol version.
-const SMUX_VERSION: u8 = 2;
+/// Smux protocol version — must match the SSM agent's smux version.
+/// AWS SSM agent uses smux v1 (version byte = 1).
+const SMUX_VERSION: u8 = 1;
 
 /// Smux frame header size in bytes.
 const SMUX_HEADER_SIZE: usize = 8;
@@ -70,18 +71,20 @@ impl SmuxFrame {
     }
 
     /// Serialize the frame to bytes for transmission.
+    /// Uses little-endian for length and stream_id, matching xtaci/smux (used by AWS SSM agent).
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(SMUX_HEADER_SIZE + self.payload.len());
         buf.push(self.version);
         buf.push(self.cmd);
-        buf.extend_from_slice(&self.length.to_be_bytes());
-        buf.extend_from_slice(&self.stream_id.to_be_bytes());
+        buf.extend_from_slice(&self.length.to_le_bytes());
+        buf.extend_from_slice(&self.stream_id.to_le_bytes());
         buf.extend_from_slice(&self.payload);
         buf
     }
 
     /// Deserialize a frame from a byte buffer.
     /// Returns the frame and the number of bytes consumed, or None if insufficient data.
+    /// Uses little-endian for length and stream_id, matching xtaci/smux (used by AWS SSM agent).
     pub fn deserialize(data: &[u8]) -> Option<(Self, usize)> {
         if data.len() < SMUX_HEADER_SIZE {
             return None;
@@ -89,8 +92,8 @@ impl SmuxFrame {
 
         let version = data[0];
         let cmd = data[1];
-        let length = u16::from_be_bytes([data[2], data[3]]);
-        let stream_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let length = u16::from_le_bytes([data[2], data[3]]);
+        let stream_id = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
 
         let total_len = SMUX_HEADER_SIZE + length as usize;
         if data.len() < total_len {
@@ -122,9 +125,9 @@ impl SmuxFrame {
     }
 
     /// Create a UPD (window update) frame.
-    /// Payload is 4 bytes big-endian: the number of bytes consumed (delta).
+    /// Payload is 4 bytes little-endian: the number of bytes consumed (delta).
     fn upd(stream_id: u32, consumed: u32) -> Self {
-        Self::new(CMD_UPD, stream_id, consumed.to_be_bytes().to_vec())
+        Self::new(CMD_UPD, stream_id, consumed.to_le_bytes().to_vec())
     }
 
     /// Create a PSH (data push) frame.
@@ -163,6 +166,8 @@ pub struct SmuxSession {
     cancel: CancellationToken,
     /// Timestamp of last received frame (for keepalive timeout).
     last_recv: Arc<std::sync::Mutex<std::time::Instant>>,
+    /// Buffer for incomplete smux frames that span multiple SSM payloads.
+    reassembly_buf: Mutex<Vec<u8>>,
     /// Counter for tracking consumed bytes per stream (for batched UPD).
     upd_threshold: u32,
 }
@@ -179,6 +184,7 @@ impl SmuxSession {
             streams: Arc::new(Mutex::new(HashMap::new())),
             cancel,
             last_recv: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+            reassembly_buf: Mutex::new(Vec::new()),
             // Send UPD after consuming ~half the max receive buffer
             upd_threshold: MAX_RECEIVE_BUFFER / 2,
         }
@@ -188,20 +194,29 @@ impl SmuxSession {
     ///
     /// A single SSM payload may contain multiple concatenated smux frames.
     /// This parses them all and dispatches to the appropriate stream.
-    pub async fn handle_incoming_data(&self, mut data: &[u8]) {
+    pub async fn handle_incoming_data(&self, incoming: &[u8]) {
         // Update last-received timestamp for keepalive
         if let Ok(mut t) = self.last_recv.lock() {
             *t = std::time::Instant::now();
         }
 
+        // Prepend any leftover bytes from the previous SSM payload
+        let mut buf = self.reassembly_buf.lock().await;
+        let owned;
+        let mut data: &[u8] = if buf.is_empty() {
+            incoming
+        } else {
+            buf.extend_from_slice(incoming);
+            owned = std::mem::take(&mut *buf);
+            &owned
+        };
+
         while !data.is_empty() {
             let (frame, consumed) = match SmuxFrame::deserialize(data) {
                 Some(f) => f,
                 None => {
-                    log::warn!(
-                        "Incomplete smux frame ({} bytes remaining), dropping",
-                        data.len()
-                    );
+                    // Incomplete frame — buffer for next SSM payload
+                    *buf = data.to_vec();
                     break;
                 }
             };
@@ -289,7 +304,7 @@ impl SmuxSession {
                     // Remote peer consumed bytes, opening up our send window.
                     if frame.payload.len() >= 4 {
                         let consumed =
-                            u32::from_be_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
+                            u32::from_le_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
                         let mut streams = self.streams.lock().await;
                         if let Some(stream) = streams.get_mut(&frame.stream_id) {
                             stream.remote_window = stream.remote_window.saturating_add(consumed);
@@ -531,7 +546,7 @@ pub async fn run_multiplexed_listener(
                 let n = tokio::select! {
                     result = tcp_read.read(&mut buf) => {
                         match result {
-                            Ok(0) => break, // TCP closed
+                            Ok(0) => break,
                             Ok(n) => n,
                             Err(_) => break,
                         }
@@ -630,7 +645,7 @@ mod tests {
         assert_eq!(frame.cmd, CMD_UPD);
         assert_eq!(frame.stream_id, 3);
         assert_eq!(frame.payload.len(), 4);
-        let consumed = u32::from_be_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
+        let consumed = u32::from_le_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
         assert_eq!(consumed, 1024);
     }
 

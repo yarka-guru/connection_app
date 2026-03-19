@@ -8,7 +8,7 @@ use connection_app_lib::config::projects::{
     get_default_port_for_engine, get_local_port, get_profiles_for_project, load_project_configs,
     ProjectConfig,
 };
-use connection_app_lib::tunnel::native::start_native_port_forwarding;
+use connection_app_lib::tunnel::native::{start_native_port_forwarding, start_multiplexed_port_forwarding};
 use std::collections::HashMap;
 
 #[allow(unused_imports)]
@@ -343,7 +343,8 @@ async fn run_rds_connect(
         eprintln!("  \u{1F4CB} Password copied to clipboard\n");
     }
 
-    run_tunnel(stream_url, token_value, port_num, Some(password)).await
+    let multiplexed = project_config.multiplexed.unwrap_or(false);
+    run_tunnel(stream_url, token_value, port_num, Some(password), multiplexed).await
 }
 
 async fn run_service_connect(
@@ -455,7 +456,8 @@ async fn run_service_connect(
 
     print_info_box(&rows);
 
-    run_tunnel(stream_url, token_value, port_num, None).await
+    let multiplexed = project_config.multiplexed.unwrap_or(false);
+    run_tunnel(stream_url, token_value, port_num, None, multiplexed).await
 }
 
 fn extract_session_info(
@@ -493,6 +495,7 @@ async fn run_tunnel(
     token_value: String,
     port_num: u16,
     password: Option<String>,
+    multiplexed: bool,
 ) -> Result<(), String> {
     if password.is_some() {
         eprintln!("  Commands: [p] show password  [c] copy password  [Ctrl+C] disconnect\n");
@@ -549,7 +552,11 @@ async fn run_tunnel(
         });
     }
 
-    start_native_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
+    if multiplexed {
+        start_multiplexed_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
+    } else {
+        start_native_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
+    }
 
     eprintln!("  \u{1F44B} Disconnected.\n");
 

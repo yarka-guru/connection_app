@@ -17,6 +17,11 @@ pub fn run() {
     use tokio::sync::Mutex;
     use tunnel::manager::TunnelManager;
 
+    // Initialize logging so log::info!/warn!/error! produce output in dev mode
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
