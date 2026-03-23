@@ -96,13 +96,14 @@ impl AgentMessage {
     }
 
     /// Serialize this message to bytes for sending over WebSocket.
+    /// All writes target pre-sized buffer slices and cannot fail at runtime.
     pub fn serialize(&self) -> Vec<u8> {
         let total_len = TOTAL_HEADER_SIZE + self.payload.len();
         let mut buf = vec![0u8; total_len];
 
         // HeaderLength (u32 at offset 0)
         let mut cursor = Cursor::new(&mut buf[HL_OFFSET..HL_OFFSET + 4]);
-        cursor.write_u32::<BigEndian>(self.header_length).unwrap();
+        cursor.write_u32::<BigEndian>(self.header_length).expect("write u32 to 4-byte slice");
 
         // MessageType (32 bytes, space-padded, at offset 4)
         let mt_bytes = &mut buf[MESSAGE_TYPE_OFFSET..MESSAGE_TYPE_OFFSET + MESSAGE_TYPE_SIZE];
@@ -113,19 +114,19 @@ impl AgentMessage {
 
         // SchemaVersion (u32 at offset 36)
         let mut cursor = Cursor::new(&mut buf[SCHEMA_VERSION_OFFSET..SCHEMA_VERSION_OFFSET + 4]);
-        cursor.write_u32::<BigEndian>(self.schema_version).unwrap();
+        cursor.write_u32::<BigEndian>(self.schema_version).expect("write u32 to 4-byte slice");
 
         // CreatedDate (u64 at offset 40)
         let mut cursor = Cursor::new(&mut buf[CREATED_DATE_OFFSET..CREATED_DATE_OFFSET + 8]);
-        cursor.write_u64::<BigEndian>(self.created_date).unwrap();
+        cursor.write_u64::<BigEndian>(self.created_date).expect("write u64 to 8-byte slice");
 
         // SequenceNumber (i64 at offset 48)
         let mut cursor = Cursor::new(&mut buf[SEQUENCE_NUMBER_OFFSET..SEQUENCE_NUMBER_OFFSET + 8]);
-        cursor.write_i64::<BigEndian>(self.sequence_number).unwrap();
+        cursor.write_i64::<BigEndian>(self.sequence_number).expect("write i64 to 8-byte slice");
 
         // Flags (u64 at offset 56)
         let mut cursor = Cursor::new(&mut buf[FLAGS_OFFSET..FLAGS_OFFSET + 8]);
-        cursor.write_u64::<BigEndian>(self.flags).unwrap();
+        cursor.write_u64::<BigEndian>(self.flags).expect("write u64 to 8-byte slice");
 
         // MessageId (UUID, 16 bytes at offset 64, byte-swapped halves)
         let uuid_bytes = self.message_id.as_bytes();
@@ -145,11 +146,11 @@ impl AgentMessage {
 
         // PayloadType (u32 at offset 112)
         let mut cursor = Cursor::new(&mut buf[PAYLOAD_TYPE_OFFSET..PAYLOAD_TYPE_OFFSET + 4]);
-        cursor.write_u32::<BigEndian>(self.payload_type).unwrap();
+        cursor.write_u32::<BigEndian>(self.payload_type).expect("write u32 to 4-byte slice");
 
         // PayloadLength (u32 at offset 116)
         let mut cursor = Cursor::new(&mut buf[PAYLOAD_LENGTH_OFFSET..PAYLOAD_LENGTH_OFFSET + 4]);
-        cursor.write_u32::<BigEndian>(self.payload.len() as u32).unwrap();
+        cursor.write_u32::<BigEndian>(self.payload.len() as u32).expect("write u32 to 4-byte slice");
 
         buf
     }
@@ -307,7 +308,8 @@ pub fn build_syn_message(sequence_number: i64) -> AgentMessage {
 pub fn build_flag_message(flag_value: u32, sequence_number: i64, fin: bool) -> AgentMessage {
     let mut payload = vec![0u8; 4];
     let mut cursor = Cursor::new(&mut payload[..]);
-    cursor.write_u32::<BigEndian>(flag_value).unwrap();
+    // Safe: 4-byte buffer is exactly sized for a u32
+    cursor.write_u32::<BigEndian>(flag_value).expect("write u32 to 4-byte buffer");
 
     let flags = if fin { FLAG_FIN } else { FLAG_DATA };
     AgentMessage::new(INPUT_STREAM_DATA, sequence_number, flags, PAYLOAD_FLAG, payload)

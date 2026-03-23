@@ -4,7 +4,7 @@ import { trapFocus, safeTimeout } from './utils.js'
 import { themes, darkThemeNames, lightThemeNames } from './themes.js'
 import ThemeSwitcher from './ThemeSwitcher.svelte'
 
-const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, currentLightTheme = 'light', onLightThemeChange, scheme = 'dark', onSchemeChange } = $props()
+const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, currentLightTheme = 'light', onLightThemeChange, scheme = 'dark', onSchemeChange, appVersion = '' } = $props()
 
 // Collapsible section state for project form
 let sectionGeneral = $state(true)
@@ -417,6 +417,13 @@ onDestroy(() => {
       >
         Appearance
       </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'about'}
+        onclick={() => activeTab = 'about'}
+      >
+        About
+      </button>
     </div>
 
     {#if error}
@@ -643,6 +650,40 @@ onDestroy(() => {
           {#if scheme === 'system'}
             <p class="scheme-hint">Your dark and light themes are used based on your system's appearance setting.</p>
           {/if}
+        </div>
+      {:else if activeTab === 'about'}
+        <div class="about-tab">
+          <div class="about-app-name">ConnectionApp</div>
+          {#if appVersion}
+            <div class="about-version">v{appVersion}</div>
+          {/if}
+          <p class="about-description">Secure tunneling through AWS Systems Manager for RDS databases and services.</p>
+          <div class="about-links">
+            <button class="about-link" onclick={() => invoke('open_url', { url: 'https://github.com/yarka-guru/connection_app' })}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 1C4.13 1 1 4.13 1 8c0 3.1 2.01 5.73 4.79 6.65.35.06.48-.15.48-.34 0-.17-.01-.71-.01-1.29-1.76.33-2.2-.43-2.34-.82-.08-.2-.42-.82-.71-.98-.24-.13-.59-.46-.01-.47.55-.01.94.5 1.07.71.63 1.05 1.63.76 2.03.57.06-.45.24-.76.44-.93-1.55-.18-3.18-.78-3.18-3.45 0-.76.27-1.39.71-1.88-.07-.17-.31-.89.07-1.85 0 0 .58-.19 1.9.71a6.5 6.5 0 011.74-.24c.59 0 1.18.08 1.74.24 1.32-.9 1.9-.71 1.9-.71.38.96.14 1.68.07 1.85.44.49.71 1.11.71 1.88 0 2.68-1.63 3.27-3.19 3.44.25.22.47.64.47 1.29 0 .93-.01 1.68-.01 1.91 0 .19.13.41.48.34A7.01 7.01 0 0015 8c0-3.87-3.13-7-7-7z" fill="currentColor"/>
+              </svg>
+              GitHub Repository
+            </button>
+            <button class="about-link" onclick={() => invoke('open_url', { url: 'https://github.com/yarka-guru/connection_app/blob/main/PRIVACY.md' })}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM8 5a.75.75 0 110 1.5A.75.75 0 018 5zm1 6.5H7v-1h.5V8H7V7h1.5v3.5H9v1z" fill="currentColor"/>
+              </svg>
+              Privacy Policy
+            </button>
+            <button class="about-link" onclick={() => invoke('open_url', { url: 'https://github.com/yarka-guru/connection_app/blob/main/LICENSE' })}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1zm1 3v1h6V5H5zm0 2.5v1h6v-1H5zm0 2.5v1h4v-1H5z" fill="currentColor"/>
+              </svg>
+              MIT License
+            </button>
+            <button class="about-link" onclick={() => invoke('open_url', { url: 'https://github.com/yarka-guru/connection_app/blob/main/THIRD_PARTY_LICENSES.md' })}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M3 2h7l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1zm6 0v3h3M5 8h6M5 10.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              </svg>
+              Third-Party Licenses
+            </button>
+          </div>
         </div>
       {/if}
     </div>
@@ -1832,5 +1873,68 @@ onDestroy(() => {
   .btn-add-item:hover {
     background: rgba(var(--accent-primary-rgb), 0.08);
     border-color: rgba(var(--accent-primary-rgb), 0.3);
+  }
+
+  .about-tab {
+    padding: 24px 8px;
+    text-align: center;
+  }
+
+  .about-app-name {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .about-version {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    margin-bottom: 12px;
+  }
+
+  .about-description {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0 0 24px;
+    line-height: 1.5;
+  }
+
+  .about-links {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 280px;
+    margin: 0 auto;
+  }
+
+  .about-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: rgba(var(--glass-rgb), 0.04);
+    border: 1px solid rgba(var(--glass-rgb), 0.1);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+  }
+
+  .about-link:hover {
+    background: rgba(var(--glass-rgb), 0.08);
+    border-color: rgba(var(--glass-rgb), 0.15);
+  }
+
+  .about-link:active {
+    transform: var(--press-scale);
+  }
+
+  .about-link svg {
+    color: var(--text-secondary);
+    flex-shrink: 0;
   }
 </style>

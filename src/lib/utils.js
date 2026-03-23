@@ -99,7 +99,18 @@ export function autoFocus(node) {
 }
 
 /**
+ * Escape a string for safe use inside single quotes in a shell command.
+ * Replaces each single quote with the sequence: end quote, escaped quote, start quote.
+ * @param {string} str
+ * @returns {string}
+ */
+function shellEscape(str) {
+  return str.replace(/'/g, "'\\''")
+}
+
+/**
  * Build a connection string for a database connection.
+ * Shell command formats (psql, mysql) use proper quoting to prevent injection.
  * @param {{ username: string, password: string, database: string, localPort: string|number, engine?: string }} info
  * @param {'psql'|'mysql'|'jdbc'|'uri'} format
  * @returns {string}
@@ -110,17 +121,17 @@ export function buildConnectionString(info, format) {
 
   switch (format) {
     case 'psql':
-      return `psql "host=${host} port=${port} user=${info.username} password=${info.password} dbname=${info.database}"`
+      return `psql 'host=${shellEscape(host)} port=${shellEscape(String(port))} user=${shellEscape(info.username)} password=${shellEscape(info.password)} dbname=${shellEscape(info.database)}'`
     case 'mysql':
-      return `mysql -h ${host} -P ${port} -u ${info.username} -p'${info.password}' ${info.database}`
+      return `mysql -h ${shellEscape(host)} -P ${shellEscape(String(port))} -u '${shellEscape(info.username)}' -p'${shellEscape(info.password)}' '${shellEscape(info.database)}'`
     case 'jdbc':
       if (info.engine === 'mysql') {
-        return `jdbc:mysql://${host}:${port}/${info.database}?user=${info.username}&password=${encodeURIComponent(info.password)}`
+        return `jdbc:mysql://${host}:${port}/${info.database}?user=${encodeURIComponent(info.username)}&password=${encodeURIComponent(info.password)}`
       }
-      return `jdbc:postgresql://${host}:${port}/${info.database}?user=${info.username}&password=${encodeURIComponent(info.password)}`
+      return `jdbc:postgresql://${host}:${port}/${info.database}?user=${encodeURIComponent(info.username)}&password=${encodeURIComponent(info.password)}`
     case 'uri': {
       const proto = info.engine === 'mysql' ? 'mysql' : 'postgresql'
-      return `${proto}://${info.username}:${encodeURIComponent(info.password)}@${host}:${port}/${info.database}`
+      return `${proto}://${encodeURIComponent(info.username)}:${encodeURIComponent(info.password)}@${host}:${port}/${info.database}`
     }
     default:
       return ''

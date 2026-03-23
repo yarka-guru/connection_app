@@ -159,7 +159,11 @@ pub fn activate_aws_dir_access(app_handle: &tauri::AppHandle) -> Result<AwsDirAc
         let (url, path, is_stale) = macos::resolve_bookmark(&bookmark_data)?;
 
         if is_stale {
-            log::warn!("AWS directory bookmark is stale, access may need to be re-granted");
+            log::warn!("AWS directory bookmark is stale — re-grant required");
+            unsafe { macos::ffi::CFRelease(url) };
+            return Err(AppError::General(
+                "AWS directory bookmark is stale. Please re-grant access to ~/.aws".to_string(),
+            ));
         }
 
         // Start accessing the security-scoped resource
@@ -194,16 +198,28 @@ pub fn activate_aws_dir_access(app_handle: &tauri::AppHandle) -> Result<AwsDirAc
 }
 
 /// Set AWS environment variables to point to the given directory.
-/// Safety: called once during single-threaded app setup, before spawning worker threads.
+///
+/// # Safety
+/// `std::env::set_var` is unsafe in Rust 2024 because environment variables are
+/// process-global shared state. This function is called exactly once during
+/// single-threaded app setup in `activate_aws_dir_access()`, before Tauri's
+/// async runtime spawns worker threads. The `OnceLock` guard ensures it cannot
+/// be called more than once.
+static AWS_ENV_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 fn set_aws_env_vars(aws_dir: &std::path::Path) {
-    let config_file = aws_dir.join("config");
-    if config_file.exists() {
-        unsafe { std::env::set_var("AWS_CONFIG_FILE", &config_file) };
-    }
-    let credentials_file = aws_dir.join("credentials");
-    if credentials_file.exists() {
-        unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &credentials_file) };
-    }
+    AWS_ENV_INITIALIZED.get_or_init(|| {
+        let config_file = aws_dir.join("config");
+        if config_file.exists() {
+            // Safety: guaranteed single-threaded by OnceLock + app startup ordering
+            unsafe { std::env::set_var("AWS_CONFIG_FILE", &config_file) };
+        }
+        let credentials_file = aws_dir.join("credentials");
+        if credentials_file.exists() {
+            // Safety: guaranteed single-threaded by OnceLock + app startup ordering
+            unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &credentials_file) };
+        }
+    });
 }
 
 /// Get the sandbox status.

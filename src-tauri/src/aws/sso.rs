@@ -6,13 +6,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Format an AWS SDK error with the full error chain for diagnostics.
+/// Format an AWS SDK error for user-facing display.
+/// Includes the top-level error and immediate cause, but omits deeper chain
+/// details that may contain ARNs, account IDs, or endpoint URLs.
 fn format_sdk_error(context: &str, err: &dyn std::error::Error) -> String {
     let mut msg = format!("{}: {}", context, err);
-    let mut source = err.source();
-    while let Some(cause) = source {
-        msg.push_str(&format!(" → {}", cause));
-        source = cause.source();
+    if let Some(cause) = err.source() {
+        msg.push_str(&format!(" ({})", cause));
     }
     msg
 }
@@ -88,7 +88,8 @@ impl SsoEventHandler for CliSsoHandler {
             eprintln!("  Warning: refusing to open non-HTTPS URL");
             return;
         }
-        // Try to open browser automatically
+        // Try to open browser automatically — URL already validated as HTTPS above.
+        // Windows: use start with empty title ("") to avoid treating the URL as a window title.
         #[cfg(target_os = "macos")]
         {
             let _ = std::process::Command::new("open").arg(url).spawn();
@@ -100,7 +101,7 @@ impl SsoEventHandler for CliSsoHandler {
         #[cfg(target_os = "windows")]
         {
             let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", url])
+                .args(["/C", "start", "", url])
                 .spawn();
         }
     }

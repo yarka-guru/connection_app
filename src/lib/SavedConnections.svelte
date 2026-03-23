@@ -1,6 +1,6 @@
 <script>
 import CopyButton from './CopyButton.svelte'
-import { maskPassword, buildConnectionString } from './utils.js'
+import { maskPassword, buildConnectionString, safeTimeout } from './utils.js'
 
 const {
   savedConnections = [],
@@ -68,6 +68,29 @@ let editGroupNameValue = $state('')
 let movingConnectionId = $state(null)
 let dragOverGroup = $state(null)
 let revealedPasswords = $state(new Set())
+let passwordTimers = {}
+
+function togglePasswordReveal(connectionId) {
+  const next = new Set(revealedPasswords)
+  if (next.has(connectionId)) {
+    next.delete(connectionId)
+    if (passwordTimers[connectionId]) {
+      passwordTimers[connectionId]()
+      delete passwordTimers[connectionId]
+    }
+  } else {
+    next.add(connectionId)
+    // Auto-hide after 30 seconds
+    if (passwordTimers[connectionId]) passwordTimers[connectionId]()
+    passwordTimers[connectionId] = safeTimeout(() => {
+      const updated = new Set(revealedPasswords)
+      updated.delete(connectionId)
+      revealedPasswords = updated
+      delete passwordTimers[connectionId]
+    }, 30000)
+  }
+  revealedPasswords = next
+}
 
 function getProjectName(projectKey) {
   const project = projects.find((p) => p.key === projectKey)
@@ -679,12 +702,7 @@ function handleGroupHeaderKeydown(e, groupName) {
               <button
                 class="icon-btn"
                 title={revealedPasswords.has(connection.id) ? 'Hide password' : 'Show password'}
-                onclick={() => {
-                  const next = new Set(revealedPasswords)
-                  if (next.has(connection.id)) next.delete(connection.id)
-                  else next.add(connection.id)
-                  revealedPasswords = next
-                }}
+                onclick={() => togglePasswordReveal(connection.id)}
               >
                 {#if revealedPasswords.has(connection.id)}
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>

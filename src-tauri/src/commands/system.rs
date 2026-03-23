@@ -174,8 +174,8 @@ async fn install_deb_update(version: &str, app_handle: &AppHandle) -> Result<(),
         serde_json::json!({ "phase": "installing" }),
     );
 
-    let status = std::process::Command::new("pkexec")
-        .args(["dpkg", "-i", &tmp_path.to_string_lossy()])
+    let status = std::process::Command::new("/usr/bin/pkexec")
+        .args(["/usr/bin/dpkg", "-i", &tmp_path.to_string_lossy()])
         .status();
 
     let _ = std::fs::remove_file(&tmp_path);
