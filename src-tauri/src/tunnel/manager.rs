@@ -626,7 +626,7 @@ impl TunnelManager {
             bastion_id: instance_id,
             remote_host: rds_endpoint,
             remote_port: rds_port,
-            multiplexed: project_config.multiplexed.unwrap_or(false),
+            multiplexed: project_config.multiplexed.unwrap_or(true),
         };
 
         Ok((connection_info, target))
@@ -676,7 +676,7 @@ impl TunnelManager {
                 let target = TunnelTarget::DirectInstance {
                     instance_id: id.clone(),
                     remote_port: remote_port.to_string(),
-                    multiplexed: project_config.multiplexed.unwrap_or(false),
+                    multiplexed: project_config.multiplexed.unwrap_or(true),
                 };
                 (target, Some(id), None)
             }
@@ -714,7 +714,7 @@ impl TunnelManager {
                     bastion_id: bastion_id.clone(),
                     remote_host: ip.clone(),
                     remote_port: remote_port.to_string(),
-                    multiplexed: project_config.multiplexed.unwrap_or(false),
+                    multiplexed: project_config.multiplexed.unwrap_or(true),
                 };
                 (target, Some(bastion_id), Some(ip))
             }
@@ -761,7 +761,7 @@ impl TunnelManager {
                     bastion_id: bastion_id.clone(),
                     remote_host: task_ip.clone(),
                     remote_port: remote_port.to_string(),
-                    multiplexed: project_config.multiplexed.unwrap_or(false),
+                    multiplexed: project_config.multiplexed.unwrap_or(true),
                 };
                 (target, Some(bastion_id), Some(task_ip))
             }
