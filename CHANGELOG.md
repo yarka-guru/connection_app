@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.5.1] - 2026-04-23
+
+### Security
+- Disable default `rustls` feature on every `aws-sdk-*` crate. The feature
+  activated `aws-smithy-http-client/legacy-rustls-ring`, which shipped the
+  legacy `rustls 0.21` / `rustls-webpki 0.101.7` / `hyper-rustls 0.24` stack
+  alongside the modern `rustls-aws-lc` path we actually use. Clears the final
+  two Dependabot alerts and trims the release binary.
+
 ## [3.5.0] - 2026-04-23
 
 ### Added
