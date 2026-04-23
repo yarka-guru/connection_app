@@ -1,7 +1,14 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
-import { applyTheme, themes, resolveTheme, lightThemeNames } from './lib/themes.js'
+import {
+  applyTheme,
+  themes,
+  resolveTheme,
+  lightThemeNames,
+  migrateThemeKey,
+} from './lib/themes.js'
+import AmbientBackground from './lib/AmbientBackground.svelte'
 import SavedConnections from './lib/SavedConnections.svelte'
 import ConnectionForm from './lib/ConnectionForm.svelte'
 import SessionStatus from './lib/SessionStatus.svelte'
@@ -42,7 +49,7 @@ let updateError = $state(null)
 
 let scheme = $state('dark')
 let activeTab = $state('rds')
-let currentTheme = $state('forest')
+let currentTheme = $state('aubergine')
 let currentLightTheme = $state('light')
 let showSettings = $state(false)
 let showSetupScreen = $state(false)
@@ -142,11 +149,11 @@ async function initApp() {
     return
   }
 
-  // Load saved theme and scheme
+  // Load saved theme and scheme (migrating pre-Aubergine keys).
   try {
-    const savedTheme = localStorage.getItem('theme')
+    const savedTheme = migrateThemeKey(localStorage.getItem('theme'))
     const savedScheme = localStorage.getItem('scheme')
-    const savedLightTheme = localStorage.getItem('lightTheme')
+    const savedLightTheme = migrateThemeKey(localStorage.getItem('lightTheme'))
     if (savedTheme && themes[savedTheme] && !lightThemeNames.includes(savedTheme)) {
       currentTheme = savedTheme
     }
@@ -155,6 +162,13 @@ async function initApp() {
     }
     if (savedScheme && ['light', 'dark', 'system'].includes(savedScheme)) {
       scheme = savedScheme
+    }
+    // Persist the migrated keys so we don't rewrite them every launch.
+    if (currentTheme !== localStorage.getItem('theme')) {
+      localStorage.setItem('theme', currentTheme)
+    }
+    if (currentLightTheme !== localStorage.getItem('lightTheme')) {
+      localStorage.setItem('lightTheme', currentLightTheme)
     }
     applyTheme(resolveTheme(scheme, currentTheme, currentLightTheme))
   } catch (_err) {
@@ -751,6 +765,8 @@ const isAlreadySaved = $derived(
 )
 </script>
 
+<AmbientBackground />
+
 <main>
   {#if !ready}
     <div class="loading-screen">
@@ -1048,88 +1064,11 @@ const isAlreadySaved = $derived(
 </main>
 
 <style>
-  :global(:root) {
-    --bg-primary: #080808;
-    --bg-secondary: #101010;
-    --bg-tertiary: #0c0c0c;
-    --bg-card: rgba(16, 16, 16, 0.85);
-    --bg-card-inner: rgba(12, 12, 12, 0.9);
-    --accent-primary: #10b981;
-    --accent-primary-light: #34d399;
-    --accent-primary-rgb: 16, 185, 129;
-    --accent-secondary: #34d399;
-    --accent-secondary-rgb: 52, 211, 153;
-    --text-primary: #e5e5e5;
-    --text-secondary: #9e9e9e;
-    --text-muted: #6b6b6b;
-    --text-hover: #b5b5b5;
-    --text-inactive: #808080;
-    --color-error: #ef4444;
-    --color-error-dark: #dc2626;
-    --color-error-soft: #f87171;
-    --color-error-light: #fca5a5;
-    --color-error-rgb: 239, 68, 68;
-    --color-success: #10b981;
-    --color-success-soft: #34d399;
-    --glass-rgb: 180, 220, 200;
-    --glass-bg: rgba(180, 220, 200, 0.04);
-    --glass-bg-hover: rgba(180, 220, 200, 0.07);
-    --glass-border: rgba(16, 185, 129, 0.1);
-    --glass-border-hover: rgba(16, 185, 129, 0.18);
-    --glass-blur: blur(16px) saturate(1.8);
-    --glass-blur-heavy: blur(32px) saturate(1.8);
-    --glass-inner-glow: inset 0 1px 0 rgba(180, 220, 200, 0.06);
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    --bg-button-gradient: linear-gradient(135deg, #10b981 0%, #34d399 100%);
-    --bg-button-gradient-shadow: rgba(16, 185, 129, 0.3);
-    --bg-pattern: radial-gradient(circle, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
-    --bg-pattern-size: 20px 20px;
-    --press-scale: scale(0.97);
-    --transition-fast: 0.15s ease;
-    --transition-normal: 0.2s ease;
-    --input-bg: rgba(0, 0, 0, 0.3);
-    --button-text: white;
-    --border-subtle: rgba(255, 255, 255, 0.12);
-    --spinner-track: rgba(255, 255, 255, 0.3);
-    --spinner-color: white;
-    --overlay-bg: rgba(0, 0, 0, 0.8);
-    --title-gradient-start: #fff;
-  }
-
-  @media (prefers-reduced-transparency) {
-    :global(:root) {
-      --glass-bg: rgba(16, 16, 16, 0.95);
-      --glass-bg-hover: rgba(24, 24, 24, 0.95);
-      --glass-blur: none;
-      --glass-blur-heavy: none;
-    }
-  }
-
-  @media (prefers-reduced-motion) {
-    :global(:root) {
-      --press-scale: none;
-      --transition-fast: 0s;
-      --transition-normal: 0s;
-    }
-  }
-
-  :global(*) {
-    box-sizing: border-box;
-  }
-
-  :global(body) {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
-    background: var(--bg-pattern), linear-gradient(145deg, var(--bg-primary) 0%, var(--bg-secondary) 50%, var(--bg-tertiary) 100%);
-    background-size: var(--bg-pattern-size, auto), auto;
-    min-height: 100vh;
-    color: var(--text-primary);
-    -webkit-font-smoothing: antialiased;
-  }
-
   main {
+    position: relative;
+    z-index: 1;
     min-height: 100vh;
-    padding: 24px;
+    padding: var(--space-6);
   }
 
   .loading-screen {

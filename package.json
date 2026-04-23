@@ -11,6 +11,11 @@
     "type": "git",
     "url": "https://github.com/yarka-guru/connection_app.git"
   },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.8",
+    "@fontsource-variable/geist-mono": "^5.2.7",
+    "@fontsource/instrument-serif": "^5.2.8"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.7",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
