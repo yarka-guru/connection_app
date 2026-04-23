@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.5.0] - 2026-04-23
+
+### Added
+- New default theme "Aubergine Nebula" (plum + copper/lavender) with drifting
+  orb ambient background and SVG noise overlay
+- Self-hosted Geist, Geist Mono, and Instrument Serif fonts via
+  `@fontsource-variable` packages
+- Consolidated design tokens in `src/app.css` (typography scale, radii scale,
+  motion easings, glass blur tiers)
+
+### Changed
+- Themes are now applied via `data-theme` / `data-theme-variant` attributes;
+  tokens live in CSS rather than JS
+- Legacy Obsidian theme preserved as the `obsidian-classic` variant
+- Stored `forest` / `cream` / `frost` theme preferences auto-migrate to the new
+  keys on launch
+
+### Security
+- Patch 4 high-severity and 1 low-severity `openssl` advisories by bumping
+  0.10.76 → 0.10.78 (buffer overflows in `Deriver::derive`, AES key wrap, PSK
+  cookie trampolines, `MdCtxRef::digest_final`, PEM password callback)
+- Bump `rustls-webpki` 0.103.10 → 0.103.13 and `rand` 0.9.2 → 0.9.4
+
 ## [2.1.7] - 2026-03-04
 
 ### Fixed
