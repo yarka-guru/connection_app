@@ -112,7 +112,11 @@ impl SsoEventHandler for CliSsoHandler {
 fn get_sso_token_filepath(key: &str) -> PathBuf {
     let mut hasher = Sha1::new();
     hasher.update(key.as_bytes());
-    let hash = format!("{:x}", hasher.finalize());
+    let hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     crate::config::aws_config::get_aws_dir()
         .join("sso")

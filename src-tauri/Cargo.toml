@@ -1,6 +1,6 @@
 [package]
 name = "connection-app"
-version = "3.5.1"
+version = "3.6.0"
 description = "Secure tunneling through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
@@ -56,14 +56,14 @@ aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
 aws-sigv4 = "1"
 aws-credential-types = "1"
 dirs = "6"
-sha1 = "0.10"
+sha1 = "0.11"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 log = "0.4"
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
-sha2 = "0.10"
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+sha2 = "0.11"
 byteorder = "1"
 futures-util = "0.3"
 base64 = "0.22"
