@@ -487,28 +487,24 @@ async fn start_basic_port_forwarding(
                             if seq == expected {
                                 // In-order: process and advance
                                 match agent_msg.payload_type {
-                                    PAYLOAD_OUTPUT => {
-                                        if tcp_connected_ws.load(Ordering::Relaxed) {
-                                            let _ = tcp_data_tx.send(agent_msg.payload).await;
-                                        }
+                                    PAYLOAD_OUTPUT if tcp_connected_ws.load(Ordering::Relaxed) => {
+                                        let _ = tcp_data_tx.send(agent_msg.payload).await;
                                     }
-                                    PAYLOAD_FLAG => {
-                                        if agent_msg.payload.len() >= 4 {
-                                            let flag_value =
-                                                BigEndian::read_u32(&agent_msg.payload[..4]);
-                                            match flag_value {
-                                                FLAG_DISCONNECT_TO_PORT => {
-                                                    log::info!("Agent disconnected from remote port");
-                                                    tcp_connected_ws.store(false, Ordering::Relaxed);
-                                                }
-                                                FLAG_CONNECT_TO_PORT_ERROR => {
-                                                    log::error!(
-                                                        "Agent failed to connect to remote port"
-                                                    );
-                                                    session_cancel_ws.cancel();
-                                                }
-                                                _ => {}
+                                    PAYLOAD_FLAG if agent_msg.payload.len() >= 4 => {
+                                        let flag_value =
+                                            BigEndian::read_u32(&agent_msg.payload[..4]);
+                                        match flag_value {
+                                            FLAG_DISCONNECT_TO_PORT => {
+                                                log::info!("Agent disconnected from remote port");
+                                                tcp_connected_ws.store(false, Ordering::Relaxed);
                                             }
+                                            FLAG_CONNECT_TO_PORT_ERROR => {
+                                                log::error!(
+                                                    "Agent failed to connect to remote port"
+                                                );
+                                                session_cancel_ws.cancel();
+                                            }
+                                            _ => {}
                                         }
                                     }
                                     _ => {}
@@ -520,25 +516,21 @@ async fn start_basic_port_forwarding(
                                 let mut ibuf = incoming_buf.lock().await;
                                 while let Some((pt, data)) = ibuf.remove(&next) {
                                     match pt {
-                                        PAYLOAD_OUTPUT => {
-                                            if tcp_connected_ws.load(Ordering::Relaxed) {
-                                                let _ = tcp_data_tx.send(data).await;
-                                            }
+                                        PAYLOAD_OUTPUT if tcp_connected_ws.load(Ordering::Relaxed) => {
+                                            let _ = tcp_data_tx.send(data).await;
                                         }
-                                        PAYLOAD_FLAG => {
-                                            if data.len() >= 4 {
-                                                let flag_value = BigEndian::read_u32(&data[..4]);
-                                                match flag_value {
-                                                    FLAG_DISCONNECT_TO_PORT => {
-                                                        log::info!("Agent disconnected from remote port");
-                                                        tcp_connected_ws.store(false, Ordering::Relaxed);
-                                                    }
-                                                    FLAG_CONNECT_TO_PORT_ERROR => {
-                                                        log::error!("Agent failed to connect to remote port");
-                                                        session_cancel_ws.cancel();
-                                                    }
-                                                    _ => {}
+                                        PAYLOAD_FLAG if data.len() >= 4 => {
+                                            let flag_value = BigEndian::read_u32(&data[..4]);
+                                            match flag_value {
+                                                FLAG_DISCONNECT_TO_PORT => {
+                                                    log::info!("Agent disconnected from remote port");
+                                                    tcp_connected_ws.store(false, Ordering::Relaxed);
                                                 }
+                                                FLAG_CONNECT_TO_PORT_ERROR => {
+                                                    log::error!("Agent failed to connect to remote port");
+                                                    session_cancel_ws.cancel();
+                                                }
+                                                _ => {}
                                             }
                                         }
                                         _ => {}
