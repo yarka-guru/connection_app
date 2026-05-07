@@ -25,18 +25,22 @@ No additional tools are required — the app uses the AWS SDK natively and imple
 
 ## Installation
 
-### macOS (Homebrew)
+The Homebrew tap ships **both** the desktop app and the `connection-app-cli`
+companion binary in a single command — the cask (macOS) and the Linux formula
+both depend on `connection-app-cli`.
+
+### macOS (Homebrew) — GUI + CLI
 
 ```bash
 brew tap yarka-guru/tap
 brew install --cask connection-app
 ```
 
+This installs `ConnectionApp.app` and puts `connection-app-cli` on your `$PATH`.
+
 Or download the `.dmg` directly from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
 
-### Linux
-
-#### Option A: Homebrew
+### Linux (Homebrew) — GUI + CLI
 
 ```bash
 # Install Homebrew if not already installed
@@ -44,7 +48,7 @@ Or download the `.dmg` directly from [GitHub Releases](https://github.com/yarka-
 echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
 eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 
-# Install the app
+# Install the app (also installs connection-app-cli automatically)
 brew tap yarka-guru/tap
 brew install yarka-guru/tap/connection-app
 
@@ -53,21 +57,38 @@ echo 'export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"' | sudo tee /etc/profil
 # Log out and back in for this to take effect
 ```
 
-#### Option B: Direct .deb install
+### CLI only (any platform via Homebrew)
+
+If you only need the terminal tool (no GUI):
 
 ```bash
-# Download and install the app (check GitHub Releases for the latest version)
-# ARM64:
-wget https://github.com/yarka-guru/connection_app/releases/latest/download/ConnectionApp_3.1.0_arm64.deb
-sudo dpkg -i ConnectionApp_3.1.0_arm64.deb
-# x86_64:
-# wget https://github.com/yarka-guru/connection_app/releases/latest/download/ConnectionApp_3.1.0_amd64.deb
-# sudo dpkg -i ConnectionApp_3.1.0_amd64.deb
+brew tap yarka-guru/tap
+brew install connection-app-cli
 ```
+
+Pre-built binaries are also published as GitHub Release assets per target:
+`connection-app-cli-{aarch64,x86_64}-{apple-darwin,unknown-linux-gnu}.tar.gz`
+and `connection-app-cli-x86_64-pc-windows-msvc.zip`.
+
+### Linux — direct `.deb`
+
+```bash
+# Replace VERSION with the latest tag (e.g. 3.6.1) from GitHub Releases.
+VERSION=3.6.1
+ARCH=arm64   # or amd64
+wget "https://github.com/yarka-guru/connection_app/releases/download/v${VERSION}/ConnectionApp_${VERSION}_${ARCH}.deb"
+sudo dpkg -i "ConnectionApp_${VERSION}_${ARCH}.deb"
+```
+
+The `.deb` ships the desktop app only; install `connection-app-cli` separately
+via Homebrew or the per-target tarball asset above.
 
 ### Windows
 
-Download the `.msi` or `.exe` installer from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
+Download the `.msi` or `.exe` installer from
+[GitHub Releases](https://github.com/yarka-guru/connection_app/releases). The
+CLI is published as a separate `connection-app-cli-x86_64-pc-windows-msvc.zip`
+asset on the same release.
 
 ## Usage
 
@@ -79,7 +100,16 @@ Manage projects and AWS profiles in **Settings** (`Cmd/Ctrl + ,`).
 
 ### CLI
 
-The CLI binary is included alongside the desktop app or can be built separately:
+`connection-app-cli` is shipped via Homebrew alongside the desktop app, or it
+can be installed standalone (see [Installation](#cli-only-any-platform-via-homebrew)).
+You can also build from source:
+
+```bash
+cd src-tauri
+cargo install --path . --no-default-features --bin connection-app-cli
+```
+
+Then run it:
 
 ```bash
 connection-app-cli
@@ -103,6 +133,9 @@ Options:
   -p, --project <NAME>    Project name (skip interactive selection)
       --profile <NAME>    AWS profile name (skip interactive selection)
       --port <PORT>       Local port override
+      --debug             Enable debug logging (RUST_LOG levels)
+  -V, --version           Print version
+  -h, --help              Print help
 
 Commands:
   projects    List configured projects
@@ -308,7 +341,8 @@ The native WebSocket tunnel implements the SSM port forwarding protocol in pure 
 ## Publishing
 
 - **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux ARM64/x64, Windows x64) via `tauri-action` on git tags
-- **Homebrew**: Auto-updated tap via GitHub Actions
+- **CLI**: Per-target binaries for the same five platforms, built with `--no-default-features` and uploaded as `connection-app-cli-{target}.{tar.gz,zip}` release assets
+- **Homebrew**: Auto-updated tap via GitHub Actions — publishes the macOS cask, the Linux GUI formula, and a cross-platform `connection-app-cli` formula. The cask and Linux formula `depends_on` the CLI formula so a single `brew install` brings both
 
 ## License
 
