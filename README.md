@@ -40,6 +40,20 @@ This installs `ConnectionApp.app` and puts `connection-app-cli` on your `$PATH`.
 
 Or download the `.dmg` directly from [GitHub Releases](https://github.com/yarka-guru/connection_app/releases).
 
+> **Note — unsigned build (no Apple Developer ID yet)**
+>
+> macOS Gatekeeper will refuse to launch the app with a "ConnectionApp is
+> damaged and can't be opened" or "cannot be verified" dialog because the
+> bundle is not signed/notarised yet. Strip the quarantine attribute after
+> install:
+>
+> ```bash
+> xattr -cr /Applications/ConnectionApp.app
+> ```
+>
+> Re-run after every upgrade. This step goes away once the project ships a
+> signed and notarised build.
+
 ### Linux (Homebrew) — GUI + CLI
 
 ```bash
