@@ -77,6 +77,30 @@ jobs:
           includeUpdaterJson: false
           args: --target ${{ matrix.rust_target }}
 
+      - name: Build CLI binary
+        shell: bash
+        run: |
+          cd src-tauri
+          cargo build --release --no-default-features --bin connection-app-cli --target ${{ matrix.rust_target }}
+
+      - name: Package and upload CLI binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.rust_target }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          BIN_DIR="src-tauri/target/${TARGET}/release"
+          if [[ "${TARGET}" == *"windows"* ]]; then
+            ARCHIVE="connection-app-cli-${TARGET}.zip"
+            (cd "${BIN_DIR}" && 7z a "${OLDPWD}/${ARCHIVE}" connection-app-cli.exe)
+          else
+            ARCHIVE="connection-app-cli-${TARGET}.tar.gz"
+            tar -czf "${ARCHIVE}" -C "${BIN_DIR}" connection-app-cli
+          fi
+          gh release upload "v${VERSION}" "${ARCHIVE}" --clobber --repo "${{ github.repository }}"
+
       - name: Sign updater artifact and save signature
         shell: bash
         env:

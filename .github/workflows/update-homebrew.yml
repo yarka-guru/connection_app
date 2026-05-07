@@ -49,7 +49,11 @@ jobs:
             -p "ConnectionApp_${VERSION}_aarch64.dmg" \
             -p "ConnectionApp_${VERSION}_x64.dmg" \
             -p "ConnectionApp_${VERSION}_amd64.deb" \
-            -p "ConnectionApp_${VERSION}_arm64.deb"
+            -p "ConnectionApp_${VERSION}_arm64.deb" \
+            -p "connection-app-cli-aarch64-apple-darwin.tar.gz" \
+            -p "connection-app-cli-x86_64-apple-darwin.tar.gz" \
+            -p "connection-app-cli-aarch64-unknown-linux-gnu.tar.gz" \
+            -p "connection-app-cli-x86_64-unknown-linux-gnu.tar.gz"
 
       - name: Compute SHA256 hashes
         id: hashes
@@ -60,6 +64,10 @@ jobs:
           echo "X64_DMG_SHA=$(sha256sum "ConnectionApp_${VERSION}_x64.dmg" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "AMD64_DEB_SHA=$(sha256sum "ConnectionApp_${VERSION}_amd64.deb" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "ARM64_DEB_SHA=$(sha256sum "ConnectionApp_${VERSION}_arm64.deb" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "CLI_MAC_ARM_SHA=$(sha256sum "connection-app-cli-aarch64-apple-darwin.tar.gz" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "CLI_MAC_X64_SHA=$(sha256sum "connection-app-cli-x86_64-apple-darwin.tar.gz" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "CLI_LINUX_ARM_SHA=$(sha256sum "connection-app-cli-aarch64-unknown-linux-gnu.tar.gz" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "CLI_LINUX_X64_SHA=$(sha256sum "connection-app-cli-x86_64-unknown-linux-gnu.tar.gz" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v5
@@ -95,11 +103,13 @@ jobs:
             homepage "https://github.com/yarka-guru/connection_app"
 
             depends_on macos: ">= :monterey"
+            depends_on formula: "yarka-guru/tap/connection-app-cli"
 
             app "ConnectionApp.app"
 
             caveats <<~EOS
               Ensure your AWS profiles are configured in ~/.aws/config
+              The companion CLI is installed as: connection-app-cli
             EOS
 
             zap trash: [
@@ -108,6 +118,65 @@ jobs:
             ]
           end
           CASK
+
+      - name: Update CLI formula
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          CLI_MAC_ARM_SHA: ${{ steps.hashes.outputs.CLI_MAC_ARM_SHA }}
+          CLI_MAC_X64_SHA: ${{ steps.hashes.outputs.CLI_MAC_X64_SHA }}
+          CLI_LINUX_ARM_SHA: ${{ steps.hashes.outputs.CLI_LINUX_ARM_SHA }}
+          CLI_LINUX_X64_SHA: ${{ steps.hashes.outputs.CLI_LINUX_X64_SHA }}
+        run: |
+          mkdir -p homebrew-tap/Formula
+          cat > homebrew-tap/Formula/connection-app-cli.rb << 'CLIFORMULA'
+          class ConnectionAppCli < Formula
+            desc "ConnectionApp CLI — secure tunneling via AWS SSM"
+            homepage "https://github.com/yarka-guru/connection_app"
+            version "PLACEHOLDER_VERSION"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/connection-app-cli-aarch64-apple-darwin.tar.gz"
+                sha256 "PLACEHOLDER_MAC_ARM_SHA"
+              end
+              on_intel do
+                url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/connection-app-cli-x86_64-apple-darwin.tar.gz"
+                sha256 "PLACEHOLDER_MAC_X64_SHA"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/connection-app-cli-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "PLACEHOLDER_LINUX_ARM_SHA"
+              end
+              on_intel do
+                url "https://github.com/yarka-guru/connection_app/releases/download/v#{version}/connection-app-cli-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "PLACEHOLDER_LINUX_X64_SHA"
+              end
+            end
+
+            def install
+              bin.install "connection-app-cli"
+            end
+
+            def caveats
+              <<~EOS
+                Ensure your AWS profiles are configured in ~/.aws/config
+              EOS
+            end
+
+            test do
+              assert_match "connection-app", shell_output("#{bin}/connection-app-cli --version")
+            end
+          end
+          CLIFORMULA
+          sed -i "s|PLACEHOLDER_VERSION|${VERSION}|" homebrew-tap/Formula/connection-app-cli.rb
+          sed -i "s|PLACEHOLDER_MAC_ARM_SHA|${CLI_MAC_ARM_SHA}|" homebrew-tap/Formula/connection-app-cli.rb
+          sed -i "s|PLACEHOLDER_MAC_X64_SHA|${CLI_MAC_X64_SHA}|" homebrew-tap/Formula/connection-app-cli.rb
+          sed -i "s|PLACEHOLDER_LINUX_ARM_SHA|${CLI_LINUX_ARM_SHA}|" homebrew-tap/Formula/connection-app-cli.rb
+          sed -i "s|PLACEHOLDER_LINUX_X64_SHA|${CLI_LINUX_X64_SHA}|" homebrew-tap/Formula/connection-app-cli.rb
 
       - name: Update Linux formula
         env:
@@ -123,6 +192,8 @@ jobs:
             homepage "https://github.com/yarka-guru/connection_app"
             version "PLACEHOLDER_VERSION"
             license "MIT"
+
+            depends_on "yarka-guru/tap/connection-app-cli"
 
             on_linux do
               on_intel do
@@ -207,18 +278,29 @@ jobs:
 
           ## Installation
 
-          ### macOS (Desktop App)
+          Each install command brings the GUI app **and** the `connection-app-cli`
+          companion binary (the cask depends on the CLI formula on macOS, the
+          Linux formula does the same).
+
+          ### macOS (Desktop App + CLI)
 
           ```bash
           brew tap yarka-guru/tap
           brew install --cask connection-app
           ```
 
-          ### Linux (x86_64 / ARM64)
+          ### Linux (x86_64 / ARM64) — GUI + CLI
 
           ```bash
           brew tap yarka-guru/tap
           brew install connection-app
+          ```
+
+          ### CLI only (any platform)
+
+          ```bash
+          brew tap yarka-guru/tap
+          brew install connection-app-cli
           ```
 
           ## Direct Downloads
