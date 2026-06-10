@@ -93,9 +93,20 @@ pub async fn build_aws_config(profile: &str, region: &str) -> aws_config::SdkCon
         .tls_context(tls_context)
         .build_https();
 
+    // Pin credentials to the explicitly selected profile. The default chain
+    // checks environment variables BEFORE the profile, so an app launched
+    // from a shell holding exported credentials (aws-vault exec, CI, etc.)
+    // would silently connect EVERY profile to that account — mislabeling
+    // environments. The profile provider still resolves the full profile
+    // chain: SSO, assume-role, credential_process, and static keys.
+    let profile_credentials = aws_config::profile::ProfileFileCredentialsProvider::builder()
+        .profile_name(profile)
+        .build();
+
     aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(region.to_string()))
         .profile_name(profile)
+        .credentials_provider(profile_credentials)
         .http_client(http_client)
         .load()
         .await
@@ -192,5 +203,65 @@ pub async fn get_sso_config(profile: &str) -> Option<SsoConfig> {
 #[allow(dead_code)]
 pub async fn is_sso_profile(profile: &str) -> bool {
     get_sso_config(profile).await.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: credentials must come from the explicitly selected
+    /// profile, never from inherited environment variables.
+    ///
+    /// The AWS SDK default chain checks env vars BEFORE the profile. An app
+    /// launched from a shell holding exported credentials (`aws-vault exec`,
+    /// `aws sso login` exports, CI) would silently connect EVERY profile to
+    /// that account — e.g. a "prod" connection actually tunneling to staging
+    /// (observed live 2026-06-10), or worse, the reverse.
+    #[tokio::test]
+    async fn profile_credentials_override_inherited_env_credentials() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("connapp-cred-pin-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("config");
+        let mut f = std::fs::File::create(&cfg_path).unwrap();
+        writeln!(
+            f,
+            "[profile pin-test]\naws_access_key_id = PROFILEKEY123\naws_secret_access_key = profilesecret"
+        )
+        .unwrap();
+
+        // SAFETY: test-only env mutation; no other test reads these vars.
+        unsafe {
+            std::env::set_var("AWS_CONFIG_FILE", &cfg_path);
+            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", dir.join("credentials"));
+            std::env::set_var("AWS_ACCESS_KEY_ID", "ENVKEY999");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "envsecret");
+            std::env::set_var("AWS_SESSION_TOKEN", "envtoken");
+        }
+
+        let config = build_aws_config("pin-test", "us-west-1").await;
+        use aws_sdk_sts::config::ProvideCredentials;
+        let creds = config
+            .credentials_provider()
+            .expect("credentials provider")
+            .provide_credentials()
+            .await
+            .expect("credentials resolve");
+
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("AWS_ACCESS_KEY_ID");
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+            std::env::remove_var("AWS_SESSION_TOKEN");
+            std::env::remove_var("AWS_CONFIG_FILE");
+            std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+        }
+
+        assert_eq!(
+            creds.access_key_id(),
+            "PROFILEKEY123",
+            "inherited env credentials must not override the selected profile"
+        );
+    }
 }
 
