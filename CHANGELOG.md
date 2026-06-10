@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.0] - 2026-06-10
+
+### Fixed
+- Smux protocol v1 compliance — three tunnel-killing bugs (#24):
+  - Stop sending `cmdUPD` window updates: the SSM agent runs xtaci/smux
+    protocol v1 where `cmdUPD` is v2-only; receiving one made the agent close
+    the entire mux session. Every bulk transfer (`pg_dump`, large `SELECT`s)
+    died deterministically at ~2 MiB, killing all tunnel connections with it
+  - Uploads larger than 4 MiB no longer hang: `send_data` waited on window
+    refills a v1 agent never sends
+  - Idle tunnels no longer self-disconnect after 60s: the smux keepalive
+    expected NOP frames modern agents never send; dead-tunnel detection now
+    belongs solely to the SSM-level watchdogs
+- Dead-WebSocket watchdog counts any inbound frame (pong or data) as
+  liveness — previously a sustained bulk download could starve pong
+  processing and the watchdog killed sessions mid-transfer (#24)
+- CLI command reader terminates at stdin EOF instead of busy-looping on a
+  CPU core when stdin is closed (piped/backgrounded runs) (#24)
+
+### Changed
+- Credentials are pinned to the explicitly selected profile: environment
+  credentials inherited from the launching shell (`aws-vault exec`, CI) can
+  no longer silently override the profile choice and connect a "prod"-labeled
+  tunnel to a different account (#24)
+- Per-stream channel sends no longer hold the streams lock across await —
+  one slow stream cannot stall dispatch for other streams (#24)
+
+### Verified
+- Live 4-way stress test: two concurrent full prod dumps (62.8 MB each) plus
+  two concurrent staging dumps (21 MB each) through two mux tunnels
+  simultaneously — ~167 MB total, zero errors
+
 ## [3.5.1] - 2026-04-23
 
 ### Security
