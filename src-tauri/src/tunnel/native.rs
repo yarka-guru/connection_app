@@ -211,9 +211,10 @@ async fn start_basic_port_forwarding(
     let session_cancel = CancellationToken::new();
     let tcp_connected = Arc::new(AtomicBool::new(false));
 
-    // Pong watchdog: track when we last received a pong to detect dead WebSockets.
-    // Stored as seconds since UNIX epoch (AtomicI64 for lock-free access).
-    let last_pong_time = Arc::new(AtomicI64::new(epoch_secs()));
+    // Liveness watchdog: track the last inbound WS frame of ANY kind (pong or
+    // SSM data) to detect dead WebSockets. Data counts — pongs can be starved
+    // behind a sustained bulk download while the socket is perfectly alive.
+    let ws_liveness = Arc::new(WsLiveness::new(epoch_secs()));
 
     // SSM activity watchdog: track when the last SSM-level message was received.
     // If the relay silently stops forwarding (without closing the WebSocket),
@@ -261,7 +262,7 @@ async fn start_basic_port_forwarding(
     let ws_write_ping = ws_write.clone();
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
-    let last_pong_ping = last_pong_time.clone();
+    let liveness_ping = ws_liveness.clone();
     let last_ssm_ping = last_ssm_activity.clone();
     let outgoing_seq_ping = outgoing_seq.clone();
     let outgoing_buffer_ping = outgoing_buffer.clone();
@@ -277,15 +278,14 @@ async fn start_basic_port_forwarding(
             }
             tick_count += 1;
 
-            // Check if pong responses have stopped (dead WebSocket detection).
-            // If no pong received within PONG_MISS_THRESHOLD * PING_INTERVAL,
-            // the remote side is unresponsive — cancel session to trigger reconnect.
-            let last = last_pong_ping.load(Ordering::Relaxed);
-            let stale_secs = epoch_secs() - last;
-            if stale_secs > (WS_PING_INTERVAL_SECS * WS_PONG_MISS_THRESHOLD) as i64 {
+            // Dead WebSocket detection: nothing inbound — no pong AND no data —
+            // within the watchdog window means the remote is unresponsive;
+            // cancel the session to trigger reconnect.
+            let now = epoch_secs();
+            if liveness_ping.expired(now) {
                 log::error!(
-                    "No WebSocket pong received for {}s, declaring session dead",
-                    stale_secs
+                    "No inbound WebSocket frames (pong or data) for {}s, declaring session dead",
+                    liveness_ping.stale_secs(now)
                 );
                 session_cancel_ping.cancel();
                 break;
@@ -421,7 +421,7 @@ async fn start_basic_port_forwarding(
     let outgoing_buf_ack = outgoing_buffer.clone();
     let rtt_estimator_ack = rtt_estimator.clone();
     let tcp_connected_ws = tcp_connected.clone();
-    let last_pong_ws = last_pong_time.clone();
+    let liveness_ws = ws_liveness.clone();
     let last_ssm_ws = last_ssm_activity.clone();
 
     let ws_read_handle = tokio::spawn(async move {
@@ -452,7 +452,10 @@ async fn start_basic_port_forwarding(
 
             match msg {
                 Message::Binary(data) => {
-                    // Any SSM protocol message = relay is alive and forwarding
+                    // Any SSM protocol message = relay is alive and forwarding.
+                    // Counts for BOTH watchdogs: data is the strongest liveness
+                    // signal there is — never let a bulk download starve it.
+                    liveness_ws.record(epoch_secs());
                     last_ssm_ws.store(epoch_secs(), Ordering::Relaxed);
 
                     let agent_msg = match AgentMessage::deserialize(&data) {
@@ -580,7 +583,7 @@ async fn start_basic_port_forwarding(
                     }
                 }
                 Message::Pong(_) => {
-                    last_pong_ws.store(epoch_secs(), Ordering::Relaxed);
+                    liveness_ws.record(epoch_secs());
                 }
                 Message::Close(_) => {
                     session_cancel_ws.cancel();
@@ -950,7 +953,7 @@ pub async fn start_multiplexed_port_forwarding(
     let outgoing_seq = Arc::new(AtomicI64::new(initial_outgoing_seq));
     let expected_incoming_seq = Arc::new(AtomicI64::new(initial_incoming_seq));
     let session_cancel = CancellationToken::new();
-    let last_pong_time = Arc::new(AtomicI64::new(epoch_secs()));
+    let ws_liveness = Arc::new(WsLiveness::new(epoch_secs()));
     let last_ssm_activity = Arc::new(AtomicI64::new(epoch_secs()));
 
     // Outgoing buffer for SSM-level retransmission
@@ -997,7 +1000,7 @@ pub async fn start_multiplexed_port_forwarding(
     let ws_write_ping = ws_write.clone();
     let cancel_ping = cancel.clone();
     let session_cancel_ping = session_cancel.clone();
-    let last_pong_ping = last_pong_time.clone();
+    let liveness_ping = ws_liveness.clone();
     let last_ssm_ping = last_ssm_activity.clone();
     let outgoing_seq_ping = outgoing_seq.clone();
     let outgoing_buffer_ping = outgoing_buffer.clone();
@@ -1013,12 +1016,11 @@ pub async fn start_multiplexed_port_forwarding(
             }
             tick_count += 1;
 
-            let last = last_pong_ping.load(Ordering::Relaxed);
-            let stale_secs = epoch_secs() - last;
-            if stale_secs > (WS_PING_INTERVAL_SECS * WS_PONG_MISS_THRESHOLD) as i64 {
+            let now = epoch_secs();
+            if liveness_ping.expired(now) {
                 log::error!(
-                    "No WebSocket pong received for {}s, declaring session dead",
-                    stale_secs
+                    "No inbound WebSocket frames (pong or data) for {}s, declaring session dead (mux)",
+                    liveness_ping.stale_secs(now)
                 );
                 session_cancel_ping.cancel();
                 break;
@@ -1150,7 +1152,7 @@ pub async fn start_multiplexed_port_forwarding(
     let incoming_buf = incoming_buffer.clone();
     let outgoing_buf_ack = outgoing_buffer.clone();
     let rtt_estimator_ack = rtt_estimator.clone();
-    let last_pong_ws = last_pong_time.clone();
+    let liveness_ws = ws_liveness.clone();
     let last_ssm_ws = last_ssm_activity.clone();
 
     let ws_read_handle = tokio::spawn(async move {
@@ -1181,7 +1183,10 @@ pub async fn start_multiplexed_port_forwarding(
 
             match msg {
                 Message::Binary(data) => {
-                    // Any SSM protocol message = relay is alive and forwarding
+                    // Any SSM protocol message = relay is alive and forwarding.
+                    // Counts for BOTH watchdogs: data is the strongest liveness
+                    // signal there is — never let a bulk download starve it.
+                    liveness_ws.record(epoch_secs());
                     last_ssm_ws.store(epoch_secs(), Ordering::Relaxed);
 
                     let agent_msg = match AgentMessage::deserialize(&data) {
@@ -1281,7 +1286,7 @@ pub async fn start_multiplexed_port_forwarding(
                     }
                 }
                 Message::Pong(_) => {
-                    last_pong_ws.store(epoch_secs(), Ordering::Relaxed);
+                    liveness_ws.record(epoch_secs());
                 }
                 Message::Close(_) => {
                     log::info!("WebSocket Close frame received");
@@ -1447,10 +1452,81 @@ pub async fn start_multiplexed_port_forwarding(
     Ok(())
 }
 
-/// Current time as seconds since UNIX epoch (for pong watchdog).
+/// Current time as seconds since UNIX epoch (for the liveness watchdog).
 fn epoch_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+/// Inbound WebSocket liveness tracker.
+///
+/// Records the epoch-seconds timestamp of the last inbound frame of ANY kind
+/// — pong, SSM data, anything. The watchdog must only declare the socket dead
+/// when nothing at all is arriving: pongs can legitimately be starved behind
+/// a sustained bulk download, but a socket actively delivering data is alive
+/// (observed live 2026-06-10: a pong-only watchdog killed a session 45 MB
+/// into a pg_dump while data was still flowing).
+struct WsLiveness {
+    last_inbound: AtomicI64,
+}
+
+impl WsLiveness {
+    fn new(now_epoch: i64) -> Self {
+        Self {
+            last_inbound: AtomicI64::new(now_epoch),
+        }
+    }
+
+    /// Record an inbound frame (pong, SSM data — any evidence the remote is alive).
+    fn record(&self, now_epoch: i64) {
+        self.last_inbound.store(now_epoch, Ordering::Relaxed);
+    }
+
+    /// Seconds since the last inbound frame (for logging).
+    fn stale_secs(&self, now_epoch: i64) -> i64 {
+        now_epoch - self.last_inbound.load(Ordering::Relaxed)
+    }
+
+    /// True when the socket must be declared dead: no inbound frame within
+    /// the watchdog window (PING_INTERVAL × PONG_MISS_THRESHOLD).
+    fn expired(&self, now_epoch: i64) -> bool {
+        self.stale_secs(now_epoch) > (WS_PING_INTERVAL_SECS * WS_PONG_MISS_THRESHOLD) as i64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: a socket that keeps delivering frames — of any kind,
+    /// not just pongs — must never trip the liveness watchdog, while a truly
+    /// silent socket must.
+    #[test]
+    fn liveness_counts_any_inbound_frame_not_just_pongs() {
+        let window = (WS_PING_INTERVAL_SECS * WS_PONG_MISS_THRESHOLD) as i64; // 90s
+        let t0 = 1_000_000;
+        let liveness = WsLiveness::new(t0);
+
+        // Within the window: alive
+        assert!(!liveness.expired(t0 + window - 1));
+        // Just past the window with no inbound at all: dead
+        assert!(liveness.expired(t0 + window + 1));
+
+        // Bulk-download scenario: data frames keep arriving (recorded), pongs
+        // never do — the session must stay alive indefinitely.
+        let mut now = t0;
+        for _ in 0..100 {
+            now += 30; // a data frame every 30s, well past t0 + window
+            liveness.record(now);
+            assert!(
+                !liveness.expired(now + 1),
+                "watchdog killed a session that was actively receiving data"
+            );
+        }
+
+        // Frames stop entirely: dead one window later
+        assert!(liveness.expired(now + window + 1));
+    }
 }
