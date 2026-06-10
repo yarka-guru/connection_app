@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 // --- Smux protocol constants ---
@@ -26,14 +26,8 @@ const SMUX_HEADER_SIZE: usize = 8;
 /// Maximum frame payload size.
 const MAX_FRAME_SIZE: usize = 65535;
 
-/// Maximum receive buffer per stream (flow control window).
-const MAX_RECEIVE_BUFFER: u32 = 4_194_304; // 4 MB
-
 /// Keepalive interval in seconds.
 const KEEPALIVE_INTERVAL_SECS: u64 = 30;
-
-/// Keepalive timeout in seconds — if no response within this, session is dead.
-const KEEPALIVE_TIMEOUT_SECS: u64 = 60;
 
 // --- Smux commands ---
 
@@ -45,7 +39,10 @@ const CMD_FIN: u8 = 1;
 const CMD_PSH: u8 = 2;
 /// NOP: keepalive (no-op).
 const CMD_NOP: u8 = 3;
-/// UPD: update receive window.
+/// UPD: update receive window — smux protocol v2 ONLY. The SSM agent and the
+/// official plugin both run smux v1 (xtaci/smux DefaultConfig); xtaci's
+/// recvLoop returns ErrInvalidProtocol and closes the entire mux session if a
+/// v1 peer receives this command. We must parse it defensively but NEVER send it.
 const CMD_UPD: u8 = 4;
 
 /// A parsed smux frame.
@@ -124,28 +121,20 @@ impl SmuxFrame {
         Self::new(CMD_FIN, stream_id, vec![])
     }
 
-    /// Create a UPD (window update) frame.
-    /// Payload is 4 bytes little-endian: the number of bytes consumed (delta).
-    fn upd(stream_id: u32, consumed: u32) -> Self {
-        Self::new(CMD_UPD, stream_id, consumed.to_le_bytes().to_vec())
-    }
-
     /// Create a PSH (data push) frame.
     fn psh(stream_id: u32, data: Vec<u8>) -> Self {
         Self::new(CMD_PSH, stream_id, data)
     }
 }
 
-/// Per-stream state for flow control and data routing.
+/// Per-stream state for data routing.
+///
+/// smux v1 has no wire-level per-stream flow control (cmdUPD is v2-only).
+/// Backpressure comes from the bounded channels along the data path instead:
+/// receive side via `data_tx`, send side via the session's `frame_tx`.
 struct SmuxStream {
     /// Channel to send received data to the TCP write side.
     data_tx: mpsc::Sender<Vec<u8>>,
-    /// How many bytes we've consumed from the remote (for window updates).
-    consumed_bytes: u32,
-    /// Remote peer's send window remaining bytes.
-    remote_window: u32,
-    /// Notified when remote window opens up (after receiving UPD).
-    window_notify: Arc<Notify>,
 }
 
 /// Outbound frame sender — shared by stream tasks to write smux frames.
@@ -164,12 +153,8 @@ pub struct SmuxSession {
     streams: Arc<Mutex<HashMap<u32, SmuxStream>>>,
     /// Cancellation token for the entire session.
     cancel: CancellationToken,
-    /// Timestamp of last received frame (for keepalive timeout).
-    last_recv: Arc<std::sync::Mutex<std::time::Instant>>,
     /// Buffer for incomplete smux frames that span multiple SSM payloads.
     reassembly_buf: Mutex<Vec<u8>>,
-    /// Counter for tracking consumed bytes per stream (for batched UPD).
-    upd_threshold: u32,
 }
 
 impl SmuxSession {
@@ -183,10 +168,7 @@ impl SmuxSession {
             frame_tx,
             streams: Arc::new(Mutex::new(HashMap::new())),
             cancel,
-            last_recv: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             reassembly_buf: Mutex::new(Vec::new()),
-            // Send UPD after consuming ~half the max receive buffer
-            upd_threshold: MAX_RECEIVE_BUFFER / 2,
         }
     }
 
@@ -195,11 +177,6 @@ impl SmuxSession {
     /// A single SSM payload may contain multiple concatenated smux frames.
     /// This parses them all and dispatches to the appropriate stream.
     pub async fn handle_incoming_data(&self, incoming: &[u8]) {
-        // Update last-received timestamp for keepalive
-        if let Ok(mut t) = self.last_recv.lock() {
-            *t = std::time::Instant::now();
-        }
-
         // Prepend any leftover bytes from the previous SSM payload
         let mut buf = self.reassembly_buf.lock().await;
         let owned;
@@ -244,15 +221,7 @@ impl SmuxSession {
                     // The TCP accept loop will adopt server-initiated streams.
                     let (data_tx, _data_rx) = mpsc::channel(1024);
                     let mut streams = self.streams.lock().await;
-                    streams.insert(
-                        frame.stream_id,
-                        SmuxStream {
-                            data_tx,
-                            consumed_bytes: 0,
-                            remote_window: MAX_RECEIVE_BUFFER,
-                            window_notify: Arc::new(Notify::new()),
-                        },
-                    );
+                    streams.insert(frame.stream_id, SmuxStream { data_tx });
                 }
                 CMD_FIN => {
                     log::info!("Smux FIN received for stream {}", frame.stream_id);
@@ -260,40 +229,24 @@ impl SmuxSession {
                     streams.remove(&frame.stream_id);
                 }
                 CMD_PSH => {
-                    let payload_len = frame.payload.len() as u32;
                     let stream_id = frame.stream_id;
-                    let streams = self.streams.lock().await;
-                    if let Some(stream) = streams.get(&stream_id) {
-                        // Send data to the TCP write side
-                        let _ = stream.data_tx.send(frame.payload).await;
-                    } else {
-                        log::warn!("Received PSH for unknown stream {}", stream_id);
-                        // Send FIN for unknown streams so the remote cleans up
-                        let fin = SmuxFrame::fin(stream_id).serialize();
-                        let _ = self.frame_tx.send(fin).await;
-                        continue;
-                    }
-                    // Drop the lock before doing more async work
-                    drop(streams);
-
-                    // Track consumed bytes for flow control
-                    let mut send_upd = false;
-                    let mut consumed_total = 0u32;
-                    {
-                        let mut streams = self.streams.lock().await;
-                        if let Some(stream) = streams.get_mut(&stream_id) {
-                            stream.consumed_bytes += payload_len;
-                            if stream.consumed_bytes >= self.upd_threshold {
-                                consumed_total = stream.consumed_bytes;
-                                stream.consumed_bytes = 0;
-                                send_upd = true;
-                            }
+                    // Clone the sender out of the map so the lock is not held
+                    // across the send await — a slow stream must not block
+                    // dispatch (SYN/FIN/other streams) behind a full channel.
+                    let tx = {
+                        let streams = self.streams.lock().await;
+                        streams.get(&stream_id).map(|s| s.data_tx.clone())
+                    };
+                    match tx {
+                        Some(tx) => {
+                            let _ = tx.send(frame.payload).await;
                         }
-                    }
-
-                    if send_upd {
-                        let upd = SmuxFrame::upd(stream_id, consumed_total).serialize();
-                        let _ = self.frame_tx.send(upd).await;
+                        None => {
+                            log::warn!("Received PSH for unknown stream {}", stream_id);
+                            // Send FIN for unknown streams so the remote cleans up
+                            let fin = SmuxFrame::fin(stream_id).serialize();
+                            let _ = self.frame_tx.send(fin).await;
+                        }
                     }
                 }
                 CMD_NOP => {
@@ -301,16 +254,13 @@ impl SmuxSession {
                     log::trace!("Smux NOP keepalive received");
                 }
                 CMD_UPD => {
-                    // Remote peer consumed bytes, opening up our send window.
-                    if frame.payload.len() >= 4 {
-                        let consumed =
-                            u32::from_le_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
-                        let mut streams = self.streams.lock().await;
-                        if let Some(stream) = streams.get_mut(&frame.stream_id) {
-                            stream.remote_window = stream.remote_window.saturating_add(consumed);
-                            stream.window_notify.notify_waiters();
-                        }
-                    }
+                    // v2-only window update — we run v1 (matching the agent),
+                    // where there is no wire-level flow control. A v1 peer
+                    // never sends this; tolerate and ignore it.
+                    log::warn!(
+                        "Ignoring unexpected cmdUPD frame on v1 session (stream {})",
+                        frame.stream_id
+                    );
                 }
                 _ => {
                     log::warn!("Unknown smux command: {}", frame.cmd);
@@ -332,15 +282,7 @@ impl SmuxSession {
 
         // Register the stream
         let mut streams = self.streams.lock().await;
-        streams.insert(
-            stream_id,
-            SmuxStream {
-                data_tx,
-                consumed_bytes: 0,
-                remote_window: MAX_RECEIVE_BUFFER,
-                window_notify: Arc::new(Notify::new()),
-            },
-        );
+        streams.insert(stream_id, SmuxStream { data_tx });
 
         (stream_id, data_rx)
     }
@@ -353,54 +295,40 @@ impl SmuxSession {
         streams.remove(&stream_id);
     }
 
-    /// Send data on a stream, respecting flow control.
+    /// Send data on a stream, split into MAX_FRAME_SIZE chunks.
     ///
-    /// Splits data into chunks of MAX_FRAME_SIZE and waits for window space.
+    /// smux v1 has no wire-level send window: the agent never sends cmdUPD,
+    /// so waiting for window refills can never complete (uploads used to
+    /// stop at 4 MiB for exactly that reason). Backpressure is provided by
+    /// the bounded `frame_tx` channel and, transitively, the SSM data channel.
     pub async fn send_data(&self, stream_id: u32, data: &[u8]) -> Result<(), String> {
-        let mut offset = 0;
-        while offset < data.len() {
-            // Determine chunk size based on remote window
-            let (chunk_size, window_notify) = {
-                let mut streams = self.streams.lock().await;
-                let stream = streams
-                    .get_mut(&stream_id)
-                    .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-                if stream.remote_window == 0 {
-                    // Need to wait for window update
-                    (0usize, Some(stream.window_notify.clone()))
-                } else {
-                    let remaining = data.len() - offset;
-                    let chunk = remaining
-                        .min(MAX_FRAME_SIZE)
-                        .min(stream.remote_window as usize);
-                    stream.remote_window = stream.remote_window.saturating_sub(chunk as u32);
-                    (chunk, None)
-                }
-            };
-
-            if let Some(notify) = window_notify {
-                // Wait for window to open up, with cancellation support
-                tokio::select! {
-                    _ = notify.notified() => continue,
-                    _ = self.cancel.cancelled() => return Err("Session cancelled".to_string()),
-                }
+        {
+            let streams = self.streams.lock().await;
+            if !streams.contains_key(&stream_id) {
+                return Err(format!("Stream {} not found", stream_id));
             }
-
-            if chunk_size > 0 {
-                let chunk = &data[offset..offset + chunk_size];
-                let psh = SmuxFrame::psh(stream_id, chunk.to_vec()).serialize();
-                self.frame_tx
-                    .send(psh)
-                    .await
-                    .map_err(|_| "Frame channel closed".to_string())?;
-                offset += chunk_size;
+        }
+        for chunk in data.chunks(MAX_FRAME_SIZE) {
+            let psh = SmuxFrame::psh(stream_id, chunk.to_vec()).serialize();
+            tokio::select! {
+                result = self.frame_tx.send(psh) => {
+                    result.map_err(|_| "Frame channel closed".to_string())?;
+                }
+                _ = self.cancel.cancelled() => return Err("Session cancelled".to_string()),
             }
         }
         Ok(())
     }
 
-    /// Run the keepalive loop — sends NOP frames periodically and checks for timeout.
+    /// Run the keepalive loop — sends NOP frames periodically.
+    ///
+    /// There is deliberately NO receive-timeout here: modern SSM agents do not
+    /// send smux NOPs and our outgoing NOPs are not echoed, so an idle tunnel
+    /// legitimately receives no smux frames. Cancelling on that (as this loop
+    /// used to after 60s) killed every idle session. Dead-tunnel detection is
+    /// handled at the right layer by native.rs: the WebSocket pong watchdog
+    /// and the SSM activity watchdog (fed by acknowledge messages for these
+    /// very NOPs).
     pub async fn run_keepalive(&self) {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
@@ -409,20 +337,6 @@ impl SmuxSession {
             tokio::select! {
                 _ = interval.tick() => {}
                 _ = self.cancel.cancelled() => break,
-            }
-
-            // Check timeout
-            let elapsed = {
-                let t = self.last_recv.lock().unwrap_or_else(|e| e.into_inner());
-                t.elapsed()
-            };
-            if elapsed > std::time::Duration::from_secs(KEEPALIVE_TIMEOUT_SECS) {
-                log::error!(
-                    "Smux keepalive timeout ({}s since last frame)",
-                    elapsed.as_secs()
-                );
-                self.cancel.cancel();
-                break;
             }
 
             // Send NOP keepalive
@@ -640,16 +554,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_upd_payload() {
-        let frame = SmuxFrame::upd(3, 1024);
-        assert_eq!(frame.cmd, CMD_UPD);
-        assert_eq!(frame.stream_id, 3);
-        assert_eq!(frame.payload.len(), 4);
-        let consumed = u32::from_le_bytes([frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3]]);
-        assert_eq!(consumed, 1024);
-    }
-
-    #[test]
     fn deserialize_incomplete_header() {
         assert!(SmuxFrame::deserialize(&[0u8; 5]).is_none());
     }
@@ -679,6 +583,120 @@ mod tests {
         assert_eq!(f2.stream_id, 2);
         assert_eq!(f2.payload, b"bbb");
         assert_eq!(consumed1 + consumed2, data.len());
+    }
+
+    /// Regression test: a v1 smux session must NEVER emit a cmdUPD frame.
+    ///
+    /// The SSM agent pairs with the official plugin on smux protocol v1
+    /// (smux.DefaultConfig). In xtaci/smux's recvLoop, cmdUPD is v2-only:
+    /// receiving it on a v1 session returns ErrInvalidProtocol and closes the
+    /// entire mux session — killing every TCP connection in the tunnel. This
+    /// manifested as bulk transfers (pg_dump, large SELECTs) dying at ~2 MiB
+    /// (the old UPD threshold).
+    #[tokio::test]
+    async fn v1_session_never_emits_upd_after_large_receive() {
+        let (frame_tx, mut frame_rx) = mpsc::channel(4096);
+        let session = SmuxSession::new(frame_tx, CancellationToken::new());
+        let counter = AtomicU32::new(1);
+        let (stream_id, mut data_rx) = session.open_stream(&counter).await;
+
+        // Drain the SYN emitted by open_stream
+        let syn_bytes = frame_rx.recv().await.expect("SYN frame");
+        let (syn, _) = SmuxFrame::deserialize(&syn_bytes).expect("valid SYN");
+        assert_eq!(syn.cmd, CMD_SYN);
+
+        // Feed 3 MiB of PSH data — well past the historical 2 MiB UPD threshold
+        let payload = vec![0u8; 60_000];
+        let mut fed: usize = 0;
+        while fed < 3 * 1024 * 1024 {
+            let frame = SmuxFrame::psh(stream_id, payload.clone()).serialize();
+            session.handle_incoming_data(&frame).await;
+            while data_rx.try_recv().is_ok() {}
+            fed += payload.len();
+        }
+
+        // No frame the client emitted may be a cmdUPD
+        while let Ok(frame_bytes) = frame_rx.try_recv() {
+            let (frame, _) = SmuxFrame::deserialize(&frame_bytes).expect("valid frame");
+            assert_ne!(
+                frame.cmd, CMD_UPD,
+                "v1 session emitted cmdUPD — the agent's recvLoop treats this as \
+                 ErrInvalidProtocol and kills the whole mux session"
+            );
+        }
+    }
+
+    /// Regression test: uploads larger than the (removed) 4 MiB pseudo-window
+    /// must not hang. A v1 agent never sends window updates, so any send-side
+    /// wait on a window refill blocks forever.
+    #[tokio::test]
+    async fn send_data_does_not_hang_beyond_initial_window() {
+        let (frame_tx, mut frame_rx) = mpsc::channel(4096);
+        let session = SmuxSession::new(frame_tx, CancellationToken::new());
+        let counter = AtomicU32::new(1);
+        let (stream_id, _data_rx) = session.open_stream(&counter).await;
+
+        // Drain frames concurrently (bounded channel) and count PSH payload bytes
+        let drain = tokio::spawn(async move {
+            let mut psh_bytes: usize = 0;
+            while let Some(frame_bytes) = frame_rx.recv().await {
+                let (frame, _) = SmuxFrame::deserialize(&frame_bytes).expect("valid frame");
+                if frame.cmd == CMD_PSH {
+                    psh_bytes += frame.payload.len();
+                }
+            }
+            psh_bytes
+        });
+
+        // 5 MiB > the old 4 MiB MAX_RECEIVE_BUFFER initial window
+        let chunk = vec![0u8; 1024 * 1024];
+        let send_all = async {
+            for _ in 0..5 {
+                session.send_data(stream_id, &chunk).await.expect("send_data");
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), send_all)
+            .await
+            .expect("send_data hung waiting for a window update that a v1 agent never sends");
+
+        drop(session); // closes frame_tx so the drain task finishes
+        let total = drain.await.expect("drain task");
+        assert_eq!(total, 5 * 1024 * 1024);
+    }
+
+    /// Regression test: an idle tunnel must not self-disconnect.
+    ///
+    /// Modern SSM agents do not send smux NOP keepalives, and our own outgoing
+    /// NOPs are not echoed — so on an idle tunnel no smux frame ever arrives.
+    /// The keepalive loop used to cancel the session after 60s without a
+    /// received frame, which killed every idle CLI tunnel (the GUI masked it
+    /// by silently auto-reconnecting every minute). Tunnel liveness is the job
+    /// of the SSM-level watchdogs in native.rs (pong + activity), not smux.
+    #[tokio::test]
+    async fn idle_session_does_not_self_cancel() {
+        let (frame_tx, mut frame_rx) = mpsc::channel(64);
+        let cancel = CancellationToken::new();
+        let session = Arc::new(SmuxSession::new(frame_tx, cancel.clone()));
+
+        let keepalive_session = session.clone();
+        let handle = tokio::spawn(async move {
+            keepalive_session.run_keepalive().await;
+        });
+
+        // The interval's first tick fires immediately — give it time to run
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert!(
+            !cancel.is_cancelled(),
+            "idle session was self-cancelled by the smux keepalive timeout"
+        );
+        // A NOP keepalive must still be sent
+        let nop_bytes = frame_rx.recv().await.expect("NOP frame");
+        let (nop, _) = SmuxFrame::deserialize(&nop_bytes).expect("valid frame");
+        assert_eq!(nop.cmd, CMD_NOP);
+
+        cancel.cancel();
+        let _ = handle.await;
     }
 
     #[test]
