@@ -349,7 +349,8 @@ The native WebSocket tunnel implements the SSM port forwarding protocol in pure 
 
 ### Intentional Differences
 
-- **No smux multiplexing** — reports `client_version: "1.0.0.0"` to force basic mode (single TCP connection per tunnel). Multiple connections use multiple tunnels, each with its own port.
+- **Smux multiplexing on by default** — reports `client_version: "1.2.0.0"`; when the agent supports smux (>= 3.0.196.0), multiple TCP connections share one tunnel, each on its own smux stream. Basic mode (single TCP connection at a time) is used for older agents or when a project sets `"multiplexed": false`.
+- **Smux protocol v1, strictly** — matching the agent and the official plugin (`smux.DefaultConfig`). v1 has no wire-level flow control: `cmdUPD` window updates are v2-only, and xtaci/smux closes the whole session (`ErrInvalidProtocol`) if a v1 peer receives one. The client never sends `cmdUPD` and ignores any received; backpressure relies on the bounded channels along the data path.
 - **Manager-level reconnection** — instead of WebSocket-level reconnection with `ResumeSession` API, the tunnel manager performs full reconnection (re-validates bastion/target, new SSM session). Slightly longer recovery but more robust.
 
 ## Publishing

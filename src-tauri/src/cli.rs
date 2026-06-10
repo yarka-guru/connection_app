@@ -516,39 +516,12 @@ async fn run_tunnel(
     if let Some(pw) = password {
         let cancel_reader = cancel.clone();
         tokio::task::spawn_blocking(move || {
-            use std::io::{BufRead, Write};
-            let stdin = std::io::stdin();
-            let mut stdout = std::io::stderr();
-            loop {
-                if cancel_reader.is_cancelled() {
-                    break;
-                }
-                let mut input = String::new();
-                if stdin.lock().read_line(&mut input).is_err() {
-                    break;
-                }
-                let cmd = input.trim().to_lowercase();
-                match cmd.as_str() {
-                    "p" | "password" | "show" => {
-                        let _ = writeln!(stdout, "\n  \u{1F513} Password: {}\n", pw);
-                    }
-                    "c" | "copy" => {
-                        if try_copy_to_clipboard(&pw) {
-                            let _ = writeln!(stdout, "\n  \u{1F4CB} Password copied to clipboard\n");
-                        } else {
-                            let _ = writeln!(stdout, "\n  \u{26A0}\u{FE0F}  Failed to copy to clipboard\n");
-                        }
-                    }
-                    "" => {} // ignore empty lines
-                    _ => {
-                        let _ = writeln!(
-                            stdout,
-                            "  Unknown command '{}'. Use [p] show password, [c] copy password",
-                            cmd
-                        );
-                    }
-                }
-            }
+            run_command_reader(
+                std::io::stdin().lock(),
+                std::io::stderr(),
+                &pw,
+                &cancel_reader,
+            );
         });
     }
 
@@ -561,6 +534,49 @@ async fn run_tunnel(
     eprintln!("  \u{1F44B} Disconnected.\n");
 
     Ok(())
+}
+
+/// Read user commands from `input` and respond on `out` until EOF, read
+/// error, or cancellation.
+fn run_command_reader<R: std::io::BufRead, W: std::io::Write>(
+    mut input: R,
+    mut out: W,
+    pw: &str,
+    cancel: &CancellationToken,
+) {
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let mut line = String::new();
+        match input.read_line(&mut line) {
+            // Ok(0) = EOF — stdin closed (piped/backgrounded). Stop reading;
+            // the tunnel itself keeps running.
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let cmd = line.trim().to_lowercase();
+        match cmd.as_str() {
+            "p" | "password" | "show" => {
+                let _ = writeln!(out, "\n  \u{1F513} Password: {}\n", pw);
+            }
+            "c" | "copy" => {
+                if try_copy_to_clipboard(pw) {
+                    let _ = writeln!(out, "\n  \u{1F4CB} Password copied to clipboard\n");
+                } else {
+                    let _ = writeln!(out, "\n  \u{26A0}\u{FE0F}  Failed to copy to clipboard\n");
+                }
+            }
+            "" => {} // ignore empty lines
+            _ => {
+                let _ = writeln!(
+                    out,
+                    "  Unknown command '{}'. Use [p] show password, [c] copy password",
+                    cmd
+                );
+            }
+        }
+    }
 }
 
 fn select_project(
@@ -708,4 +724,31 @@ fn try_copy_to_clipboard(text: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: the command reader must terminate at EOF.
+    ///
+    /// `read_line` returns `Ok(0)` at EOF; treating that as an empty command
+    /// made the loop spin forever, burning a CPU core for the lifetime of the
+    /// tunnel whenever stdin was closed (piped/backgrounded invocations).
+    #[test]
+    fn command_reader_terminates_at_eof() {
+        let cancel = CancellationToken::new();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let input = std::io::Cursor::new(b"p\n".to_vec());
+            let mut out = Vec::new();
+            run_command_reader(input, &mut out, "s3cret", &cancel);
+            let _ = done_tx.send(out);
+        });
+        let out = done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("command reader did not terminate at EOF (busy-loop)");
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("s3cret"), "expected password output, got: {text}");
+    }
 }
