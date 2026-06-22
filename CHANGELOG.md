@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.1] - 2026-06-22
+
+### Fixed
+- Homebrew cask no longer emits a deprecation warning on `brew` operations:
+  `depends_on macos` now uses the symbol form (`:monterey`) instead of the
+  deprecated string-comparison form (`">= :monterey"`). The fix lands in both
+  the published cask and the `update-homebrew` workflow that regenerates it,
+  so future releases keep it. The macOS minimum (Monterey or newer) is
+  unchanged.
+
+### Changed
+- Dependency maintenance: grouped Cargo (9 crates), npm (2 packages), and
+  GitHub Actions (`actions/checkout` 6→7) updates (#26, #27, #28).
+
 ## [3.7.0] - 2026-06-10
 
 ### Fixed
