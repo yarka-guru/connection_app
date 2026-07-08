@@ -475,6 +475,14 @@ async fn start_basic_port_forwarding(
                         continue;
                     }
 
+                    log::debug!(
+                        "Inbound SSM message: type={}, seq={}, payload_type={}, payload_len={}",
+                        agent_msg.message_type,
+                        agent_msg.sequence_number,
+                        agent_msg.payload_type,
+                        agent_msg.payload.len()
+                    );
+
                     match agent_msg.message_type.as_str() {
                         OUTPUT_STREAM_DATA => {
                             // Always acknowledge
@@ -1205,6 +1213,14 @@ pub async fn start_multiplexed_port_forwarding(
                         continue;
                     }
 
+                    log::debug!(
+                        "Inbound SSM message: type={}, seq={}, payload_type={}, payload_len={}",
+                        agent_msg.message_type,
+                        agent_msg.sequence_number,
+                        agent_msg.payload_type,
+                        agent_msg.payload.len()
+                    );
+
                     match agent_msg.message_type.as_str() {
                         OUTPUT_STREAM_DATA => {
                             // Always acknowledge
@@ -1322,6 +1338,12 @@ pub async fn start_multiplexed_port_forwarding(
             let seq = outgoing_seq_smux.fetch_add(1, Ordering::Relaxed);
             let msg = build_data_message(&frame_data, seq);
             let serialized = msg.serialize();
+            log::debug!(
+                "Smux frame -> SSM data message: seq={}, frame_cmd={}, frame_len={}",
+                seq,
+                frame_data.get(1).copied().unwrap_or(255),
+                frame_data.len()
+            );
 
             {
                 let mut ob = outgoing_buffer_smux.lock().await;
