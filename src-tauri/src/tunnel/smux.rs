@@ -27,7 +27,15 @@ const SMUX_HEADER_SIZE: usize = 8;
 const MAX_FRAME_SIZE: usize = 65535;
 
 /// Keepalive interval in seconds.
-const KEEPALIVE_INTERVAL_SECS: u64 = 30;
+///
+/// MUST be well below the SSM agent's smux KeepAliveTimeout (30s, xtaci/smux
+/// DefaultConfig). The agent closes the whole session (`channel_closed`) if it
+/// receives no frame — data or NOP — for 30s. Sending every 30s created a
+/// millisecond-level race against that deadline: whenever a NOP arrived late
+/// (network jitter, scheduling), the agent hung up ~30s after the last frame,
+/// producing constant tunnel flapping on idle connections. 10s matches the
+/// official session-manager-plugin (xtaci/smux KeepAliveInterval), a 3x margin.
+const KEEPALIVE_INTERVAL_SECS: u64 = 10;
 
 // --- Smux commands ---
 
@@ -341,7 +349,9 @@ impl SmuxSession {
 
             // Send NOP keepalive
             let nop = SmuxFrame::nop().serialize();
+            log::debug!("Smux NOP keepalive queued ({} bytes)", nop.len());
             if self.frame_tx.send(nop).await.is_err() {
+                log::debug!("Smux NOP keepalive: frame channel closed, stopping keepalive");
                 break;
             }
         }
