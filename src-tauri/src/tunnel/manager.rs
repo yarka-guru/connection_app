@@ -19,8 +19,6 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 // Retry configuration constants (matching connect.js)
-const BASTION_WAIT_MAX_RETRIES: u32 = 20;
-const BASTION_WAIT_RETRY_DELAY_MS: u64 = 15000;
 const PORT_FORWARDING_MAX_RETRIES: u32 = 2;
 const AUTO_RECONNECT_MAX_RETRIES: u32 = 3;
 const AUTO_RECONNECT_DELAY_MS: u64 = 3000;
@@ -972,7 +970,6 @@ async fn run_tunnel_lifecycle(
             local_port,
             &target,
             project_config.bastion_pattern(),
-            project_config.connection_type.as_str(),
             &cancel_token,
             ready_tx.take(),
         )
@@ -1162,7 +1159,6 @@ async fn start_port_forwarding_with_retry(
     local_port: &str,
     target: &TunnelTarget,
     bastion_pattern: &str,
-    connection_type: &str,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), AppError> {
@@ -1183,39 +1179,26 @@ async fn start_port_forwarding_with_retry(
         match result {
             Ok(()) => return Ok(()),
             Err(PortForwardError::TargetNotConnected) if retry_count < PORT_FORWARDING_MAX_RETRIES => {
-                if let TunnelTarget::RemoteHost { ref bastion_id, ref remote_host, ref remote_port, multiplexed } = current_target {
-                    if connection_type == "rds" {
-                        let _ = operations::terminate_bastion_instance(clients, bastion_id).await;
-
-                        let new_id = operations::wait_for_new_bastion_instance(
-                            clients,
-                            bastion_id,
-                            bastion_pattern,
-                            BASTION_WAIT_MAX_RETRIES,
-                            BASTION_WAIT_RETRY_DELAY_MS,
-                        )
-                        .await?
-                        .ok_or_else(|| {
-                            AppError::Tunnel(
-                                "Failed to find new bastion instance after waiting.".to_string(),
-                            )
-                        })?;
-
-                        current_target = TunnelTarget::RemoteHost {
-                            bastion_id: new_id,
-                            remote_host: remote_host.clone(),
-                            remote_port: remote_port.clone(),
-                            multiplexed,
-                        };
-                    } else {
-                        let new_id = operations::find_bastion_instance(clients, bastion_pattern, None).await?;
-                        current_target = TunnelTarget::RemoteHost {
-                            bastion_id: new_id,
-                            remote_host: remote_host.clone(),
-                            remote_port: remote_port.clone(),
-                            multiplexed,
-                        };
-                    }
+                if let TunnelTarget::RemoteHost { ref remote_host, ref remote_port, multiplexed, .. } = current_target {
+                    // TargetNotConnected means the SSM target isn't currently reachable —
+                    // typically a stale/cached bastion ID pointing at a replaced instance, or
+                    // the SSM agent briefly not connected. Re-discover the current running
+                    // bastion by tag and retry.
+                    //
+                    // We must NEVER terminate the bastion here. The bastion is a shared,
+                    // externally-managed instance (e.g. behind an Auto Scaling Group) used by
+                    // every developer. Terminating it drops all other users' tunnels at once,
+                    // and — because their apps then also hit TargetNotConnected — can cascade
+                    // into repeatedly killing each ASG replacement. Discovery alone is correct
+                    // and self-heals an ASG-driven instance swap.
+                    let new_id =
+                        operations::find_bastion_instance(clients, bastion_pattern, None).await?;
+                    current_target = TunnelTarget::RemoteHost {
+                        bastion_id: new_id,
+                        remote_host: remote_host.clone(),
+                        remote_port: remote_port.clone(),
+                        multiplexed,
+                    };
                 }
 
                 retry_count += 1;
