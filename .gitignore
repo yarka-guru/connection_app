@@ -25,3 +25,9 @@ latest.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local tooling
+.claude/
+
+# Database dumps (may contain sensitive data — never commit)
+*.dump

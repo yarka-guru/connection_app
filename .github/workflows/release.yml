@@ -22,12 +22,13 @@ jobs:
             rust_target: aarch64-apple-darwin
           - platform: macos-latest
             rust_target: x86_64-apple-darwin
-          - platform: ubuntu-22.04
-            rust_target: x86_64-unknown-linux-gnu
-          - platform: ubuntu-22.04-arm
-            rust_target: aarch64-unknown-linux-gnu
-          - platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
+          # Non-macOS builds temporarily disabled — re-enable to resume Linux/Windows releases.
+          # - platform: ubuntu-22.04
+          #   rust_target: x86_64-unknown-linux-gnu
+          # - platform: ubuntu-22.04-arm
+          #   rust_target: aarch64-unknown-linux-gnu
+          # - platform: windows-latest
+          #   rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
     steps:
