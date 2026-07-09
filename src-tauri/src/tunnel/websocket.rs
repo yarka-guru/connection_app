@@ -70,6 +70,13 @@ pub async fn open_data_channel_with_version(
     let mut handshake_complete = false;
     let mut client_seq: i64 = 0; // our outgoing sequence counter
     let mut expected_server_seq: i64 = 0; // what we expect from the agent next
+    // Cached serialized HandshakeResponse so a retransmitted HandshakeRequest can
+    // be answered with the IDENTICAL bytes (same sequence number). Responding to a
+    // duplicate request with a fresh sequence number is a protocol violation that
+    // desyncs the agent's expected-incoming counter and jams its handshake state
+    // machine: it stops acking everything we send, retransmits handshake_complete
+    // every 200ms for ~30s, then closes the channel ("channel_closed" ~32s in).
+    let mut cached_response: Option<Vec<u8>> = None;
 
     while !handshake_complete {
         let ws_msg = ws
@@ -85,13 +92,43 @@ pub async fn open_data_channel_with_version(
 
                 match msg.message_type.as_str() {
                     OUTPUT_STREAM_DATA => {
-                        // Send acknowledge for every output_stream_data
+                        // Always acknowledge — even duplicates: the agent retransmits
+                        // when our previous ack was lost or slow, so re-acking is how
+                        // the retransmission stops.
                         let ack = build_acknowledge(&msg);
                         ws.send(Message::Binary(ack.serialize().into()))
                             .await
                             .map_err(|e| format!("Failed to send ack: {}", e))?;
 
-                        // Advance expected server sequence (agent uses single counter)
+                        // Deduplicate by sequence number (agent uses a single counter).
+                        // A retransmitted message MUST NOT advance our expected counter
+                        // or be processed twice.
+                        if msg.sequence_number != expected_server_seq {
+                            log::info!(
+                                "Duplicate/out-of-order handshake message: seq={}, expected={}, payload_type={} — re-acked, {}",
+                                msg.sequence_number,
+                                expected_server_seq,
+                                msg.payload_type,
+                                if msg.payload_type == PAYLOAD_HANDSHAKE_REQUEST {
+                                    "resending cached response"
+                                } else {
+                                    "dropping"
+                                }
+                            );
+                            // If the agent re-sent the HandshakeRequest, our response may
+                            // have been lost — resend the exact same response bytes
+                            // (idempotent: same sequence number, same content).
+                            if msg.payload_type == PAYLOAD_HANDSHAKE_REQUEST
+                                && let Some(ref resp) = cached_response
+                            {
+                                ws.send(Message::Binary(resp.clone().into()))
+                                    .await
+                                    .map_err(|e| {
+                                        format!("Failed to resend HandshakeResponse: {}", e)
+                                    })?;
+                            }
+                            continue;
+                        }
                         expected_server_seq += 1;
 
                         match msg.payload_type {
@@ -108,7 +145,9 @@ pub async fn open_data_channel_with_version(
                                     client_seq,
                                     client_version,
                                 );
-                                ws.send(Message::Binary(response.serialize().into()))
+                                let serialized = response.serialize();
+                                cached_response = Some(serialized.clone());
+                                ws.send(Message::Binary(serialized.into()))
                                     .await
                                     .map_err(|e| {
                                         format!("Failed to send HandshakeResponse: {}", e)

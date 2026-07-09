@@ -25,8 +25,6 @@ const AUTO_RECONNECT_DELAY_MS: u64 = 3000;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
-const HEALTH_CHECK_TIMEOUT_MS: u64 = 5000;
-const HEALTH_CHECK_DEGRADED_MS: u64 = 5000;
 
 // Validation patterns
 static PROFILE_SAFE_PATTERN: std::sync::LazyLock<Regex> =
@@ -825,7 +823,8 @@ impl TunnelManager {
     }
 
     /// Spawn a background health check task for a connection.
-    /// Periodically attempts a TCP connect to localhost:port to verify the tunnel is alive.
+    /// Periodically verifies the tunnel's local listener is still bound (via a
+    /// bind-conflict probe — never by connecting, which would create tunnel traffic).
     fn spawn_health_check(
         app_handle: &AppHandle,
         connection_id: &str,
@@ -849,25 +848,24 @@ impl TunnelManager {
                     break;
                 }
 
-                let check_start = std::time::Instant::now();
+                // Check that the tunnel's local listener is still bound WITHOUT
+                // opening a TCP connection to it. Connecting (the old approach)
+                // was actively harmful in multiplexed mode: every probe opened a
+                // real smux stream, which made the agent dial the remote host
+                // (RDS/VNC) and tear it down again — every 30 seconds, for the
+                // lifetime of every connection. A bind attempt gives the same
+                // signal (listener present) with zero tunnel traffic: if the
+                // port is held by our listener, bind fails with AddrInUse.
                 let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
-
-                let status = match tokio::time::timeout(
-                    tokio::time::Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-                    tokio::net::TcpStream::connect(addr),
-                )
-                .await
-                {
-                    Ok(Ok(_stream)) => {
-                        let elapsed = check_start.elapsed().as_millis() as u64;
-                        if elapsed > HEALTH_CHECK_DEGRADED_MS {
-                            "degraded"
-                        } else {
-                            "healthy"
-                        }
+                let status = match std::net::TcpListener::bind(addr) {
+                    // Bind succeeded — nothing is listening on the port anymore.
+                    Ok(sock) => {
+                        drop(sock);
+                        "unhealthy"
                     }
-                    Ok(Err(_)) => "unhealthy",
-                    Err(_) => "unhealthy", // timeout
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => "healthy",
+                    // Unexpected bind error (permissions etc.) — can't conclude.
+                    Err(_) => "degraded",
                 };
 
                 let now_ms = std::time::SystemTime::now()
