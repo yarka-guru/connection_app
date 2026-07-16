@@ -121,10 +121,17 @@ jobs:
             fi
           done
 
+          # Every target in the matrix produces an updater artifact. A missing one
+          # means latest.json will advertise a URL that 404s with an empty signature,
+          # so fail loudly rather than shipping a silently broken updater (v3.7.5:
+          # "appimage" was absent from tauri.conf.json bundle targets and this
+          # exited 0, so the job stayed green while Linux auto-update was dead).
           if [ -z "$UPDATER_FILE" ]; then
-            echo "WARNING: No updater artifact found"
+            echo "ERROR: No updater artifact found for ${{ matrix.rust_target }}"
+            echo "Expected one of: *.app.tar.gz (macOS), *.AppImage (Linux), *-setup.exe (Windows)"
+            echo "Bundle contents:"
             find "$BUNDLE" -type f 2>/dev/null | head -20
-            exit 0
+            exit 1
           fi
 
           echo "Signing: $UPDATER_FILE"

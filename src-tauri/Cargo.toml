@@ -1,9 +1,12 @@
 [package]
 name = "connection-app"
-version = "3.7.5"
+version = "3.7.6"
 description = "Secure tunneling through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
+# Floor set by the AWS SDK (aws-smithy-* 1.2+). CI tracks latest stable and will
+# not catch a regression here — this makes an old local toolchain fail clearly.
+rust-version = "1.94.1"
 default-run = "connection-app"
 license = "MIT"
 repository = "https://github.com/yarka-guru/connection_app"
