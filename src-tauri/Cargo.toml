@@ -1,6 +1,6 @@
 [package]
 name = "connection-app"
-version = "3.7.6"
+version = "3.7.7"
 description = "Secure tunneling through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
@@ -65,11 +65,11 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 log = "0.4"
-tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 sha2 = "0.11"
 byteorder = "1"
 futures-util = "0.3"
-base64 = "0.22"
+base64 = "0.23"
 socket2 = "0.6"
 env_logger = "0.11"
 
