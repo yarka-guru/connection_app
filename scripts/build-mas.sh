@@ -5,8 +5,8 @@
 #   ./scripts/build-mas.sh [--upload]
 #
 # Requires:
-#   - Apple Distribution + 3rd Party Mac Developer Installer identities in the
-#     login keychain (see ~/Documents/09 - Security & Recovery/Apple Developer ID)
+#   - apple-distribution.p12 + mac-installer.p12 + mas-p12-password.txt in
+#     ~/Documents/09 - Security & Recovery/Apple Developer ID
 #   - ConnectionApp_MAS.provisionprofile alongside them
 #
 # Runs locally by design. MAS packaging fails with opaque ITMS errors, and
@@ -30,11 +30,32 @@ die()  { printf '\033[31mERROR: %s\033[0m\n' "$1" >&2; exit 1; }
 
 step "Checking prerequisites"
 [ -f "$PROFILE" ] || die "missing provisioning profile: $PROFILE"
-security find-identity -v -p codesigning | grep -q "$APP_IDENTITY" \
-  || die "no '$APP_IDENTITY' in the keychain"
-security find-identity -v | grep -q "$PKG_IDENTITY" \
-  || die "no '$PKG_IDENTITY' in the keychain"
-echo "  identities present, profile present"
+[ -f "$CREDS/apple-distribution.p12" ] || die "missing apple-distribution.p12"
+[ -f "$CREDS/mac-installer.p12" ]      || die "missing mac-installer.p12"
+[ -f "$CREDS/mas-p12-password.txt" ]   || die "missing mas-p12-password.txt"
+echo "  profile and both .p12 bundles present"
+
+# Sign from a dedicated keychain rather than the login keychain.
+#
+# codesign needs the private key's partition list to include it, and setting
+# that on the login keychain requires the account password — which this script
+# must not handle. Signing from the login keychain without it fails with
+# "errSecInternalComponent", which is what happened on the first run here.
+#
+# A throwaway keychain whose password this script chooses avoids the problem
+# entirely, keeps the login keychain untouched, and mirrors what CI does.
+KEYCHAIN="$(mktemp -u "${TMPDIR:-/tmp}/connectionapp-mas-XXXXXX").keychain"
+# openssl rand rather than `tr -dc < /dev/urandom | head -c`: head closes the
+# pipe, tr takes SIGPIPE, and under `set -o pipefail` that aborts the script
+# with 141 before it does anything.
+KEYCHAIN_PW="$(openssl rand -hex 24)"
+ORIG_KEYCHAINS="$(security list-keychains -d user | tr -d '"' | xargs)"
+
+cleanup_keychain() {
+  # shellcheck disable=SC2086
+  security list-keychains -d user -s $ORIG_KEYCHAINS >/dev/null 2>&1 || true
+  security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
+}
 
 # Tauri scans capabilities/ at build time regardless of cargo features, so a
 # permission naming the unregistered updater plugin aborts the build. Move it
@@ -42,14 +63,15 @@ echo "  identities present, profile present"
 CAP="src-tauri/capabilities/updater.json"
 CAP_BAK="$(mktemp -t updater-capability)"
 RESTORE=0
-restore_cap() {
+cleanup() {
   if [ "$RESTORE" = "1" ] && [ ! -f "$CAP" ]; then
     mv "$CAP_BAK" "$CAP"
     echo "  restored $CAP"
   fi
   rm -f "$CAP_BAK"
+  cleanup_keychain
 }
-trap restore_cap EXIT
+trap cleanup EXIT
 
 if [ -f "$CAP" ]; then
   step "Removing the updater capability for this build"
@@ -74,6 +96,34 @@ step "Embedding the provisioning profile"
 cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
 echo "  embedded.provisionprofile written"
 
+step "Preparing a signing keychain"
+P12_PW="$(cat "$CREDS/mas-p12-password.txt")"
+security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+# shellcheck disable=SC2086
+security list-keychains -d user -s $ORIG_KEYCHAINS "$KEYCHAIN"
+security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+security set-keychain-settings -t 3600 -u "$KEYCHAIN"
+# -A rather than -T: allow any tool to use these keys without a prompt.
+# -T authorises named binaries, but productbuild still asked for confirmation
+# through a GUI dialog that nothing could answer — the keychain password is
+# random and generated above, and the run is non-interactive. It failed with
+# CSSMERR_CSP_USER_CANCELED. -A is safe here precisely because this keychain
+# holds nothing else and is destroyed a few seconds later.
+security import "$CREDS/apple-distribution.p12" -k "$KEYCHAIN" -P "$P12_PW" -A >/dev/null
+security import "$CREDS/mac-installer.p12" -k "$KEYCHAIN" -P "$P12_PW" -A >/dev/null
+# Without this, codesign cannot reach the private key non-interactively and
+# fails with errSecInternalComponent. The partition list is `apple-tool:,apple:`
+# — `apple:` covers the Apple-signed tools, productbuild included. Do not add a
+# `productbuild:` partition; there is no such identifier, and an earlier version
+# of this script both used one and hid the command's output, so the failure was
+# invisible until productbuild sat waiting on a GUI password prompt.
+security set-key-partition-list -S apple-tool:,apple: \
+  -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null \
+  || die "set-key-partition-list failed; signing would hang on a GUI prompt"
+security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "$APP_IDENTITY" \
+  || die "'$APP_IDENTITY' not usable from the signing keychain"
+echo "  identities imported and usable"
+
 step "Signing"
 # Sign nested executables first, then the bundle. --deep is deprecated by Apple
 # and silently mis-signs nested content.
@@ -81,12 +131,12 @@ while IFS= read -r -d '' f; do
   echo "  nested: $(basename "$f")"
   codesign --force --timestamp --options runtime \
     --entitlements src-tauri/Entitlements.mas.plist \
-    --sign "$APP_IDENTITY" "$f"
+    --keychain "$KEYCHAIN" --sign "$APP_IDENTITY" "$f"
 done < <(find "$APP/Contents/MacOS" -type f -perm +111 -print0)
 
 codesign --force --timestamp \
   --entitlements src-tauri/Entitlements.mas.plist \
-  --sign "$APP_IDENTITY" "$APP"
+  --keychain "$KEYCHAIN" --sign "$APP_IDENTITY" "$APP"
 echo "  bundle signed"
 
 step "Verifying the app bundle"
@@ -95,7 +145,16 @@ step "Verifying the app bundle"
 
 step "Packaging"
 PKG="$REPO_ROOT/ConnectionApp.pkg"
-productbuild --component "$APP" /Applications --sign "$PKG_IDENTITY" "$PKG"
+rm -f "$PKG"
+# If a copy of the installer identity also sits in the login keychain without an
+# authorized partition list, productbuild finds that one instead and blocks on a
+# GUI password prompt with no way to answer it. Fail fast rather than hang.
+if security find-identity -v ~/Library/Keychains/login.keychain-db 2>/dev/null \
+     | grep -q "$PKG_IDENTITY"; then
+  die "'$PKG_IDENTITY' is also in the login keychain; productbuild will prompt.
+  Remove it:  security delete-identity -c '$PKG_IDENTITY' ~/Library/Keychains/login.keychain-db"
+fi
+productbuild --component "$APP" /Applications --keychain "$KEYCHAIN" --sign "$PKG_IDENTITY" "$PKG"
 pkgutil --check-signature "$PKG" | sed 's/^/  /'
 
 step "Done"
