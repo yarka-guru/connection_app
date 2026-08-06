@@ -5,6 +5,7 @@
 #   ./scripts/verify-signing.sh --entitlements
 #   ./scripts/verify-signing.sh --workflow
 #   ./scripts/verify-signing.sh --artifacts App.app Disk.dmg
+#   ./scripts/verify-signing.sh --p12 devid.p12 p12-password.txt
 #
 # Exit 0 = all assertions pass. Exit 1 = at least one failed.
 set -uo pipefail
@@ -112,6 +113,60 @@ check_artifacts() {
   fi
 }
 
+# Apple's SecKeychainItemImport only verifies SHA-1 PKCS#12 MACs. OpenSSL 3.x
+# defaults to a SHA-256 MAC with AES-256-CBC, which it rejects as
+# "MAC verification failed during PKCS12 import (wrong password?)" — a
+# misleading message, since the password is fine. This cost a rolled-back
+# v3.7.8 release on 2026-08-06. Run this before putting a .p12 into
+# APPLE_CERTIFICATE; it fails locally in seconds instead of after a tag.
+check_p12() {
+  local p12="$1" pwfile="$2"
+  echo "Signing certificate bundle:"
+
+  if [ ! -f "$p12" ];    then fail "no such .p12: $p12"; return; fi
+  if [ ! -f "$pwfile" ]; then fail "no such password file: $pwfile"; return; fi
+
+  local pw
+  pw="$(cat "$pwfile")"
+
+  local mac
+  mac="$(openssl pkcs12 -in "$p12" -passin "pass:$pw" -info -nokeys -noout 2>&1 \
+         | sed -n 's/^MAC: *\([a-z0-9]*\).*/\1/p')"
+
+  if [ "$mac" = "sha1" ]; then
+    pass "PKCS#12 MAC is sha1"
+  else
+    fail "PKCS#12 MAC is '${mac:-unreadable}', but Apple only accepts sha1"
+    fail "  rebuild with: -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1"
+  fi
+
+  # The decisive check: does macOS itself accept it? Uses a throwaway keychain
+  # added to the user search list, mirroring what tauri-action does in CI.
+  local kc="/tmp/verify-signing-$$.keychain" orig
+  orig="$(security list-keychains -d user | tr -d '"' | xargs)"
+  security create-keychain -p verifypw "$kc" >/dev/null 2>&1
+  # shellcheck disable=SC2086
+  security list-keychains -d user -s $orig "$kc" >/dev/null 2>&1
+  security unlock-keychain -p verifypw "$kc" >/dev/null 2>&1
+
+  if security import "$p12" -k "$kc" -P "$pw" -T /usr/bin/codesign >/dev/null 2>&1; then
+    pass "macOS security import accepts it"
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k verifypw "$kc" >/dev/null 2>&1
+    if security find-identity -v -p codesigning "$kc" 2>/dev/null \
+         | grep -q "Developer ID Application: Iaroslav Pyrogov (XG4FR287W6)"; then
+      pass "yields a valid Developer ID codesigning identity"
+    else
+      fail "imported, but no valid Developer ID identity — is the G2 intermediate bundled?"
+    fi
+  else
+    fail "macOS security import REJECTS it — CI would fail at the bundling step"
+  fi
+
+  # shellcheck disable=SC2086
+  security list-keychains -d user -s $orig >/dev/null 2>&1
+  security delete-keychain "$kc" >/dev/null 2>&1
+}
+
 case "${1:-}" in
   --entitlements) check_entitlements ;;
   --workflow)     check_workflow ;;
@@ -121,6 +176,13 @@ case "${1:-}" in
       exit 2
     fi
     check_artifacts "$2" "$3"
+    ;;
+  --p12)
+    if [ $# -ne 3 ]; then
+      echo "usage: $0 --p12 <path/to.p12> <path/to/password-file>" >&2
+      exit 2
+    fi
+    check_p12 "$2" "$3"
     ;;
   "")             check_entitlements; echo; check_workflow ;;
   *)              echo "unknown mode: $1" >&2; exit 2 ;;
