@@ -25,6 +25,11 @@ check_entitlements() {
     return
   fi
 
+  # The direct build must not be sandboxed. Enabling app-sandbox repoints $HOME
+  # to ~/Library/Containers/com.connection-app.desktop/Data, hiding every
+  # existing user's ~/.connection-app data with no in-sandbox migration path.
+  # App Sandbox is required only for the Mac App Store build, which will carry
+  # its own Entitlements.mas.plist.
   if /usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" "$plist" >/dev/null 2>&1; then
     fail "com.apple.security.app-sandbox is present"
     fail "  the direct build must NOT be sandboxed — it would repoint \$HOME to a"
@@ -32,6 +37,31 @@ check_entitlements() {
   else
     pass "app-sandbox absent"
   fi
+
+  # The decisive check: actually run codesign against this file.
+  #
+  # On 2026-08-06 this plist carried an explanatory comment ending in
+  # "verify-signing.sh --entitlements." — and "--" is illegal inside an XML
+  # comment, so the file was not well-formed XML. codesign refused it with
+  # "AMFIUnserializeXML: syntax error near line 17" and the release rolled back.
+  #
+  # The trap: `plutil -lint` reports OK on that exact file, and PlistBuddy reads
+  # it fine. Apple's own plist tooling does not catch it. Only a real codesign
+  # run does, which is why this check signs a throwaway binary rather than
+  # linting. Keep this plist comment-free and the problem cannot recur.
+  local probe="/tmp/verify-signing-entitlements-$$"
+  cp /bin/echo "$probe"
+  local out
+  out="$(codesign --force --entitlements "$plist" -s - "$probe" 2>&1)"
+  if grep -q "Failed to parse entitlements" <<<"$out"; then
+    fail "codesign cannot parse the entitlements file:"
+    fail "  ${out}"
+    fail "  note: plutil -lint may still report OK on this file — trust codesign"
+    fail "  a common cause is '--' inside an XML comment, which is illegal XML"
+  else
+    pass "codesign parses the entitlements file"
+  fi
+  rm -f "$probe"
 }
 
 check_workflow() {
