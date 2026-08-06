@@ -60,12 +60,39 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # The App Store Connect key is a file on disk as far as notarization is
+      # concerned, but a secret as far as GitHub is concerned. Bridge the two.
+      # macOS legs only — the Linux legs never notarize.
+      - name: Prepare Apple API key
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$APPLE_API_KEY_P8" ]; then
+            echo "ERROR: APPLE_API_KEY_P8 secret is empty — notarization would"
+            echo "silently produce signed-but-unnotarized builds."
+            exit 1
+          fi
+          mkdir -p "$HOME/private_keys"
+          printf '%s' "$APPLE_API_KEY_P8" > "$HOME/private_keys/AuthKey.p8"
+          chmod 600 "$HOME/private_keys/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code signing. Ignored by the Linux legs.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Notarization via App Store Connect API.
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
         with:
           tagName: v__VERSION__
           releaseName: 'ConnectionApp v__VERSION__'
