@@ -99,7 +99,7 @@ npx @biomejs/biome check --write .  # Lint + auto-fix
 ```
 
 ### Publishing
-- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux ARM64/x64, Windows x64) via `tauri-action` on git tags
+- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux ARM64/x64) via `tauri-action` on git tags. macOS is signed with a Developer ID and notarised; the direct build is deliberately **not** sandboxed (see `docs/superpowers/specs/2026-08-06-macos-signing-and-app-store-design.md`)
 - **Homebrew**: Auto-updated tap via `.github/workflows/update-homebrew.yml`
 
 ## Prerequisites for Running
