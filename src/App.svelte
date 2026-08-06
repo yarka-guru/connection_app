@@ -1,6 +1,7 @@
 <script>
 import { onMount, onDestroy } from 'svelte'
 import { safeTimeout, autoFocus } from './lib/utils.js'
+import { createDemoInvoke } from './lib/demo.js'
 import {
   applyTheme,
   themes,
@@ -57,6 +58,10 @@ let currentTheme = $state('aubergine')
 let currentLightTheme = $state('light')
 let showSettings = $state(false)
 let showSetupScreen = $state(false)
+// Demo mode: sample data, nothing reaches the backend. Reachable before the
+// ~/.aws gate, which is the point — an App Store reviewer has no such folder
+// and would otherwise be stuck on the setup screen (Guideline 2.1).
+let demoMode = $state(false)
 let setupError = $state('')
 let isGrantingAccess = $state(false)
 let showMigrationOffer = $state(false)
@@ -357,6 +362,28 @@ async function finishSetup() {
   showSetupScreen = false
   showMigrationOffer = false
   await continueAfterSetup()
+}
+
+/**
+ * Switch the app to sample data by replacing the single `invoke` reference.
+ * Settings.svelte receives invoke as a prop, so it follows automatically.
+ *
+ * Calls continueAfterSetup(), NOT initApp(). initApp() re-imports the Tauri API
+ * and reassigns `invoke = core.invoke`, which would overwrite the demo
+ * implementation the instant it was installed.
+ */
+async function enterDemoMode() {
+  demoMode = true
+  invoke = createDemoInvoke((message) => {
+    statusMessage = message
+  })
+  showSetupScreen = false
+  showMigrationOffer = false
+  await continueAfterSetup()
+}
+
+function exitDemoMode() {
+  window.location.reload()
 }
 
 async function continueAfterSetup() {
@@ -855,11 +882,28 @@ const isAlreadySaved = $derived(
           {#if setupError}
             <p class="setup-error">{setupError}</p>
           {/if}
+          <div class="demo-entry">
+            <button class="btn-demo" onclick={enterDemoMode}>
+              Explore with sample data
+            </button>
+            <p class="demo-entry-hint">
+              See how ConnectionApp works before configuring AWS. Nothing
+              connects to a real service in this mode.
+            </p>
+          </div>
         {/if}
       </div>
     </div>
   {:else}
     <div class="app-container">
+      {#if demoMode}
+        <div class="demo-banner" role="status">
+          <span class="demo-banner-text">
+            <strong>Demo mode</strong> — sample data only, nothing is connected.
+          </span>
+          <button class="demo-banner-exit" onclick={exitDemoMode}>Exit demo</button>
+        </div>
+      {/if}
       {#if (showUpdateBanner && updateInfo?.updateAvailable) || updateError}
         <div bind:this={updateBannerEl}>
         <UpdateBanner
@@ -950,6 +994,18 @@ const isAlreadySaved = $derived(
           />
         {/if}
 
+
+        {#if !demoMode && !loadingProjects && projects.length === 0}
+          <div class="demo-entry demo-entry-inline">
+            <p class="demo-entry-hint">
+              No projects configured yet. You can try ConnectionApp with sample
+              data first — nothing connects to a real service.
+            </p>
+            <button class="btn-demo" onclick={enterDemoMode}>
+              Explore with sample data
+            </button>
+          </div>
+        {/if}
 
         <ConnectionForm
           projects={filteredProjects}
@@ -1532,6 +1588,89 @@ const isAlreadySaved = $derived(
     font-size: 0.8rem;
     color: var(--text-muted);
     line-height: 1.5;
+  }
+
+  .demo-entry {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-demo {
+    padding: 10px 24px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: transparent;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.18));
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+  }
+
+  .btn-demo:hover {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+    border-color: var(--border-strong, rgba(255, 255, 255, 0.3));
+  }
+
+  /* The setup-screen entry is only reachable in a sandboxed (App Store) build.
+     This inline one is what a new user of the direct build sees, which is what
+     makes demo mode an ordinary feature rather than a reviewer-only path. */
+  .demo-entry-inline {
+    margin: 0 0 16px;
+    padding: 16px;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+    border-radius: 12px;
+    background: var(--bg-card, rgba(255, 255, 255, 0.03));
+  }
+
+  .demo-entry-hint {
+    margin: 0;
+    max-width: 320px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    text-align: center;
+  }
+
+  .demo-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    padding: 10px 16px;
+    border: 1px solid #d4a853;
+    border-radius: 10px;
+    background: rgba(212, 168, 83, 0.12);
+  }
+
+  .demo-banner-text {
+    font-size: 0.82rem;
+    /* #e8d5a8 on the banner's translucent amber sits well above 4.5:1 */
+    color: #e8d5a8;
+  }
+
+  .demo-banner-exit {
+    padding: 5px 14px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: #e8d5a8;
+    background: transparent;
+    border: 1px solid rgba(212, 168, 83, 0.6);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+  }
+
+  .demo-banner-exit:hover {
+    background: rgba(212, 168, 83, 0.2);
+    border-color: #d4a853;
   }
 
   .btn-grant {
