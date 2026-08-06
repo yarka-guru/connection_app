@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "category": "DeveloperTool",
+    "copyright": "Copyright © 2023-2026 Iaroslav Pyrogov. All rights reserved.",
+    "targets": ["app"],
+    "macOS": {
+      "entitlements": "./Entitlements.mas.plist"
+    }
+  },
+  "plugins": {}
+}
