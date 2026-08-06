@@ -1,16 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the DIRECT distribution build (GitHub Releases, Homebrew),
+  signed with Developer ID and notarized.
+
+  App Sandbox is deliberately absent. It is not required for Developer ID
+  distribution, and enabling it would repoint $HOME to
+  ~/Library/Containers/com.connection-app.desktop/Data — making every existing
+  user's ~/.connection-app projects, saved connections and history invisible,
+  with no way to migrate them from inside the sandbox.
+
+  The Mac App Store build will use Entitlements.mas.plist instead, where the
+  sandbox IS mandatory. sandbox.rs detects which case applies at runtime via
+  sandbox::is_sandboxed(), so one codebase serves both.
+
+  Verified by scripts/verify-signing.sh --entitlements.
+-->
 <plist version="1.0">
-<dict>
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
-    <key>com.apple.security.network.client</key>
-    <true/>
-    <key>com.apple.security.network.server</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-    <key>com.apple.security.files.bookmarks.app-scope</key>
-    <true/>
-</dict>
+<dict/>
 </plist>
