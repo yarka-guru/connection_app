@@ -132,11 +132,14 @@ try {
   const testCanvas = createCanvas(1, 1)
   testCanvas.getContext('2d')
 
-  // Generate icons at different sizes
+  // Generate icons at different sizes.
+  // icon-1024.png is not bundled with the app — it is uploaded to App Store
+  // Connect, which rejects submissions without a 1024x1024 icon.
   const sizes = {
     '32x32.png': 32,
     '128x128.png': 128,
     '128x128@2x.png': 256,
+    'icon-1024.png': 1024,
   }
 
   for (const [filename, size] of Object.entries(sizes)) {
@@ -144,30 +147,44 @@ try {
     fs.writeFileSync(path.join(iconsDir, filename), buffer)
   }
 
-  // For .icns and .ico, we need the 256px version as base
-  // Create a simple version for now
   const icon256 = createIcon(256)
 
-  // Create ICNS (just use PNG for now - macOS accepts PNG in icns)
-  const icnsHeader = Buffer.from([
-    0x69,
-    0x63,
-    0x6e,
-    0x73, // 'icns' magic
-    0x00,
-    0x00,
-    0x00,
-    0x00, // Total size (will be filled in)
-  ])
+  // Build the ICNS with every representation macOS asks for.
+  //
+  // This file used to hold ic08 alone (256x256). The Mac App Store derives a
+  // macOS app's Store icon from the .icns inside the uploaded bundle — there is
+  // no separate upload field as there is for iOS — and it requires the 1024x1024
+  // representation, ic10. Without it the submission is rejected.
+  //
+  // ICNS is a flat sequence of typed chunks: 4-byte type, 4-byte big-endian
+  // length that counts its own 8-byte header, then the payload. macOS accepts
+  // PNG payloads for all of these types.
+  const icnsEntries = [
+    ['ic07', 128], // 128x128
+    ['ic08', 256], // 256x256
+    ['ic09', 512], // 512x512
+    ['ic10', 1024], // 1024x1024 — 512@2x, required by the Mac App Store
+    ['ic11', 32], // 16x16@2x
+    ['ic12', 64], // 32x32@2x
+    ['ic13', 256], // 128x128@2x
+    ['ic14', 512], // 256x256@2x
+  ]
 
-  const ic08Type = Buffer.from([0x69, 0x63, 0x30, 0x38]) // 'ic08' (256x256 PNG)
-  const ic08Size = Buffer.alloc(4)
-  ic08Size.writeUInt32BE(8 + icon256.length, 0)
+  const icnsChunks = []
+  for (const [type, size] of icnsEntries) {
+    const png = size === 256 ? icon256 : createIcon(size)
+    const header = Buffer.alloc(8)
+    header.write(type, 0, 4, 'ascii')
+    header.writeUInt32BE(8 + png.length, 4)
+    icnsChunks.push(header, png)
+  }
 
-  const totalSize = 8 + 4 + 4 + icon256.length
-  icnsHeader.writeUInt32BE(totalSize, 4)
+  const icnsBody = Buffer.concat(icnsChunks)
+  const icnsHeader = Buffer.alloc(8)
+  icnsHeader.write('icns', 0, 4, 'ascii')
+  icnsHeader.writeUInt32BE(8 + icnsBody.length, 4)
 
-  const icnsFile = Buffer.concat([icnsHeader, ic08Type, ic08Size, icon256])
+  const icnsFile = Buffer.concat([icnsHeader, icnsBody])
   fs.writeFileSync(path.join(iconsDir, 'icon.icns'), icnsFile)
 
   // Create a simple ICO file
@@ -193,42 +210,16 @@ try {
 
   const icoFile = Buffer.concat([icoHeader, dirEntry, icon32])
   fs.writeFileSync(path.join(iconsDir, 'icon.ico'), icoFile)
-} catch (_err) {
-  // Create minimal placeholder PNGs
-  const minimalPng = Buffer.from([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
-    0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
-    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-  ])
-
-  const pngFiles = ['32x32.png', '128x128.png', '128x128@2x.png']
-  for (const file of pngFiles) {
-    fs.writeFileSync(path.join(iconsDir, file), minimalPng)
-  }
-
-  // Create minimal .icns and .ico
-  const icnsHeader = Buffer.from([
-    0x69, 0x63, 0x6e, 0x73, 0x00, 0x00, 0x00, 0x00,
-  ])
-  const icp4Type = Buffer.from([0x69, 0x63, 0x70, 0x34])
-  const icp4Size = Buffer.alloc(4)
-  icp4Size.writeUInt32BE(8 + minimalPng.length, 0)
-  const totalSize = 8 + 4 + 4 + minimalPng.length
-  icnsHeader.writeUInt32BE(totalSize, 4)
-  const icnsFile = Buffer.concat([icnsHeader, icp4Type, icp4Size, minimalPng])
-  fs.writeFileSync(path.join(iconsDir, 'icon.icns'), icnsFile)
-
-  const icoHeader = Buffer.alloc(22)
-  icoHeader.writeUInt16LE(0, 0)
-  icoHeader.writeUInt16LE(1, 2)
-  icoHeader.writeUInt16LE(1, 4)
-  icoHeader.writeUInt8(1, 6)
-  icoHeader.writeUInt8(1, 7)
-  icoHeader.writeUInt32LE(minimalPng.length, 14)
-  icoHeader.writeUInt32LE(22, 18)
-  const icoFile = Buffer.concat([icoHeader, minimalPng])
-  fs.writeFileSync(path.join(iconsDir, 'icon.ico'), icoFile)
+} catch (err) {
+  // This used to overwrite every icon with a 1x1 transparent PNG so the script
+  // could "succeed" without canvas. That is worse than failing: a developer
+  // running it on a machine where the native canvas build is broken would
+  // silently destroy the real icons and only find out when a build shipped
+  // blank. Fail loudly instead and leave the existing files alone.
+  console.error('Icon generation failed — existing icons left untouched.')
+  console.error(`Reason: ${err.message}`)
+  console.error('')
+  console.error('The `canvas` package needs a working native build.')
+  console.error('Try: npm install --save-dev canvas')
+  process.exit(1)
 }
