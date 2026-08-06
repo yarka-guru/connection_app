@@ -125,7 +125,12 @@ APP="src-tauri/target/$TARGET/release/bundle/macos/ConnectionApp.app"
 [ -d "$APP" ] || die "no app bundle at $APP"
 
 step "Embedding the provisioning profile"
-cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+# `cat >` rather than `cp`: the archived profile was downloaded through a
+# browser and carries com.apple.quarantine, and cp brings extended attributes
+# along. Apple rejects any package containing a quarantined file —
+# ITMS-91109, which is exactly how the first upload died. Redirecting through a
+# new file inherits nothing.
+cat "$PROFILE" > "$APP/Contents/embedded.provisionprofile"
 # The archived profile is mode 600, and cp carries that across. Inside a package
 # installed to /Applications as root, a 600 file is unreadable by the user
 # running the app, which breaks signature verification. altool rejects it:
@@ -140,6 +145,40 @@ if [ -n "$UNREADABLE" ]; then
   echo "$UNREADABLE" | sed 's/^/  fixing perms: /'
   find "$APP" -type f ! -perm -o+r -exec chmod o+r {} +
 fi
+
+step "Stripping extended attributes"
+# Must happen before signing — clearing xattrs afterwards invalidates the
+# signature. Apple rejects a package if any file carries com.apple.quarantine
+# (ITMS-91109).
+# `xattr -cr` is not portable — the xattr on this macOS has no -r and exits 64.
+# Clear each entry explicitly instead, directories included.
+find "$APP" -exec xattr -c {} + 2>/dev/null || true
+QUARANTINED="$(find "$APP" -exec sh -c 'xattr "$1" 2>/dev/null | grep -q quarantine && echo "$1"' _ {} \; 2>/dev/null || true)"
+if [ -n "$QUARANTINED" ]; then
+  echo "$QUARANTINED" | sed 's/^/  still quarantined: /'
+  die "quarantine attributes survived; Apple will reject the package"
+fi
+echo "  no quarantine attributes remain"
+
+step "Setting the build number"
+# App Store Connect consumes a build number even when the delivery later fails
+# processing, so a retry with the same CFBundleVersion is refused as a
+# duplicate — and the replacement must compare HIGHER than the consumed one.
+#
+# CFBundleVersion must be at most three period-separated integers (error 90257),
+# so it cannot simply have a suffix appended. Set MAS_BUILD to the full value,
+# e.g. MAS_BUILD=3.7.9 after 3.7.8 was consumed. CFBundleShortVersionString —
+# the version users see — is left alone.
+INFO="$APP/Contents/Info.plist"
+SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
+if [ -n "${MAS_BUILD:-}" ]; then
+  case "$MAS_BUILD" in
+    [0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*|[0-9]*) ;;
+    *) die "MAS_BUILD must be up to three dot-separated integers, got '$MAS_BUILD'" ;;
+  esac
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MAS_BUILD" "$INFO"
+fi
+echo "  version $SHORT_VERSION, build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")"
 
 step "Preparing a signing keychain"
 P12_PW="$(cat "$CREDS/mas-p12-password.txt")"
