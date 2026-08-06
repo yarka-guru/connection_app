@@ -88,6 +88,17 @@ check_workflow() {
   else
     fail "nothing writes APPLE_API_KEY_P8 to a file; APPLE_API_KEY_PATH would dangle"
   fi
+
+  # Tauri notarizes the .app but ships it inside a DMG it only signs. Gatekeeper
+  # checks the DMG too when a user opens a downloaded one, so the DMG needs its
+  # own notarytool submission. v3.7.8 shipped with the .app "accepted /
+  # Notarized Developer ID" and the .dmg "rejected / Unnotarized Developer ID".
+  if grep -q "notarytool submit" "$wf"; then
+    pass "the DMG is submitted to notarytool separately"
+  else
+    fail "no notarytool submission for the DMG — Tauri only notarizes the .app,"
+    fail "  so downloaded disk images would be rejected by Gatekeeper"
+  fi
 }
 
 check_artifacts() {

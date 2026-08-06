@@ -102,6 +102,54 @@ jobs:
           includeUpdaterJson: false
           args: --target ${{ matrix.rust_target }}
 
+      # Tauri notarizes and staples the .app, then wraps it in a DMG that it
+      # signs but never submits. Gatekeeper checks the DMG itself when a user
+      # opens a downloaded one, and an unnotarized DMG is rejected with
+      # "Apple cannot check it for malicious software" — even though the app
+      # inside is fine. Verified on v3.7.8: the .app came back
+      # "accepted / Notarized Developer ID" while the .dmg was
+      # "rejected / Unnotarized Developer ID".
+      - name: Notarize and staple the DMG
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REF: ${{ github.ref }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          DMG_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg"
+
+          DMG=""
+          for f in "$DMG_DIR"/*.dmg; do
+            [ -f "$f" ] && DMG="$f" && break
+          done
+          if [ -z "$DMG" ]; then
+            echo "ERROR: no .dmg found in $DMG_DIR"
+            find "src-tauri/target/${{ matrix.rust_target }}/release/bundle" -type f | head -20
+            exit 1
+          fi
+          echo "Notarizing: $DMG"
+
+          xcrun notarytool submit "$DMG" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+          # Prove it before publishing. A stapled ticket that fails validation
+          # is worse than none, because it looks done.
+          xcrun stapler validate "$DMG"
+          if ! spctl -a -vvv -t install "$DMG" 2>&1 | grep -q "source=Notarized Developer ID"; then
+            echo "ERROR: dmg still not accepted as notarized after stapling"
+            spctl -a -vvv -t install "$DMG" 2>&1
+            exit 1
+          fi
+
+          gh release upload "v${VERSION}" "$DMG" --clobber --repo "${{ github.repository }}"
+
       - name: Build CLI binary
         shell: bash
         run: |
