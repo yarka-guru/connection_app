@@ -313,7 +313,6 @@ jobs:
           | macOS (Intel) | `.dmg` |
           | Linux (x86_64) | `.deb`, `.rpm`, `.AppImage` |
           | Linux (ARM64) | `.deb`, `.AppImage` |
-          | Windows | `.exe` (NSIS), `.msi` |
 
           ## Updating
 

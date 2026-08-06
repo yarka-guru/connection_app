@@ -81,8 +81,7 @@ brew install connection-app-cli
 ```
 
 Pre-built binaries are also published as GitHub Release assets per target:
-`connection-app-cli-{aarch64,x86_64}-{apple-darwin,unknown-linux-gnu}.tar.gz`
-and `connection-app-cli-x86_64-pc-windows-msvc.zip`.
+`connection-app-cli-{aarch64,x86_64}-{apple-darwin,unknown-linux-gnu}.tar.gz`.
 
 ### Linux — direct `.deb`
 
@@ -96,13 +95,6 @@ sudo dpkg -i "ConnectionApp_${VERSION}_${ARCH}.deb"
 
 The `.deb` ships the desktop app only; install `connection-app-cli` separately
 via Homebrew or the per-target tarball asset above.
-
-### Windows
-
-Download the `.msi` or `.exe` installer from
-[GitHub Releases](https://github.com/yarka-guru/connection_app/releases). The
-CLI is published as a separate `connection-app-cli-x86_64-pc-windows-msvc.zip`
-asset on the same release.
 
 ## Usage
 
@@ -355,8 +347,8 @@ The native WebSocket tunnel implements the SSM port forwarding protocol in pure 
 
 ## Publishing
 
-- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux ARM64/x64, Windows x64) via `tauri-action` on git tags
-- **CLI**: Per-target binaries for the same five platforms, built with `--no-default-features` and uploaded as `connection-app-cli-{target}.{tar.gz,zip}` release assets
+- **Desktop**: Multi-platform builds (macOS ARM64/x64, Linux ARM64/x64) via `tauri-action` on git tags. macOS builds are signed with a Developer ID and notarised by Apple
+- **CLI**: Per-target binaries for the same four platforms, built with `--no-default-features` and uploaded as `connection-app-cli-{target}.tar.gz` release assets
 - **Homebrew**: Auto-updated tap via GitHub Actions — publishes the macOS cask, the Linux GUI formula, and a cross-platform `connection-app-cli` formula. The cask and Linux formula `depends_on` the CLI formula so a single `brew install` brings both
 
 ## License

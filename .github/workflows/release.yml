@@ -26,9 +26,6 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
           - platform: ubuntu-22.04-arm
             rust_target: aarch64-unknown-linux-gnu
-          # Windows builds remain disabled — re-enable to resume Windows releases.
-          # - platform: windows-latest
-          #   rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -93,13 +90,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           BIN_DIR="src-tauri/target/${TARGET}/release"
-          if [[ "${TARGET}" == *"windows"* ]]; then
-            ARCHIVE="connection-app-cli-${TARGET}.zip"
-            (cd "${BIN_DIR}" && 7z a "${OLDPWD}/${ARCHIVE}" connection-app-cli.exe)
-          else
-            ARCHIVE="connection-app-cli-${TARGET}.tar.gz"
-            tar -czf "${ARCHIVE}" -C "${BIN_DIR}" connection-app-cli
-          fi
+          ARCHIVE="connection-app-cli-${TARGET}.tar.gz"
+          tar -czf "${ARCHIVE}" -C "${BIN_DIR}" connection-app-cli
           gh release upload "v${VERSION}" "${ARCHIVE}" --clobber --repo "${{ github.repository }}"
 
       - name: Sign updater artifact and save signature
@@ -112,9 +104,9 @@ jobs:
           BUNDLE="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
 
           # Find the updater artifact — must match what generate-update-json.js URLs point to:
-          # macOS: .app.tar.gz, Linux: .AppImage, Windows: -setup.exe
+          # macOS: .app.tar.gz, Linux: .AppImage
           UPDATER_FILE=""
-          for f in "$BUNDLE"/macos/*.app.tar.gz "$BUNDLE"/appimage/*.AppImage "$BUNDLE"/nsis/*-setup.exe; do
+          for f in "$BUNDLE"/macos/*.app.tar.gz "$BUNDLE"/appimage/*.AppImage; do
             if [ -f "$f" ]; then
               UPDATER_FILE="$f"
               break
@@ -128,7 +120,7 @@ jobs:
           # exited 0, so the job stayed green while Linux auto-update was dead).
           if [ -z "$UPDATER_FILE" ]; then
             echo "ERROR: No updater artifact found for ${{ matrix.rust_target }}"
-            echo "Expected one of: *.app.tar.gz (macOS), *.AppImage (Linux), *-setup.exe (Windows)"
+            echo "Expected one of: *.app.tar.gz (macOS), *.AppImage (Linux)"
             echo "Bundle contents:"
             find "$BUNDLE" -type f 2>/dev/null | head -20
             exit 1

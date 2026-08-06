@@ -40,7 +40,6 @@ const TARGET_TO_PLATFORM = {
   'x86_64-apple-darwin': 'darwin-x86_64',
   'x86_64-unknown-linux-gnu': 'linux-x86_64',
   'aarch64-unknown-linux-gnu': 'linux-aarch64',
-  'x86_64-pc-windows-msvc': 'windows-x86_64',
 }
 
 // Read signatures from CI artifacts (named by rust target: <target>.sig)
@@ -66,7 +65,6 @@ const macAarch64 = `${productName}_aarch64.app.tar.gz`
 const macX64 = `${productName}_x64.app.tar.gz`
 const linuxAmd64 = `${productName}_${version}_amd64.AppImage`
 const linuxAarch64 = `${productName}_${version}_aarch64.AppImage`
-const windowsX64 = `${productName}_${version}_x64-setup.exe`
 
 const updateManifest = {
   version: version,
@@ -88,10 +86,6 @@ const updateManifest = {
     'linux-aarch64': {
       url: `${releaseUrl}/${linuxAarch64}`,
       signature: signatures['linux-aarch64'] || '',
-    },
-    'windows-x86_64': {
-      url: `${releaseUrl}/${windowsX64}`,
-      signature: signatures['windows-x86_64'] || '',
     },
   },
 }
