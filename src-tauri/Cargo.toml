@@ -74,6 +74,10 @@ socket2 = "0.6"
 env_logger = "0.11"
 
 [features]
-default = ["gui"]
-gui = ["tauri", "tauri-build", "tauri-plugin-store", "tauri-plugin-opener", "tauri-plugin-updater", "tauri-plugin-dialog", "tauri-plugin-notification", "custom-protocol"]
+default = ["gui", "updater"]
+gui = ["tauri", "tauri-build", "tauri-plugin-store", "tauri-plugin-opener", "tauri-plugin-dialog", "tauri-plugin-notification", "custom-protocol"]
+# Self-update. On by default; the Mac App Store build omits it, because
+# Guideline 2.4.5(iv) forbids an app downloading and installing its own code and
+# Apple scans binaries for the plugin.
+updater = ["tauri-plugin-updater"]
 custom-protocol = ["tauri/custom-protocol"]

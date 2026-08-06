@@ -36,6 +36,10 @@ let updateInfo = $state(null)
 let showUpdateBanner = $state(true)
 let updateBannerEl = $state(null)
 let currentVersion = $state('')
+// False in Mac App Store builds, where the updater plugin is compiled out —
+// Guideline 2.4.5(iv) forbids an app installing its own code. Gates every
+// update control so Store users never see a button that cannot work.
+let updaterEnabled = $state(true)
 let connectingId = $state(null) // Track which saved connection is being connected
 let showSavePrompt = $state(false)
 let lastConnectedConfig = $state(null)
@@ -266,15 +270,17 @@ async function setupListenersAndLoad() {
 
   // Load saved data + version with timeout
   try {
-    const [savedResult, versionResult] = await withTimeout(
+    const [savedResult, versionResult, updaterResult] = await withTimeout(
       Promise.all([
         invoke('load_saved_connections'),
         invoke('get_current_version'),
+        invoke('is_updater_enabled'),
       ]),
       5000,
     )
     savedConnections = savedResult
     currentVersion = versionResult
+    updaterEnabled = updaterResult
   } catch (_err) {
     // Non-fatal: app works without saved data
   }
@@ -395,6 +401,7 @@ async function checkForUpdates() {
   if (isCheckingUpdates) return
   isCheckingUpdates = true
   updateCheckMessage = ''
+  if (!updaterEnabled) return
   try {
     updateInfo = await invoke('check_for_updates')
     if (updateInfo?.updateAvailable) {
@@ -673,6 +680,7 @@ async function handleInstallUpdate() {
   updateError = null
   updateProgress = null
 
+  if (!updaterEnabled) return
   try {
     await invoke('install_update')
     // App should auto-restart and never reach here, but just in case:
@@ -1010,14 +1018,16 @@ const isAlreadySaved = $derived(
               <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2"/>
             </svg>
           </button>
-          <button class="check-updates-btn" onclick={checkForUpdates} disabled={isCheckingUpdates}>
-            {#if isCheckingUpdates}
-              <span class="btn-spinner"></span>
-              Checking...
-            {:else}
-              Check for Updates
-            {/if}
-          </button>
+          {#if updaterEnabled}
+            <button class="check-updates-btn" onclick={checkForUpdates} disabled={isCheckingUpdates}>
+              {#if isCheckingUpdates}
+                <span class="btn-spinner"></span>
+                Checking...
+              {:else}
+                Check for Updates
+              {/if}
+            </button>
+          {/if}
         </div>
       </footer>
     </div>

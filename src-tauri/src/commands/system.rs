@@ -3,17 +3,23 @@ use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
 use crate::sandbox::{self, AwsDirAccess, SandboxStatus};
 use crate::tunnel::manager::TunnelManager;
+// Only UpdateInfo derives these, and only the updater emits progress events.
+#[cfg(feature = "updater")]
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "updater")]
+use tauri::Emitter;
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
 pub type AwsDirState = Arc<std::sync::RwLock<Option<AwsDirAccess>>>;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(feature = "updater")]
 const GITHUB_REPO: &str = "https://github.com/yarka-guru/connection_app";
 
+#[cfg(feature = "updater")]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateInfo {
     #[serde(rename = "updateAvailable")]
@@ -79,6 +85,7 @@ fn detect_linux_install_method() -> LinuxInstallMethod {
     LinuxInstallMethod::Unknown
 }
 
+#[cfg(feature = "updater")]
 fn get_install_method() -> String {
     #[cfg(target_os = "linux")]
     {
@@ -90,6 +97,7 @@ fn get_install_method() -> String {
     }
 }
 
+#[cfg(feature = "updater")]
 #[tauri::command]
 pub async fn check_for_updates(app_handle: AppHandle) -> Result<UpdateInfo, AppError> {
     use tauri_plugin_updater::UpdaterExt;
@@ -290,6 +298,7 @@ fn which_brew() -> Option<String> {
     None
 }
 
+#[cfg(feature = "updater")]
 #[tauri::command]
 pub async fn install_update(app_handle: AppHandle) -> Result<(), AppError> {
     #[cfg(target_os = "linux")]
@@ -651,4 +660,18 @@ pub async fn get_connection_history(
 pub async fn clear_connection_history() -> Result<(), AppError> {
     history::clear_history().await;
     Ok(())
+}
+
+/// Whether this build can update itself.
+///
+/// False in Mac App Store builds: Guideline 2.4.5(iv) forbids an app
+/// downloading and installing its own code, so the updater plugin is compiled
+/// out entirely there. The frontend uses this to hide update controls rather
+/// than offer a button that cannot work.
+///
+/// Deliberately not feature-gated — the frontend must be able to ask in either
+/// build.
+#[tauri::command]
+pub fn is_updater_enabled() -> bool {
+    cfg!(feature = "updater")
 }

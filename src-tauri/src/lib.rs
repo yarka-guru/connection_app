@@ -22,12 +22,17 @@ pub fn run() {
         .format_timestamp_millis()
         .init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+
+    // Absent from Mac App Store builds — see the `updater` feature in Cargo.toml.
+    #[cfg(feature = "updater")]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::default().build());
+
+    builder
         .setup(|app| {
             // Migrate legacy ~/.rds-ssm-connect/ → ~/.connection-app/ on first launch
             config::projects::migrate_legacy_config();
@@ -105,8 +110,11 @@ pub fn run() {
             // Tray commands
             commands::tray::refresh_tray_menu,
             // System commands
+            #[cfg(feature = "updater")]
             commands::system::check_for_updates,
+            #[cfg(feature = "updater")]
             commands::system::install_update,
+            commands::system::is_updater_enabled,
             commands::system::get_current_version,
             commands::system::open_url,
             commands::system::quit_app,
