@@ -19,7 +19,11 @@ CREDS="$HOME/Documents/09 - Security & Recovery/Apple Developer ID"
 PROFILE="$CREDS/ConnectionApp_MAS.provisionprofile"
 APP_IDENTITY="Apple Distribution: Iaroslav Pyrogov (XG4FR287W6)"
 PKG_IDENTITY="3rd Party Mac Developer Installer: Iaroslav Pyrogov (XG4FR287W6)"
-TARGET="${MAS_TARGET:-aarch64-apple-darwin}"
+# Universal by default. App Store Connect rejects an arm64-only build unless
+# the deployment target is macOS 12+ (error 90869), and the direct distribution
+# already supports Intel — shipping an Apple-silicon-only Store build would be a
+# narrowing no user asked for.
+TARGET="${MAS_TARGET:-universal-apple-darwin}"
 API_KEY_ID="GBQH68KN3W"
 API_ISSUER="799a6169-6e5d-4fc9-bac6-38993ccf145e"
 
@@ -80,21 +84,62 @@ if [ -f "$CAP" ]; then
 fi
 
 step "Building without the updater feature"
+# Compile and bundle are separate steps here for one reason: Tauri's universal
+# build lipos the main binary but not the second one. The bundler then dies with
+# `connection-app-cli does not exist`, because the app bundle ships both. So
+# compile first, lipo the CLI by hand, then bundle.
+#
 # --no-sign because Tauri cannot embed a provisioning profile; this script signs
 # afterwards. Everything after `--` goes to cargo.
 npx tauri build \
   --target "$TARGET" \
-  --bundles app \
   --config src-tauri/tauri.mas.conf.json \
+  --no-bundle \
   --no-sign \
   -- --no-default-features --features gui
+
+if [ "$TARGET" = "universal-apple-darwin" ]; then
+  step "Producing a universal connection-app-cli"
+  CLI_UNIVERSAL="src-tauri/target/universal-apple-darwin/release/connection-app-cli"
+  if [ ! -f "$CLI_UNIVERSAL" ]; then
+    for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+      [ -f "src-tauri/target/$arch/release/connection-app-cli" ] \
+        || die "missing CLI slice for $arch"
+    done
+    lipo -create \
+      "src-tauri/target/aarch64-apple-darwin/release/connection-app-cli" \
+      "src-tauri/target/x86_64-apple-darwin/release/connection-app-cli" \
+      -output "$CLI_UNIVERSAL"
+  fi
+  lipo -archs "$CLI_UNIVERSAL" | sed 's/^/  CLI architectures: /'
+fi
+
+step "Bundling"
+npx tauri bundle \
+  --target "$TARGET" \
+  --bundles app \
+  --config src-tauri/tauri.mas.conf.json \
+  --no-sign
 
 APP="src-tauri/target/$TARGET/release/bundle/macos/ConnectionApp.app"
 [ -d "$APP" ] || die "no app bundle at $APP"
 
 step "Embedding the provisioning profile"
 cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
-echo "  embedded.provisionprofile written"
+# The archived profile is mode 600, and cp carries that across. Inside a package
+# installed to /Applications as root, a 600 file is unreadable by the user
+# running the app, which breaks signature verification. altool rejects it:
+# "The installer package includes files that are only readable by the root
+# user" (90255).
+chmod 644 "$APP/Contents/embedded.provisionprofile"
+echo "  embedded.provisionprofile written (0644)"
+
+# Nothing in a shipped bundle may be unreadable by other users.
+UNREADABLE="$(find "$APP" -type f ! -perm -o+r 2>/dev/null || true)"
+if [ -n "$UNREADABLE" ]; then
+  echo "$UNREADABLE" | sed 's/^/  fixing perms: /'
+  find "$APP" -type f ! -perm -o+r -exec chmod o+r {} +
+fi
 
 step "Preparing a signing keychain"
 P12_PW="$(cat "$CREDS/mas-p12-password.txt")"
@@ -127,12 +172,26 @@ echo "  identities imported and usable"
 step "Signing"
 # Sign nested executables first, then the bundle. --deep is deprecated by Apple
 # and silently mis-signs nested content.
+#
+# Nested binaries get the inherit entitlements, NOT the app's. Signing them with
+# com.apple.application-identifier makes altool warn that a nested executable
+# carries an application identifier without a matching provisioning profile
+# (90885), which disqualifies the build from TestFlight — the one way to
+# exercise the sandbox path before release. app-sandbox + inherit is what a
+# helper executable is supposed to carry.
+MAIN_BIN="$APP/Contents/MacOS/connection-app"
 while IFS= read -r -d '' f; do
+  [ "$f" = "$MAIN_BIN" ] && continue
   echo "  nested: $(basename "$f")"
   codesign --force --timestamp --options runtime \
-    --entitlements src-tauri/Entitlements.mas.plist \
+    --entitlements src-tauri/Entitlements.mas.inherit.plist \
     --keychain "$KEYCHAIN" --sign "$APP_IDENTITY" "$f"
 done < <(find "$APP/Contents/MacOS" -type f -perm +111 -print0)
+
+echo "  main: $(basename "$MAIN_BIN")"
+codesign --force --timestamp --options runtime \
+  --entitlements src-tauri/Entitlements.mas.plist \
+  --keychain "$KEYCHAIN" --sign "$APP_IDENTITY" "$MAIN_BIN"
 
 codesign --force --timestamp \
   --entitlements src-tauri/Entitlements.mas.plist \
@@ -156,6 +215,14 @@ if security find-identity -v ~/Library/Keychains/login.keychain-db 2>/dev/null \
 fi
 productbuild --component "$APP" /Applications --keychain "$KEYCHAIN" --sign "$PKG_IDENTITY" "$PKG"
 pkgutil --check-signature "$PKG" | sed 's/^/  /'
+
+step "Validating with App Store Connect"
+# Always validate before offering to upload. The first attempt here was rejected
+# for three things no local check catches: an arm64-only slice (90869), a
+# root-only-readable file (90255), and a signature with no application
+# identifier (90886). Validation is free; a rejected upload is not.
+xcrun altool --validate-app -f "$PKG" -t macos \
+  --apiKey "$API_KEY_ID" --apiIssuer "$API_ISSUER" 2>&1 | tail -5 | sed 's/^/  /'
 
 step "Done"
 echo "  $PKG"
