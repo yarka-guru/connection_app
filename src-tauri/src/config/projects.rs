@@ -231,23 +231,17 @@ pub fn get_profiles_for_project(
             .collect()
     };
 
-    // Further restrict to profiles matching an envPortMapping suffix
-    if !project_config.env_port_mapping.is_empty() {
-        let mut suffixes: Vec<&String> = project_config.env_port_mapping.keys().collect();
-        suffixes.sort_by_key(|s| std::cmp::Reverse(s.len()));
-
-        filtered
-            .into_iter()
-            .filter(|env| {
-                suffixes
-                    .iter()
-                    .any(|suffix| env.ends_with(suffix.as_str()) || env.as_str() == suffix.as_str())
-            })
-            .cloned()
-            .collect()
-    } else {
-        filtered.into_iter().cloned().collect()
-    }
+    // envPortMapping is a per-profile port override, not a whitelist. It used to
+    // additionally filter this list, which meant adding an AWS profile through
+    // the UI left it invisible until envPortMapping was hand-edited in
+    // projects.json — a file the UI never asks anyone to open, and a rule
+    // nothing in the UI stated. get_local_port already falls back to
+    // default_port for an unmapped profile; the extra filtering made that
+    // branch unreachable.
+    //
+    // profileFilter is the mechanism for deciding which profiles belong to a
+    // project.
+    filtered.into_iter().cloned().collect()
 }
 
 /// Get local port number based on environment suffix matching.
@@ -329,5 +323,50 @@ mod tests {
     fn test_bastion_pattern_empty_string_falls_back() {
         let config = test_config(Some(String::new()));
         assert_eq!(config.bastion_pattern(), "*bastion*");
+    }
+
+    /// A profile that matches the project's profileFilter must be listed even
+    /// when no envPortMapping key matches it. Reported from the field: adding a
+    /// new AWS profile through the UI left it invisible, and the only remedy was
+    /// hand-editing envPortMapping in projects.json — a file the UI never asks
+    /// you to touch.
+    ///
+    /// The port mapping is a per-profile port override, which is exactly what
+    /// the Settings UI calls it. get_local_port already falls back to
+    /// default_port for an unmapped profile; treating the mapping as a
+    /// whitelist made that branch unreachable.
+    #[test]
+    fn profile_without_port_mapping_is_still_listed() {
+        let mut config = test_config(None);
+        config.profile_filter = Some("covered".to_string());
+        config.env_port_mapping =
+            HashMap::from([("covered".to_string(), "5460".to_string())]);
+
+        let all = vec![
+            "covered".to_string(),
+            "covered-dev".to_string(),
+            "other-account".to_string(),
+        ];
+        let configs = HashMap::from([("covered".to_string(), config.clone())]);
+
+        let listed = get_profiles_for_project(&all, &config, &configs);
+
+        assert!(
+            listed.contains(&"covered-dev".to_string()),
+            "covered-dev matches profileFilter and must be listed; got {listed:?}"
+        );
+        assert!(listed.contains(&"covered".to_string()));
+        assert!(!listed.contains(&"other-account".to_string()));
+    }
+
+    /// An unmapped profile falls back to default_port rather than being dropped.
+    #[test]
+    fn unmapped_profile_uses_default_port() {
+        let mut config = test_config(None);
+        config.env_port_mapping =
+            HashMap::from([("covered".to_string(), "5460".to_string())]);
+
+        assert_eq!(get_local_port("covered-dev", &config), "5432");
+        assert_eq!(get_local_port("covered", &config), "5460");
     }
 }
