@@ -716,14 +716,14 @@ Done in `yarka-guru/landing` — the page is served by the existing CloudFront
 on merge to `main` there. If the policy text changes, edit both
 `page/connection-app/privacy/index.html` (canonical) and `PRIVACY.md`.
 
-- [ ] **Step 2: Verify both URLs resolve publicly**
+- [x] **Step 2: Verify both URLs resolve publicly**
 
 ```bash
 curl -sSf -o /dev/null -w "privacy: %{http_code}\n" https://yarka.guru/connection-app/privacy/
 curl -sSf -o /dev/null -w "support: %{http_code}\n" https://github.com/yarka-guru/connection_app/issues
 ```
 
-Expected: `200` for both. Check in a private browser window too — a URL that works only while signed in will fail review. The privacy URL returns `404` until landing PR #20 is merged and deployed.
+Expected: `200` for both. Check in a private browser window too — a URL that works only while signed in will fail review. Verified 2026-08-16 after landing PR #20 deployed: both return `200`; the privacy page is served as `text/html; charset=utf-8` and passes the site's GEO audit.
 
 ---
 
