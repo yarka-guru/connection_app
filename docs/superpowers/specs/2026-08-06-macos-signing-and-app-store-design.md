@@ -213,7 +213,7 @@ Apps agreement.
 |---|---|
 | Category | Developer Tools |
 | Icon 1024×1024 | present in `icons/` |
-| Privacy policy URL | **blocked** — `PRIVACY.md` is in-repo, Apple requires a URL; needs GitHub Pages |
+| Privacy policy URL | https://yarka.guru/connection-app/privacy/ (published from `yarka-guru/landing`; `PRIVACY.md` mirrors it) |
 | Support URL | Issues page |
 | Screenshots | **blocked** — macOS requires 1280×800 / 1440×900 / 2560×1600 / 2880×1800; the app window is 650×700, so they must be composed on a backdrop |
 | Privacy nutrition labels | "Data Not Collected", matching the empty `NSPrivacyCollectedDataTypes` |
@@ -265,4 +265,4 @@ TestFlight for macOS is available and worth a pass before submission.
 - Agreements, Tax and Banking in App Store Connect — blocks any paid sale.
   Account country is VN, so the tax forms are Vietnamese.
 - Small Business Program application
-- Hosted privacy policy URL
+- ~~Hosted privacy policy URL~~ — resolved 2026-08-16: https://yarka.guru/connection-app/privacy/

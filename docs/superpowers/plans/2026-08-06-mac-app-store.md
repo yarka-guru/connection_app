@@ -690,26 +690,40 @@ Append the two identity strings, the profile filename, and the App ID to
 
 ### Task 6: Privacy policy and support URLs
 
-App Store Connect requires a **privacy policy URL**. `PRIVACY.md` exists but only as a repository file.
+App Store Connect requires a **privacy policy URL**. `PRIVACY.md` alone is a
+repository file, so the policy is published on the product site instead of
+GitHub Pages: **https://yarka.guru/connection-app/privacy/** (source:
+`page/connection-app/privacy/index.html` in `yarka-guru/landing`, PR #20).
+`PRIVACY.md` mirrors that page word for word — keep the two in sync when
+either changes.
 
 **Files:**
-- Create: `.github/workflows/pages.yml` or equivalent, depending on the approach chosen
+- Modify (already done 2026-08-16): `PRIVACY.md` — synced with the published
+  page, which is more precise than the old text: it lists the local files the
+  app writes, states that the GitHub-distributed desktop build fetches
+  `latest.json` from github.com for updates, and that app-store builds and
+  the CLI never contact GitHub.
 
 **Interfaces:**
 - Produces: two public URLs for the App Store listing
+  - Privacy policy: `https://yarka.guru/connection-app/privacy/`
+  - Support: `https://github.com/yarka-guru/connection_app/issues`
 
-- [ ] **Step 1: Publish the privacy policy**
+- [x] **Step 1: Publish the privacy policy**
 
-Enable GitHub Pages for the repository, serving `PRIVACY.md`. The lightest approach is Settings → Pages → Deploy from branch → `main` → `/docs`, with `PRIVACY.md` copied to `docs/index.md`. Alternatively use the repository's rendered file URL, though a Pages URL reads better on a store listing.
+Done in `yarka-guru/landing` — the page is served by the existing CloudFront
+`dir_index` function (`/connection-app/privacy/` → `index.html`) and deploys
+on merge to `main` there. If the policy text changes, edit both
+`page/connection-app/privacy/index.html` (canonical) and `PRIVACY.md`.
 
 - [ ] **Step 2: Verify both URLs resolve publicly**
 
 ```bash
-curl -sSf -o /dev/null -w "privacy: %{http_code}\n" https://yarka-guru.github.io/connection_app/
+curl -sSf -o /dev/null -w "privacy: %{http_code}\n" https://yarka.guru/connection-app/privacy/
 curl -sSf -o /dev/null -w "support: %{http_code}\n" https://github.com/yarka-guru/connection_app/issues
 ```
 
-Expected: `200` for both. Check in a private browser window too — a URL that works only while signed in will fail review.
+Expected: `200` for both. Check in a private browser window too — a URL that works only while signed in will fail review. The privacy URL returns `404` until landing PR #20 is merged and deployed.
 
 ---
 
