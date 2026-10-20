@@ -98,7 +98,8 @@ pub struct AuthCheck {
 
 impl AuthCheck {
     /// Sign in once and log out; records and returns the auth method label.
-    pub async fn run(self) -> String {
+    /// `None` when the connection was disconnected meanwhile.
+    pub async fn run(self) -> Option<String> {
         emit_status_event(&self.app_handle, "Checking database sign-in...", Some(&self.connection_id));
         let probe = tokio::time::timeout(
             tokio::time::Duration::from_secs(AUTH_PROBE_TIMEOUT_SECS),
@@ -117,11 +118,19 @@ impl AuthCheck {
             }
         };
         let mut guard = self.connections.lock().await;
-        if let Some(conn) = guard.get_mut(&self.connection_id) {
-            conn.connection_info.auth_method = Some(label.clone());
-        }
-        label
+        record_auth_method(&mut guard, &self.connection_id, label)
     }
+}
+
+/// Store the auth method on a connection; `None` if it no longer exists.
+fn record_auth_method(
+    connections: &mut HashMap<String, Connection>,
+    connection_id: &str,
+    label: String,
+) -> Option<String> {
+    let conn = connections.get_mut(connection_id)?;
+    conn.connection_info.auth_method = Some(label.clone());
+    Some(label)
 }
 
 /// Manages all active tunnel connections.
@@ -1478,4 +1487,51 @@ fn emit_status_event(app_handle: &AppHandle, message: &str, connection_id: Optio
         payload["connectionId"] = serde_json::json!(id);
     }
     let _ = app_handle.emit("status", &payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connection(id: &str) -> Connection {
+        Connection {
+            id: id.to_string(),
+            project_key: "covered".to_string(),
+            profile: "covered-dev".to_string(),
+            local_port: "5462".to_string(),
+            connection_info: ConnectionInfo {
+                host: "localhost".to_string(),
+                port: "5462".to_string(),
+                connection_type: "rds".to_string(),
+                username: Some("covered_app".to_string()),
+                password: Some("local".to_string()),
+                database: Some("covered_db".to_string()),
+                rds_endpoint: None,
+                instance_id: None,
+                service_type: None,
+                remote_host: None,
+                target_type: None,
+                engine: None,
+                ssh_command: None,
+                auth_method: None,
+            },
+            cancel_token: CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn auth_method_is_recorded_on_a_live_connection() {
+        let mut connections = HashMap::from([("conn_1".to_string(), connection("conn_1"))]);
+        assert_eq!(
+            record_auth_method(&mut connections, "conn_1", "IAM (auto)".to_string()).as_deref(),
+            Some("IAM (auto)")
+        );
+        assert_eq!(connections["conn_1"].connection_info.auth_method.as_deref(), Some("IAM (auto)"));
+    }
+
+    #[test]
+    fn a_connection_closed_during_the_check_is_reported() {
+        let mut connections = HashMap::new();
+        assert_eq!(record_auth_method(&mut connections, "conn_1", "password".to_string()), None);
+    }
 }

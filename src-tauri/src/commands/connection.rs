@@ -44,7 +44,10 @@ pub async fn connect(
     // The database sign-in check can take seconds; run it without the
     // manager lock so other commands are not blocked.
     if let Some(check) = auth_check {
-        connection_info.auth_method = Some(check.run().await);
+        let label = check.run().await.ok_or_else(|| {
+            AppError::Tunnel("Disconnected during the database sign-in check".to_string())
+        })?;
+        connection_info.auth_method = Some(label);
     }
 
     // Update last used time if this is from a saved connection
