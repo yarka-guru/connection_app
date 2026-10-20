@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.9] - 2026-10-20
+
+### Added
+- Settings: an **Authentication** choice for RDS projects (Secrets Manager or
+  IAM database authentication) and an **IAM DB User** field. Until now IAM
+  auth could only be set by editing `projects.json` by hand.
+
+### Fixed
+- Saving a project from Settings no longer drops fields the form does not
+  show (`secretPath`, `secretUsernameField`, `secretPasswordField`,
+  `multiplexed`). Previously every save also reset a hand-configured IAM
+  project back to Secrets Manager.
+
+### Notes
+- An IAM token is valid for 15 minutes from Connect. New logins from a DB
+  client after that need a reconnect in the app; sessions already open are
+  not affected.
+
 ## [3.7.7] - 2026-08-05
 
 ### Changed
