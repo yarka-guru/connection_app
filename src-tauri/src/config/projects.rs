@@ -98,6 +98,13 @@ impl ProjectConfig {
         &self.database
     }
 
+    /// PostgreSQL RDS connections go through the local auth proxy, which signs
+    /// in with an IAM token or the secret's password as the database needs.
+    /// MySQL connections stay a raw tunnel (IAM projects get a one-off token).
+    pub fn uses_pg_auth_proxy(&self) -> bool {
+        self.connection_type != "service" && self.engine.as_deref() != Some("mysql")
+    }
+
     /// Returns the bastion Name tag filter pattern, defaulting to `*bastion*`.
     pub fn bastion_pattern(&self) -> &str {
         self.bastion_pattern
@@ -392,5 +399,20 @@ mod tests {
         .unwrap();
         assert_eq!(legacy.auth_type, "secrets");
         assert_eq!(legacy.iam_username, None);
+    }
+
+    #[test]
+    fn auth_proxy_applies_to_postgres_rds_only() {
+        let mut config = test_config(None);
+        assert!(config.uses_pg_auth_proxy(), "engine defaults to postgres");
+        config.auth_type = "iam".to_string();
+        assert!(config.uses_pg_auth_proxy());
+        config.engine = Some("postgres".to_string());
+        assert!(config.uses_pg_auth_proxy());
+        config.engine = Some("mysql".to_string());
+        assert!(!config.uses_pg_auth_proxy());
+        config.engine = None;
+        config.connection_type = "service".to_string();
+        assert!(!config.uses_pg_auth_proxy());
     }
 }

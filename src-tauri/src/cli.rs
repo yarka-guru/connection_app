@@ -8,8 +8,13 @@ use connection_app_lib::config::projects::{
     get_default_port_for_engine, get_local_port, get_profiles_for_project, load_project_configs,
     ProjectConfig,
 };
-use connection_app_lib::tunnel::native::{start_native_port_forwarding, start_multiplexed_port_forwarding, LocalSource};
+use connection_app_lib::tunnel::native::{
+    bind_local_listeners, start_multiplexed_port_forwarding, start_native_port_forwarding,
+    LocalSource,
+};
+use connection_app_lib::tunnel::pg_proxy::{self, PgAuthProxy, ProxySettings, UpstreamAuth};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[allow(unused_imports)]
 use connection_app_lib::aws::operations::{
@@ -220,12 +225,13 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
             None
         };
 
-        run_rds_connect(&clients, &profile, &project_config, &local_port, selected_database.as_deref()).await
+        run_rds_connect(&clients, &project_key, &profile, &project_config, &local_port, selected_database.as_deref()).await
     }
 }
 
 async fn run_rds_connect(
     clients: &connection_app_lib::aws::credentials::AwsClients,
+    project_key: &str,
     profile: &str,
     project_config: &ProjectConfig,
     local_port: &str,
@@ -268,16 +274,17 @@ async fn run_rds_connect(
         project_config.auth_type.as_str()
     };
 
-    let (username, password) = if auth_type == "iam" {
+    let use_proxy = project_config.uses_pg_auth_proxy();
+    let rds_port_num: u16 = rds_port
+        .parse()
+        .map_err(|_| format!("Invalid RDS port number: {}", rds_port))?;
+
+    let (username, password, proxy_settings) = if auth_type == "iam" {
         eprintln!("  \u{1F511} Generating IAM auth token...");
         let iam_username = project_config
             .iam_username
             .as_deref()
             .ok_or("iamUsername is required when authType is \"iam\"")?;
-
-        let rds_port_num: u16 = rds_port
-            .parse()
-            .map_err(|_| format!("Invalid RDS port number: {}", rds_port))?;
 
         let sdk_config =
             connection_app_lib::aws::credentials::build_aws_config(profile, &project_config.region)
@@ -291,7 +298,19 @@ async fn run_rds_connect(
         .await
         .map_err(|e| format!("Failed to generate IAM auth token: {}", e))?;
 
-        (iam_username.to_string(), token)
+        if use_proxy {
+            // The token above only proves the credential chain works;
+            // the proxy mints its own on demand.
+            let settings = ProxySettings {
+                db_user: iam_username.to_string(),
+                local_password: local_proxy_password(project_key, profile).await?,
+                auth: UpstreamAuth::IamOnly,
+                sdk_config,
+            };
+            (iam_username.to_string(), settings.local_password.clone(), Some(settings))
+        } else {
+            (iam_username.to_string(), token, None)
+        }
     } else {
         // "secrets" auth type
         eprintln!("  \u{1F4E6} Getting database credentials...");
@@ -305,7 +324,23 @@ async fn run_rds_connect(
         )
         .await
         .map_err(|e| format!("Failed to get credentials: {}", e))?;
-        (db_creds.username, db_creds.password)
+        if use_proxy {
+            let settings = ProxySettings {
+                db_user: db_creds.username.clone(),
+                local_password: local_proxy_password(project_key, profile).await?,
+                auth: UpstreamAuth::Auto {
+                    password: db_creds.password,
+                },
+                sdk_config: connection_app_lib::aws::credentials::build_aws_config(
+                    profile,
+                    &project_config.region,
+                )
+                .await,
+            };
+            (db_creds.username, settings.local_password.clone(), Some(settings))
+        } else {
+            (db_creds.username, db_creds.password, None)
+        }
     };
 
     // Start SSM session
@@ -326,9 +361,11 @@ async fn run_rds_connect(
         .parse()
         .map_err(|_| format!("Invalid port: {}", local_port))?;
 
+    let multiplexed = project_config.multiplexed.unwrap_or(false);
+
     // Display connection info with dynamic-width box
     let masked_password = mask_password(&password);
-    let rows = vec![
+    let mut rows = vec![
         ("Host",     "localhost".to_string()),
         ("Port",     local_port.to_string()),
         ("Username", username.clone()),
@@ -336,15 +373,71 @@ async fn run_rds_connect(
         ("Database", effective_db.to_string()),
         ("Endpoint", rds_endpoint.clone()),
     ];
-    print_info_box(&rows);
 
-    // Copy password to clipboard
+    let Some(settings) = proxy_settings else {
+        print_info_box(&rows);
+        if try_copy_to_clipboard(&password) {
+            eprintln!("  \u{1F4CB} Password copied to clipboard\n");
+        }
+        return run_tunnel(stream_url, token_value, LocalSource::Listen(port_num), Some(password), multiplexed).await;
+    };
+
+    // The auth proxy owns the local port; the tunnel takes its connections as pipes.
+    let (listener_v4, listener_v6) = bind_local_listeners(port_num)?;
+    let (dialer, inbox) = pg_proxy::tunnel_pipes();
+    let proxy = Arc::new(PgAuthProxy::for_rds(settings, &rds_endpoint, rds_port_num, Arc::new(dialer))?);
+
+    let cancel = CancellationToken::new();
+    disconnect_on_ctrl_c(&cancel);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let tunnel = tokio::spawn(forward_ports(
+        stream_url,
+        token_value,
+        LocalSource::Pipes(inbox),
+        cancel.clone(),
+        Some(ready_tx),
+        multiplexed,
+    ));
+    if !matches!(ready_rx.await, Ok(Ok(()))) {
+        cancel.cancel();
+        tunnel.await.map_err(|e| format!("Tunnel task failed: {}", e))??;
+        return Err("Tunnel failed to start".to_string());
+    }
+    tokio::spawn(pg_proxy::run_listener(proxy.clone(), listener_v4, listener_v6, cancel.clone()));
+
+    eprintln!("  \u{1F510} Checking database sign-in...");
+    let method = match tokio::time::timeout(std::time::Duration::from_secs(30), proxy.probe(effective_db)).await {
+        Ok(Ok(method)) => method,
+        Ok(Err(e)) => {
+            eprintln!("  \u{26A0}\u{FE0F}  Database sign-in check failed: {}", e);
+            "check failed".to_string()
+        }
+        Err(_) => {
+            eprintln!("  \u{26A0}\u{FE0F}  Database sign-in check timed out");
+            "check timed out".to_string()
+        }
+    };
+    let iam = method.starts_with("IAM");
+    rows.push(("Auth", method));
+    if iam {
+        rows.push(("IAM", "IAM token is refreshed automatically".to_string()));
+    }
+    print_info_box(&rows);
     if try_copy_to_clipboard(&password) {
         eprintln!("  \u{1F4CB} Password copied to clipboard\n");
     }
+    eprintln!("  Commands: [p] show password  [c] copy password  [Ctrl+C] disconnect\n");
+    spawn_command_reader(password, &cancel);
 
-    let multiplexed = project_config.multiplexed.unwrap_or(false);
-    run_tunnel(stream_url, token_value, port_num, Some(password), multiplexed).await
+    tunnel.await.map_err(|e| format!("Tunnel task failed: {}", e))??;
+    eprintln!("  \u{1F44B} Disconnected.\n");
+    Ok(())
+}
+
+async fn local_proxy_password(project_key: &str, profile: &str) -> Result<String, String> {
+    connection_app_lib::config::local_passwords::local_proxy_password(project_key, profile)
+        .await
+        .map_err(|e| format!("Failed to load the local proxy password: {}", e))
 }
 
 async fn run_service_connect(
@@ -457,7 +550,7 @@ async fn run_service_connect(
     print_info_box(&rows);
 
     let multiplexed = project_config.multiplexed.unwrap_or(false);
-    run_tunnel(stream_url, token_value, port_num, None, multiplexed).await
+    run_tunnel(stream_url, token_value, LocalSource::Listen(port_num), None, multiplexed).await
 }
 
 fn extract_session_info(
@@ -493,7 +586,7 @@ fn print_info_box(rows: &[(&str, String)]) {
 async fn run_tunnel(
     stream_url: String,
     token_value: String,
-    port_num: u16,
+    local: LocalSource,
     password: Option<String>,
     multiplexed: bool,
 ) -> Result<(), String> {
@@ -504,36 +597,54 @@ async fn run_tunnel(
     }
 
     let cancel = CancellationToken::new();
-    let cancel_signal = cancel.clone();
+    disconnect_on_ctrl_c(&cancel);
 
+    // Spawn interactive command reader if password is available
+    if let Some(pw) = password {
+        spawn_command_reader(pw, &cancel);
+    }
+
+    forward_ports(stream_url, token_value, local, cancel, None, multiplexed).await?;
+
+    eprintln!("  \u{1F44B} Disconnected.\n");
+
+    Ok(())
+}
+
+fn disconnect_on_ctrl_c(cancel: &CancellationToken) {
+    let cancel_signal = cancel.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         eprintln!("\n  \u{1F6D1} Disconnecting...");
         cancel_signal.cancel();
     });
+}
 
-    // Spawn interactive command reader if password is available
-    if let Some(pw) = password {
-        let cancel_reader = cancel.clone();
-        tokio::task::spawn_blocking(move || {
-            run_command_reader(
-                std::io::stdin().lock(),
-                std::io::stderr(),
-                &pw,
-                &cancel_reader,
-            );
-        });
-    }
+fn spawn_command_reader(pw: String, cancel: &CancellationToken) {
+    let cancel_reader = cancel.clone();
+    tokio::task::spawn_blocking(move || {
+        run_command_reader(
+            std::io::stdin().lock(),
+            std::io::stderr(),
+            &pw,
+            &cancel_reader,
+        );
+    });
+}
 
+async fn forward_ports(
+    stream_url: String,
+    token_value: String,
+    local: LocalSource,
+    cancel: CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    multiplexed: bool,
+) -> Result<(), String> {
     if multiplexed {
-        start_multiplexed_port_forwarding(stream_url, token_value, LocalSource::Listen(port_num), cancel, None).await?;
+        start_multiplexed_port_forwarding(stream_url, token_value, local, cancel, ready_tx).await
     } else {
-        start_native_port_forwarding(stream_url, token_value, LocalSource::Listen(port_num), cancel, None).await?;
+        start_native_port_forwarding(stream_url, token_value, local, cancel, ready_tx).await
     }
-
-    eprintln!("  \u{1F44B} Disconnected.\n");
-
-    Ok(())
 }
 
 /// Read user commands from `input` and respond on `out` until EOF, read
