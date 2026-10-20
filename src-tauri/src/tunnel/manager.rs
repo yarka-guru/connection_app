@@ -8,7 +8,7 @@ use crate::config::projects::{
 };
 use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
-use crate::tunnel::native;
+use crate::tunnel::native::{self, LocalSource};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1266,7 +1266,7 @@ async fn execute_port_forwarding(
         native::start_multiplexed_port_forwarding(
             stream_url,
             token_value,
-            port_num,
+            LocalSource::Listen(port_num),
             cancel_child,
             ready_tx,
         )
@@ -1275,7 +1275,7 @@ async fn execute_port_forwarding(
         native::start_native_port_forwarding(
             stream_url,
             token_value,
-            port_num,
+            LocalSource::Listen(port_num),
             cancel_child,
             ready_tx,
         )

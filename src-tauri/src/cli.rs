@@ -8,7 +8,7 @@ use connection_app_lib::config::projects::{
     get_default_port_for_engine, get_local_port, get_profiles_for_project, load_project_configs,
     ProjectConfig,
 };
-use connection_app_lib::tunnel::native::{start_native_port_forwarding, start_multiplexed_port_forwarding};
+use connection_app_lib::tunnel::native::{start_native_port_forwarding, start_multiplexed_port_forwarding, LocalSource};
 use std::collections::HashMap;
 
 #[allow(unused_imports)]
@@ -526,9 +526,9 @@ async fn run_tunnel(
     }
 
     if multiplexed {
-        start_multiplexed_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
+        start_multiplexed_port_forwarding(stream_url, token_value, LocalSource::Listen(port_num), cancel, None).await?;
     } else {
-        start_native_port_forwarding(stream_url, token_value, port_num, cancel, None).await?;
+        start_native_port_forwarding(stream_url, token_value, LocalSource::Listen(port_num), cancel, None).await?;
     }
 
     eprintln!("  \u{1F44B} Disconnected.\n");

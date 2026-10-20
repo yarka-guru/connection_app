@@ -7,11 +7,12 @@
 //!
 //! Protocol reference: AWS session-manager-plugin smux implementation.
 
+use crate::tunnel::native::{accept_on, next_pipe, tune_local_socket, LocalConn, TunnelPipe};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 // --- Smux protocol constants ---
@@ -366,13 +367,15 @@ impl SmuxSession {
 ///
 /// # Arguments
 /// * `smux_session` - The smux session multiplexer
-/// * `listener_v4` - IPv4 TCP listener
+/// * `listener_v4` - IPv4 TCP listener (absent when the auth proxy owns the port)
 /// * `listener_v6` - Optional IPv6 TCP listener
+/// * `pipes` - Connections handed over by the auth proxy, if any
 /// * `cancel` - Cancellation token
 pub async fn run_multiplexed_listener(
     smux_session: Arc<SmuxSession>,
-    listener_v4: tokio::net::TcpListener,
+    listener_v4: Option<tokio::net::TcpListener>,
     listener_v6: Option<tokio::net::TcpListener>,
+    mut pipes: Option<OwnedMutexGuard<mpsc::Receiver<TunnelPipe>>>,
     cancel: CancellationToken,
 ) {
     // Client-initiated stream IDs are odd numbers (1, 3, 5, ...).
@@ -384,12 +387,13 @@ pub async fn run_multiplexed_listener(
             break;
         }
 
-        let tcp_stream = tokio::select! {
-            result = listener_v4.accept() => {
+        let local_conn = tokio::select! {
+            result = accept_on(listener_v4.as_ref()) => {
                 match result {
                     Ok((stream, addr)) => {
                         log::info!("Multiplexed: TCP connection from {} (IPv4)", addr);
-                        stream
+                        tune_local_socket(&stream);
+                        LocalConn::Tcp(stream)
                     }
                     Err(e) => {
                         log::error!("TCP accept error (IPv4): {}", e);
@@ -397,16 +401,12 @@ pub async fn run_multiplexed_listener(
                     }
                 }
             }
-            result = async {
-                match &listener_v6 {
-                    Some(l) => l.accept().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            result = accept_on(listener_v6.as_ref()) => {
                 match result {
                     Ok((stream, addr)) => {
                         log::info!("Multiplexed: TCP connection from {} (IPv6)", addr);
-                        stream
+                        tune_local_socket(&stream);
+                        LocalConn::Tcp(stream)
                     }
                     Err(e) => {
                         log::error!("TCP accept error (IPv6): {}", e);
@@ -414,18 +414,17 @@ pub async fn run_multiplexed_listener(
                     }
                 }
             }
+            pipe = next_pipe(pipes.as_mut()) => {
+                match pipe {
+                    Some(pipe) => {
+                        log::debug!("Multiplexed: connection from the auth proxy");
+                        LocalConn::Pipe(pipe)
+                    }
+                    None => break,
+                }
+            }
             _ = cancel.cancelled() => break,
         };
-
-        // Disable Nagle's algorithm
-        let _ = tcp_stream.set_nodelay(true);
-
-        // Enable TCP keepalive
-        let sock_ref = socket2::SockRef::from(&tcp_stream);
-        let keepalive = socket2::TcpKeepalive::new()
-            .with_time(std::time::Duration::from_secs(60))
-            .with_interval(std::time::Duration::from_secs(10));
-        let _ = sock_ref.set_tcp_keepalive(&keepalive);
 
         // Open a new smux stream for this TCP connection
         let session = smux_session.clone();
@@ -436,7 +435,7 @@ pub async fn run_multiplexed_listener(
             let (stream_id, mut data_rx) = session.open_stream(&counter).await;
             log::info!("Opened smux stream {} for TCP connection", stream_id);
 
-            let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+            let (mut tcp_read, mut tcp_write) = local_conn.into_halves();
 
             // Task: remote -> TCP (write data from smux stream to TCP)
             let session_write = session.clone();
