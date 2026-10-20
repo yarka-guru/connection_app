@@ -111,27 +111,31 @@ function shellEscape(str) {
 /**
  * Build a connection string for a database connection.
  * Shell command formats (psql, mysql) use proper quoting to prevent injection.
- * @param {{ username: string, password: string, database: string, localPort: string|number, engine?: string }} info
+ * Auth proxy connections are plaintext on loopback (the proxy does TLS to RDS),
+ * so their PostgreSQL strings set sslmode=disable.
+ * @param {{ username: string, password: string, database: string, localPort: string|number, engine?: string, authProxy?: boolean }} info
  * @param {'psql'|'mysql'|'jdbc'|'uri'} format
  * @returns {string}
  */
 export function buildConnectionString(info, format) {
   const host = 'localhost'
   const port = info.localPort
+  const pgSsl = info.authProxy ? 'sslmode=disable' : ''
 
   switch (format) {
     case 'psql':
-      return `psql 'host=${shellEscape(host)} port=${shellEscape(String(port))} user=${shellEscape(info.username)} password=${shellEscape(info.password)} dbname=${shellEscape(info.database)}'`
+      return `psql 'host=${shellEscape(host)} port=${shellEscape(String(port))} user=${shellEscape(info.username)} password=${shellEscape(info.password)} dbname=${shellEscape(info.database)}${pgSsl ? ` ${pgSsl}` : ''}'`
     case 'mysql':
       return `mysql -h ${shellEscape(host)} -P ${shellEscape(String(port))} -u '${shellEscape(info.username)}' -p'${shellEscape(info.password)}' '${shellEscape(info.database)}'`
     case 'jdbc':
       if (info.engine === 'mysql') {
         return `jdbc:mysql://${host}:${port}/${info.database}?user=${encodeURIComponent(info.username)}&password=${encodeURIComponent(info.password)}`
       }
-      return `jdbc:postgresql://${host}:${port}/${info.database}?user=${encodeURIComponent(info.username)}&password=${encodeURIComponent(info.password)}`
+      return `jdbc:postgresql://${host}:${port}/${info.database}?user=${encodeURIComponent(info.username)}&password=${encodeURIComponent(info.password)}${pgSsl ? `&${pgSsl}` : ''}`
     case 'uri': {
       const proto = info.engine === 'mysql' ? 'mysql' : 'postgresql'
-      return `${proto}://${encodeURIComponent(info.username)}:${encodeURIComponent(info.password)}@${host}:${port}/${info.database}`
+      const query = proto === 'postgresql' && pgSsl ? `?${pgSsl}` : ''
+      return `${proto}://${encodeURIComponent(info.username)}:${encodeURIComponent(info.password)}@${host}:${port}/${info.database}${query}`
     }
     default:
       return ''
