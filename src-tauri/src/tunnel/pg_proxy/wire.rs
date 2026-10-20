@@ -12,6 +12,9 @@ pub const CANCEL_REQUEST_CODE: u32 = 80877102;
 
 /// PostgreSQL's own cap on a startup packet (MAX_STARTUP_PACKET_LENGTH).
 pub const MAX_STARTUP_PACKET_LEN: usize = 10_000;
+/// PostgreSQL's longest cancel key (protocol 3.2).
+pub const MAX_CANCEL_KEY_LEN: usize = 256;
+
 /// Cap on any regular message read before authentication completes.
 pub const MAX_AUTH_MESSAGE_LEN: usize = 64 * 1024;
 
@@ -150,7 +153,7 @@ pub fn parse_startup_body(body: &[u8]) -> io::Result<StartupPacket> {
         }
         CANCEL_REQUEST_CODE => {
             // Process ID + secret key; the key is variable length in protocol 3.2.
-            if body.len() < 12 {
+            if body.len() < 12 || body.len() > 8 + MAX_CANCEL_KEY_LEN {
                 return Err(invalid("invalid length of cancel request"));
             }
             let mut packet = Vec::with_capacity(body.len() + 4);
@@ -396,6 +399,20 @@ mod tests {
             read_startup_packet(&mut r).await.unwrap(),
             StartupPacket::CancelRequest(cancel)
         );
+    }
+
+    #[test]
+    fn cancel_key_length_is_capped_at_postgres_maximum() {
+        let cancel = |key_len: usize| {
+            let mut body = CANCEL_REQUEST_CODE.to_be_bytes().to_vec();
+            body.extend_from_slice(&7u32.to_be_bytes());
+            body.extend(std::iter::repeat_n(0xab, key_len));
+            parse_startup_body(&body)
+        };
+        assert!(cancel(MAX_CANCEL_KEY_LEN).is_ok(), "256-byte key (packet 268 bytes) is valid");
+        assert!(cancel(MAX_CANCEL_KEY_LEN + 1).is_err());
+        assert!(cancel(9000).is_err());
+        assert!(cancel(3).is_err());
     }
 
     #[tokio::test]

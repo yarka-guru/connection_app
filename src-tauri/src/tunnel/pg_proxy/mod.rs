@@ -20,7 +20,7 @@ pub mod wire;
 mod tests;
 
 use crate::aws::iam_auth::RdsAuthTokenCache;
-use crate::tunnel::native::{accept_on, tune_local_socket, PipeInbox, TunnelPipe};
+use crate::tunnel::native::{accept_on, tune_local_socket, PipeInbox, TunnelPipe, ACCEPT_ERROR_BACKOFF};
 use futures_util::future::BoxFuture;
 use md5::{Digest, Md5};
 use crate::aws::operations::SecretLocator;
@@ -28,12 +28,13 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, Join, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_util::sync::CancellationToken;
@@ -51,6 +52,10 @@ const PIPE_QUEUE: usize = 64;
 const MAX_ENCRYPTION_REQUESTS: usize = 2;
 /// At most one secret re-fetch per project + profile in this window.
 const SECRET_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
+/// Cancel requests are unauthenticated, so only a few may be in flight.
+const MAX_CONCURRENT_CANCELS: usize = 4;
+/// Local connections that have not finished signing in yet.
+const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 
 /// Which credential answers a cleartext password request first in auto mode.
 /// RDS asks for a cleartext password only for users in `rds_iam` (PAM); password
@@ -191,6 +196,8 @@ pub struct PgAuthProxy {
     dialer: Arc<dyn Dial>,
     cleartext_choice: Mutex<Credential>,
     last_method: Mutex<Option<Credential>>,
+    handshake_slots: Arc<Semaphore>,
+    cancel_slots: Arc<Semaphore>,
 }
 
 /// Self-signed certificate for localhost, 127.0.0.1 and ::1, made once per
@@ -420,6 +427,8 @@ impl PgAuthProxy {
             dialer,
             cleartext_choice: Mutex::new(CLEARTEXT_FIRST),
             last_method: Mutex::new(None),
+            handshake_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES)),
+            cancel_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_CANCELS)),
         })
     }
 
@@ -518,7 +527,21 @@ impl PgAuthProxy {
         C: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let mut client = LocalClient::Plain(client);
-        let outcome = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.handshake(&mut client)).await;
+        let Ok(slot) = self.handshake_slots.clone().try_acquire_owned() else {
+            log::debug!("Auth proxy: too many connections signing in, dropping one");
+            let _ = client
+                .write_all(&wire::error_response("53300", "too many connections are signing in", None))
+                .await;
+            let _ = client.shutdown().await;
+            return;
+        };
+        let upstream_started = AtomicBool::new(false);
+        let outcome = tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            self.handshake(&mut client, &upstream_started),
+        )
+        .await;
+        drop(slot);
         let failure = match outcome {
             Ok(Ok(Some(mut rds))) => {
                 if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut rds).await {
@@ -528,7 +551,10 @@ impl PgAuthProxy {
             }
             Ok(Ok(None)) => return,
             Ok(Err(failure)) => failure,
-            Err(_) => Failure::reject("08006", "timed out while signing in to RDS"),
+            Err(_) if upstream_started.load(Ordering::Relaxed) => {
+                Failure::reject("08006", "timed out while signing in to RDS")
+            }
+            Err(_) => Failure::reject("08006", "timed out waiting for the client to sign in"),
         };
         let response = match failure {
             Failure::Reject {
@@ -550,7 +576,11 @@ impl PgAuthProxy {
         let _ = client.shutdown().await;
     }
 
-    async fn handshake<C>(&self, client: &mut LocalClient<C>) -> Result<Option<TlsStream<Upstream>>, Failure>
+    async fn handshake<C>(
+        &self,
+        client: &mut LocalClient<C>,
+        upstream_started: &AtomicBool,
+    ) -> Result<Option<TlsStream<Upstream>>, Failure>
     where
         C: AsyncRead + AsyncWrite + Unpin + Send,
     {
@@ -579,7 +609,10 @@ impl PgAuthProxy {
                     }
                 }
                 StartupPacket::CancelRequest(packet) => {
-                    self.forward_cancel(&packet).await;
+                    match self.cancel_slots.clone().try_acquire_owned() {
+                        Ok(_slot) => self.forward_cancel(&packet).await,
+                        Err(_) => log::debug!("Auth proxy: too many cancel requests in flight, dropping one"),
+                    }
                     return Ok(None);
                 }
                 StartupPacket::Startup(msg) => break msg,
@@ -604,6 +637,7 @@ impl PgAuthProxy {
             .with_hint("Set the user name in your database client to the one ConnectionApp shows."));
         }
 
+        upstream_started.store(true, Ordering::Relaxed);
         let (rds, relay) = self.sign_in(&startup).await?;
         client.write_all(&relay).await.map_err(Failure::client_io)?;
         client.flush().await.map_err(Failure::client_io)?;
@@ -764,12 +798,25 @@ impl PgAuthProxy {
         let mut used: Option<Credential> = None;
         let mut cleartext_used: Option<Credential> = None;
         let mut scram_client: Option<scram::ScramClient> = None;
+        let mut scram_verified = false;
         loop {
             let msg = wire::read_message(rds, wire::MAX_AUTH_MESSAGE_LEN)
                 .await
                 .map_err(Failure::upstream_io)?;
             let reply = match (msg.tag, msg.auth_code()) {
                 (b'R', Some(wire::AUTH_OK)) => {
+                    if used.is_none() {
+                        return Err(Failure::reject(
+                            "28000",
+                            "RDS accepted the connection without asking for a credential; refusing",
+                        ));
+                    }
+                    if scram_client.is_some() && !scram_verified {
+                        return Err(Failure::reject(
+                            "08006",
+                            "RDS finished SCRAM without proving it knows the password; refusing",
+                        ));
+                    }
                     relay.extend_from_slice(&msg.encode());
                     *self.last_method.lock().unwrap_or_else(|e| e.into_inner()) = used;
                     log::debug!(
@@ -822,11 +869,12 @@ impl PgAuthProxy {
                         .map_err(|e| Failure::reject("08P01", format!("bad SCRAM message from RDS: {:?}", e)))?;
                     wire::encode_message(b'p', client_final.as_bytes())
                 }
-                (b'R', Some(wire::AUTH_SASL_FINAL)) if scram_client.is_some() => {
+                (b'R', Some(wire::AUTH_SASL_FINAL)) if scram_client.is_some() && !scram_verified => {
                     let client = scram_client.as_ref().expect("checked above");
                     client.verify_server_final(&msg.body[4..]).map_err(|_| {
                         Failure::reject("08006", "RDS failed SCRAM server verification")
                     })?;
+                    scram_verified = true;
                     continue;
                 }
                 (b'R', code) => {
@@ -1017,7 +1065,10 @@ pub async fn run_listener(
                 tune_local_socket(&stream);
                 tokio::spawn(proxy.clone().serve::<TcpStream>(stream));
             }
-            Err(e) => log::error!("Auth proxy: accept error: {}", e),
+            Err(e) => {
+                log::error!("Auth proxy: accept error: {}", e);
+                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+            }
         }
     }
 }

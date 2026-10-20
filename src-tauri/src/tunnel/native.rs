@@ -142,6 +142,10 @@ impl LocalConn {
     }
 }
 
+/// Pause after a failed accept: errors such as EMFILE leave the listener
+/// ready, so retrying at once would spin.
+pub(crate) const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Accept on whichever listener is present (an absent one never fires).
 pub(crate) async fn accept_on(
     listener: Option<&TcpListener>,
@@ -713,6 +717,7 @@ async fn start_basic_port_forwarding(
                     }
                     Err(e) => {
                         log::error!("TCP accept error (IPv4): {}", e);
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 }
@@ -725,6 +730,7 @@ async fn start_basic_port_forwarding(
                     }
                     Err(e) => {
                         log::error!("TCP accept error (IPv6): {}", e);
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 }

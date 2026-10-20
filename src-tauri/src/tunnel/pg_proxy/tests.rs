@@ -38,6 +38,10 @@ enum Rds {
     /// MD5 with this password.
     Md5(&'static str),
     RefuseTls,
+    /// AuthenticationOk straight away (never happens on RDS).
+    Trust,
+    /// SCRAM that skips SASLFinal and sends AuthenticationOk.
+    ScramWithoutFinal(&'static str),
 }
 
 /// What the fake RDS server saw on one connection.
@@ -314,7 +318,9 @@ async fn fake_rds(mut stream: Upstream, acceptor: TlsAcceptor, behaviour: Rds) -
             }
             ok
         }
-        Rds::Scram(password) => {
+        Rds::Trust => true,
+        Rds::Scram(password) | Rds::ScramWithoutFinal(password) => {
+            let skip_final = matches!(behaviour, Rds::ScramWithoutFinal(_));
             let verifier = scram::ScramVerifier::new(password, b"rdssaltrdssalt12".to_vec(), 4096);
             send(&mut tls, &wire::auth_request(wire::AUTH_SASL, b"SCRAM-SHA-256-PLUS\0SCRAM-SHA-256\0\0")).await;
             let initial = wire::read_message(&mut tls, 4096).await.unwrap();
@@ -325,7 +331,9 @@ async fn fake_rds(mut stream: Upstream, acceptor: TlsAcceptor, behaviour: Rds) -
             let response = wire::read_message(&mut tls, 4096).await.unwrap();
             match verifier.server_final(&exchange, &response.body) {
                 Ok(server_final) => {
-                    send(&mut tls, &wire::auth_request(wire::AUTH_SASL_FINAL, server_final.as_bytes())).await;
+                    if !skip_final {
+                        send(&mut tls, &wire::auth_request(wire::AUTH_SASL_FINAL, server_final.as_bytes())).await;
+                    }
                     true
                 }
                 Err(_) => {
@@ -759,6 +767,95 @@ async fn both_credentials_refused_relays_the_last_error() {
     let (code, _) = expect_error(&mut client).await;
     assert_eq!(code, "28000");
     assert_eq!(h.dials(), 2, "exactly one retry");
+}
+
+#[tokio::test]
+async fn trust_auth_from_rds_is_refused() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, auto(), vec![Rds::Trust]);
+    let mut client = h.client();
+    sign_in(&mut client, DB_USER, LOCAL_PASSWORD).await.unwrap();
+    let (code, message) = expect_error(&mut client).await;
+    assert_eq!(code, "28000");
+    assert!(message.contains("without asking for a credential"), "{}", message);
+    assert_eq!(h.proxy.method_label(), None);
+}
+
+#[tokio::test]
+async fn scram_without_a_verified_server_signature_is_refused() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, auto(), vec![Rds::ScramWithoutFinal(SECRET)]);
+    let mut client = h.client();
+    sign_in(&mut client, DB_USER, LOCAL_PASSWORD).await.unwrap();
+    let (code, message) = expect_error(&mut client).await;
+    assert_eq!(code, "08006");
+    assert!(message.contains("without proving it knows the password"), "{}", message);
+}
+
+/// A tunnel whose connections never open: whatever dials it waits forever.
+struct StuckTunnel {
+    dials: AtomicUsize,
+}
+
+impl Dial for StuckTunnel {
+    fn dial(&self) -> BoxFuture<'_, std::io::Result<Upstream>> {
+        self.dials.fetch_add(1, Ordering::SeqCst);
+        Box::pin(std::future::pending())
+    }
+}
+
+fn stuck_proxy(pki: &TestPki) -> (Arc<PgAuthProxy>, Arc<StuckTunnel>) {
+    let tunnel = Arc::new(StuckTunnel { dials: AtomicUsize::new(0) });
+    let tokens = Arc::new(StaticTokens {
+        issued: AtomicUsize::new(0),
+        invalidated: AtomicUsize::new(0),
+    });
+    let proxy = PgAuthProxy::new(DB_USER, LOCAL_PASSWORD, auto(), tokens, pki.client.clone(), RDS_HOST, tunnel.clone());
+    (Arc::new(proxy.unwrap()), tunnel)
+}
+
+#[tokio::test]
+async fn concurrent_cancel_requests_are_capped() {
+    let pki = test_pki();
+    let (proxy, tunnel) = stuck_proxy(&pki);
+    let mut clients = Vec::new();
+    for _ in 0..30 {
+        let (mut client, proxy_side) = tokio::io::duplex(1024);
+        tokio::spawn(proxy.clone().serve(proxy_side));
+        let mut cancel = 16u32.to_be_bytes().to_vec();
+        cancel.extend_from_slice(&wire::CANCEL_REQUEST_CODE.to_be_bytes());
+        cancel.extend_from_slice(&[0, 0, 0, 1, 2, 3, 4, 5]);
+        send(&mut client, &cancel).await;
+        clients.push(client);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(tunnel.dials.load(Ordering::SeqCst), MAX_CONCURRENT_CANCELS);
+}
+
+#[tokio::test]
+async fn concurrent_unfinished_handshakes_are_capped() {
+    let pki = test_pki();
+    let (proxy, tunnel) = stuck_proxy(&pki);
+    let mut idle = Vec::new();
+    for _ in 0..MAX_CONCURRENT_HANDSHAKES {
+        let (client, proxy_side) = tokio::io::duplex(1024);
+        tokio::spawn(proxy.clone().serve(proxy_side));
+        idle.push(client);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (mut extra, proxy_side) = tokio::io::duplex(1024);
+    tokio::spawn(proxy.clone().serve(proxy_side));
+    let (code, message) = expect_error(&mut extra).await;
+    assert_eq!(code, "53300");
+    assert!(message.contains("too many connections"), "{}", message);
+
+    // A finished handshake frees its slot.
+    drop(idle.pop());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (mut next, proxy_side) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(proxy.clone().serve(proxy_side));
+    sign_in(&mut next, DB_USER, LOCAL_PASSWORD).await.unwrap();
+    assert_eq!(tunnel.dials.load(Ordering::SeqCst), 1, "the new client reaches the tunnel");
 }
 
 #[tokio::test]

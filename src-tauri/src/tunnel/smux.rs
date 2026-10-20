@@ -7,7 +7,9 @@
 //!
 //! Protocol reference: AWS session-manager-plugin smux implementation.
 
-use crate::tunnel::native::{accept_on, next_pipe, tune_local_socket, LocalConn, TunnelPipe};
+use crate::tunnel::native::{
+    accept_on, next_pipe, tune_local_socket, LocalConn, TunnelPipe, ACCEPT_ERROR_BACKOFF,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -397,6 +399,7 @@ pub async fn run_multiplexed_listener(
                     }
                     Err(e) => {
                         log::error!("TCP accept error (IPv4): {}", e);
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 }
@@ -410,6 +413,7 @@ pub async fn run_multiplexed_listener(
                     }
                     Err(e) => {
                         log::error!("TCP accept error (IPv6): {}", e);
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 }
