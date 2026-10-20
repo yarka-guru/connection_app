@@ -54,8 +54,22 @@ const MAX_ENCRYPTION_REQUESTS: usize = 2;
 const SECRET_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
 /// Cancel requests are unauthenticated, so only a few may be in flight.
 const MAX_CONCURRENT_CANCELS: usize = 4;
-/// Local connections that have not finished signing in yet.
-const MAX_CONCURRENT_HANDSHAKES: usize = 64;
+/// Limits on local connections that have not finished signing in yet.
+#[derive(Clone, Copy, Debug)]
+struct HandshakeLimits {
+    /// How many may be signing in at once.
+    concurrent: usize,
+    /// How long a new connection waits for a free slot before it is refused.
+    slot_wait: Duration,
+    /// How long a client has to send its first packet.
+    first_packet: Duration,
+}
+
+const HANDSHAKE_LIMITS: HandshakeLimits = HandshakeLimits {
+    concurrent: 256,
+    slot_wait: Duration::from_secs(5),
+    first_packet: Duration::from_secs(10),
+};
 
 /// Which credential answers a cleartext password request first in auto mode.
 /// RDS asks for a cleartext password only for users in `rds_iam` (PAM); password
@@ -196,6 +210,7 @@ pub struct PgAuthProxy {
     dialer: Arc<dyn Dial>,
     cleartext_choice: Mutex<Credential>,
     last_method: Mutex<Option<Credential>>,
+    limits: HandshakeLimits,
     handshake_slots: Arc<Semaphore>,
     cancel_slots: Arc<Semaphore>,
 }
@@ -427,9 +442,17 @@ impl PgAuthProxy {
             dialer,
             cleartext_choice: Mutex::new(CLEARTEXT_FIRST),
             last_method: Mutex::new(None),
-            handshake_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES)),
+            limits: HANDSHAKE_LIMITS,
+            handshake_slots: Arc::new(Semaphore::new(HANDSHAKE_LIMITS.concurrent)),
             cancel_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_CANCELS)),
         })
+    }
+
+    #[cfg(test)]
+    fn with_limits(mut self, limits: HandshakeLimits) -> Self {
+        self.handshake_slots = Arc::new(Semaphore::new(limits.concurrent));
+        self.limits = limits;
+        self
     }
 
     fn is_auto(&self) -> bool {
@@ -527,7 +550,12 @@ impl PgAuthProxy {
         C: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let mut client = LocalClient::Plain(client);
-        let Ok(slot) = self.handshake_slots.clone().try_acquire_owned() else {
+        let slot = tokio::time::timeout(
+            self.limits.slot_wait,
+            self.handshake_slots.clone().acquire_owned(),
+        )
+        .await;
+        let Ok(Ok(slot)) = slot else {
             log::debug!("Auth proxy: too many connections signing in, dropping one");
             let _ = client
                 .write_all(&wire::error_response("53300", "too many connections are signing in", None))
@@ -585,8 +613,17 @@ impl PgAuthProxy {
         C: AsyncRead + AsyncWrite + Unpin + Send,
     {
         let mut encryption_requests = 0;
+        let mut first_packet = true;
         let startup = loop {
-            let packet = wire::read_startup_packet(client).await.map_err(|e| {
+            let read = wire::read_startup_packet(client);
+            let packet = if std::mem::take(&mut first_packet) {
+                tokio::time::timeout(self.limits.first_packet, read)
+                    .await
+                    .map_err(|_| Failure::Closed("no startup packet in time".to_string()))?
+            } else {
+                read.await
+            };
+            let packet = packet.map_err(|e| {
                 if e.kind() == std::io::ErrorKind::InvalidData {
                     Failure::reject("08P01", e.to_string())
                 } else {

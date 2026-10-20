@@ -832,30 +832,85 @@ async fn concurrent_cancel_requests_are_capped() {
     assert_eq!(tunnel.dials.load(Ordering::SeqCst), MAX_CONCURRENT_CANCELS);
 }
 
-#[tokio::test]
-async fn concurrent_unfinished_handshakes_are_capped() {
-    let pki = test_pki();
-    let (proxy, tunnel) = stuck_proxy(&pki);
-    let mut idle = Vec::new();
-    for _ in 0..MAX_CONCURRENT_HANDSHAKES {
-        let (client, proxy_side) = tokio::io::duplex(1024);
-        tokio::spawn(proxy.clone().serve(proxy_side));
-        idle.push(client);
-    }
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let (mut extra, proxy_side) = tokio::io::duplex(1024);
+fn limited_proxy(pki: &TestPki, limits: HandshakeLimits) -> (Arc<PgAuthProxy>, Arc<StuckTunnel>) {
+    let (proxy, tunnel) = stuck_proxy(pki);
+    let proxy = Arc::try_unwrap(proxy).ok().expect("sole owner").with_limits(limits);
+    (Arc::new(proxy), tunnel)
+}
+
+fn serve_new(proxy: &Arc<PgAuthProxy>) -> DuplexStream {
+    let (client, proxy_side) = tokio::io::duplex(64 * 1024);
     tokio::spawn(proxy.clone().serve(proxy_side));
+    client
+}
+
+#[test]
+fn default_handshake_limits() {
+    assert_eq!(HANDSHAKE_LIMITS.concurrent, 256);
+    assert_eq!(HANDSHAKE_LIMITS.slot_wait, Duration::from_secs(5));
+    assert_eq!(HANDSHAKE_LIMITS.first_packet, Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn a_full_house_makes_new_clients_wait_then_refuses_them() {
+    let pki = test_pki();
+    let limits = HandshakeLimits {
+        concurrent: 2,
+        slot_wait: Duration::from_millis(300),
+        first_packet: Duration::from_secs(10),
+    };
+    let (proxy, _) = limited_proxy(&pki, limits);
+    let _idle = [serve_new(&proxy), serve_new(&proxy)];
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = std::time::Instant::now();
+    let mut extra = serve_new(&proxy);
     let (code, message) = expect_error(&mut extra).await;
     assert_eq!(code, "53300");
     assert!(message.contains("too many connections"), "{}", message);
+    assert!(started.elapsed() >= Duration::from_millis(250), "refused without waiting");
+}
 
-    // A finished handshake frees its slot.
-    drop(idle.pop());
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let (mut next, proxy_side) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(proxy.clone().serve(proxy_side));
+#[tokio::test]
+async fn a_waiting_client_gets_the_next_free_slot() {
+    let pki = test_pki();
+    let limits = HandshakeLimits {
+        concurrent: 1,
+        slot_wait: Duration::from_secs(3),
+        first_packet: Duration::from_secs(10),
+    };
+    let (proxy, tunnel) = limited_proxy(&pki, limits);
+    let idle = serve_new(&proxy);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut waiting = serve_new(&proxy);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(idle);
+    sign_in(&mut waiting, DB_USER, LOCAL_PASSWORD).await.unwrap();
+    assert_eq!(tunnel.dials.load(Ordering::SeqCst), 1, "the waiting client reaches the tunnel");
+}
+
+#[tokio::test]
+async fn silent_clients_are_dropped_after_the_first_packet_timeout() {
+    let pki = test_pki();
+    let limits = HandshakeLimits {
+        concurrent: 1,
+        slot_wait: Duration::from_millis(100),
+        first_packet: Duration::from_millis(200),
+    };
+    let (proxy, tunnel) = limited_proxy(&pki, limits);
+    let mut silent = serve_new(&proxy);
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), silent.read_to_end(&mut rest))
+        .await
+        .expect("the proxy must close a silent client")
+        .unwrap();
+    assert!(rest.is_empty(), "closed without a reply");
+
+    // Its slot is free again.
+    let mut next = serve_new(&proxy);
     sign_in(&mut next, DB_USER, LOCAL_PASSWORD).await.unwrap();
-    assert_eq!(tunnel.dials.load(Ordering::SeqCst), 1, "the new client reaches the tunnel");
+    assert_eq!(tunnel.dials.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
