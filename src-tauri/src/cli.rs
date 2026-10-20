@@ -373,7 +373,7 @@ async fn run_rds_connect(
         .parse()
         .map_err(|_| format!("Invalid port: {}", local_port))?;
 
-    let multiplexed = project_config.multiplexed.unwrap_or(false);
+    let multiplexed = project_config.multiplexed.unwrap_or(true);
 
     // Display connection info with dynamic-width box
     let masked_password = mask_password(&password);
@@ -561,7 +561,7 @@ async fn run_service_connect(
 
     print_info_box(&rows);
 
-    let multiplexed = project_config.multiplexed.unwrap_or(false);
+    let multiplexed = project_config.multiplexed.unwrap_or(true);
     run_tunnel(stream_url, token_value, LocalSource::Listen(port_num), None, multiplexed).await
 }
 
