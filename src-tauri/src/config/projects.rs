@@ -369,4 +369,28 @@ mod tests {
         assert_eq!(get_local_port("covered-dev", &config), "5432");
         assert_eq!(get_local_port("covered", &config), "5460");
     }
+
+    #[test]
+    fn iam_auth_fields_round_trip_and_default_to_secrets() {
+        let json = r#"{"name":"Covered DB","region":"us-west-1","database":"covered_db",
+            "rdsType":"instance","rdsPattern":"covered-db","profileFilter":"covered-",
+            "envPortMapping":{},"defaultPort":"5432",
+            "authType":"iam","iamUsername":"covered_app","multiplexed":true}"#;
+        let config: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.auth_type, "iam");
+        assert_eq!(config.iam_username.as_deref(), Some("covered_app"));
+
+        let reparsed: ProjectConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(reparsed.auth_type, "iam");
+        assert_eq!(reparsed.iam_username.as_deref(), Some("covered_app"));
+        assert_eq!(reparsed.multiplexed, Some(true));
+
+        let legacy: ProjectConfig = serde_json::from_str(
+            r#"{"name":"x","region":"us-west-1","profileFilter":null,"envPortMapping":{},"defaultPort":"5432"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.auth_type, "secrets");
+        assert_eq!(legacy.iam_username, None);
+    }
 }

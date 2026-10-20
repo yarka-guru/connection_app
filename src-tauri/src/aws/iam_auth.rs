@@ -84,15 +84,71 @@ pub async fn generate_rds_auth_token(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_token_format_basic() {
-        // Just verify the URL construction logic (without actual signing)
-        let url = format!(
-            "https://{}:{}/?Action=connect&DBUser={}",
-            "mydb.cluster-abc123.us-east-1.rds.amazonaws.com", 5432, "db_admin"
+    use super::generate_rds_auth_token;
+    use aws_credential_types::provider::SharedCredentialsProvider;
+    use aws_credential_types::Credentials;
+
+    fn sdk_config(session_token: Option<&str>) -> aws_config::SdkConfig {
+        let credentials = Credentials::new(
+            "AKIDEXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            session_token.map(str::to_string),
+            None,
+            "test",
         );
-        assert!(url.contains("Action=connect"));
-        assert!(url.contains("DBUser=db_admin"));
-        assert!(url.contains(":5432/"));
+        aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-west-1"))
+            .credentials_provider(SharedCredentialsProvider::new(credentials))
+            .build()
+    }
+
+    fn query_pairs(token: &str) -> Vec<(String, String)> {
+        let url = reqwest::Url::parse(&format!("https://{}", token)).unwrap();
+        url.query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_token_is_presigned_rds_db_connect_url() {
+        let token = generate_rds_auth_token(
+            &sdk_config(Some("session/token+with=specials")),
+            "covered-db-dev.abc123.us-west-1.rds.amazonaws.com",
+            5433,
+            "covered_app",
+        )
+        .await
+        .unwrap();
+
+        assert!(token.starts_with(
+            "covered-db-dev.abc123.us-west-1.rds.amazonaws.com:5433/?Action=connect&DBUser=covered_app&"
+        ));
+        assert!(!token.contains("https://"));
+
+        let pairs = query_pairs(&token);
+        let get = |k: &str| {
+            pairs
+                .iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("X-Amz-Algorithm"), Some("AWS4-HMAC-SHA256"));
+        assert_eq!(get("X-Amz-Expires"), Some("900"));
+        assert_eq!(get("X-Amz-SignedHeaders"), Some("host"));
+        assert_eq!(get("X-Amz-Security-Token"), Some("session/token+with=specials"));
+        let credential = get("X-Amz-Credential").unwrap();
+        assert!(credential.starts_with("AKIDEXAMPLE/"));
+        assert!(credential.ends_with("/us-west-1/rds-db/aws4_request"));
+        assert_eq!(get("X-Amz-Signature").map(str::len), Some(64));
+    }
+
+    #[tokio::test]
+    async fn test_token_without_session_token_omits_it() {
+        let token = generate_rds_auth_token(&sdk_config(None), "db.example.com", 5432, "db_admin")
+            .await
+            .unwrap();
+        assert!(query_pairs(&token)
+            .iter()
+            .all(|(name, _)| name != "X-Amz-Security-Token"));
     }
 }

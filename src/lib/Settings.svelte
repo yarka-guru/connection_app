@@ -35,6 +35,9 @@ let projectRegion = $state('us-east-1')
 let projectDatabase = $state('')
 let projectDatabases = $state([])
 let projectSecretPrefix = $state('')
+let projectAuthType = $state('secrets')
+let projectIamUsername = $state('')
+let projectBaseConfig = {}
 let projectRdsType = $state('cluster')
 let projectEngine = $state('postgres')
 let projectRdsPattern = $state('')
@@ -198,6 +201,9 @@ function openAddProject() {
   projectDatabase = ''
   projectDatabases = []
   projectSecretPrefix = 'rds!cluster'
+  projectAuthType = 'secrets'
+  projectIamUsername = ''
+  projectBaseConfig = {}
   projectRdsType = 'cluster'
   projectEngine = 'postgres'
   projectRdsPattern = ''
@@ -224,6 +230,9 @@ function openEditProject(key, config) {
   projectDatabase = config.database || ''
   projectDatabases = config.databases ? [...config.databases] : []
   projectSecretPrefix = config.secretPrefix || ''
+  projectAuthType = config.authType || 'secrets'
+  projectIamUsername = config.iamUsername || ''
+  projectBaseConfig = { ...config }
   projectRdsType = config.rdsType || 'cluster'
   projectEngine = config.engine || 'postgres'
   projectRdsPattern = config.rdsPattern || ''
@@ -284,13 +293,17 @@ async function saveProject() {
     }
   }
 
+  const isIam = projectConnectionType === 'rds' && projectAuthType === 'iam'
   const config = {
+    ...projectBaseConfig,
     name: projectName.trim(),
     region: projectRegion.trim(),
     connectionType: projectConnectionType,
     database: projectConnectionType === 'rds' ? projectDatabase.trim() : '',
     databases: projectConnectionType === 'rds' && projectDatabases.length > 0 ? projectDatabases.filter(d => d.trim()) : null,
     secretPrefix: projectConnectionType === 'rds' ? projectSecretPrefix.trim() : '',
+    authType: isIam ? 'iam' : 'secrets',
+    iamUsername: isIam ? projectIamUsername.trim() || null : null,
     rdsType: projectConnectionType === 'rds' ? projectRdsType : '',
     engine: projectConnectionType === 'rds' ? projectEngine : null,
     rdsPattern: projectConnectionType === 'rds' ? projectRdsPattern.trim() : '',
@@ -811,10 +824,28 @@ onDestroy(() => {
                       <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
                     </div>
                     <div class="form-group">
-                      <label for="project-secret-prefix">Secret Prefix</label>
-                      <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
-                      <span class="field-hint">Prefix to find credentials in Secrets Manager</span>
+                      <label for="project-auth-type">Authentication</label>
+                      <select id="project-auth-type" bind:value={projectAuthType}>
+                        <option value="secrets">Secrets Manager</option>
+                        <option value="iam">IAM database auth</option>
+                      </select>
                     </div>
+                  </div>
+
+                  <div class="form-row">
+                    {#if projectAuthType === 'iam'}
+                      <div class="form-group">
+                        <label for="project-iam-username">IAM DB User</label>
+                        <input id="project-iam-username" type="text" bind:value={projectIamUsername} placeholder="db_user" />
+                        <span class="field-hint">Database role granted rds_iam; the token is valid for 15 minutes</span>
+                      </div>
+                    {:else}
+                      <div class="form-group">
+                        <label for="project-secret-prefix">Secret Prefix</label>
+                        <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
+                        <span class="field-hint">Prefix to find credentials in Secrets Manager</span>
+                      </div>
+                    {/if}
                   </div>
 
                   <div class="form-group databases-group">
