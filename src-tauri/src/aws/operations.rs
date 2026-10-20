@@ -19,6 +19,34 @@ pub struct DbCredentials {
     pub secret_name: String,
 }
 
+/// Where a project's database secret lives, so it can be read again later
+/// (e.g. after the auth proxy sees the password rejected).
+#[derive(Debug, Clone)]
+pub struct SecretLocator {
+    pub profile: String,
+    pub region: String,
+    pub secret_prefix: String,
+    pub database: String,
+    pub secret_path: Option<String>,
+    pub username_field: Option<String>,
+    pub password_field: Option<String>,
+}
+
+impl SecretLocator {
+    pub async fn fetch(&self) -> Result<DbCredentials, AppError> {
+        let clients = crate::aws::credentials::create_aws_clients(&self.profile, &self.region).await;
+        get_connection_credentials(
+            &clients,
+            &self.secret_prefix,
+            &self.database,
+            self.secret_path.as_deref(),
+            self.username_field.as_deref(),
+            self.password_field.as_deref(),
+        )
+        .await
+    }
+}
+
 /// Check if AWS credentials are valid via STS GetCallerIdentity.
 pub async fn check_credentials_valid(clients: &AwsClients) -> CredentialCheck {
     let timeout = tokio::time::Duration::from_secs(DEFAULT_CREDENTIAL_TIMEOUT_SECS);

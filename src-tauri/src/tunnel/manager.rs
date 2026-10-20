@@ -10,7 +10,7 @@ use crate::config::projects::{
 use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
 use crate::tunnel::native::{self, LocalSource, PipeInbox};
-use crate::tunnel::pg_proxy::{self, PgAuthProxy, ProxySettings, UpstreamAuth};
+use crate::tunnel::pg_proxy::{self, PgAuthProxy, ProxySettings, SecretRefetch, UpstreamAuth};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,11 +70,8 @@ pub struct ConnectionInfo {
     // SSH-specific: pre-built SSH command for copy-paste
     #[serde(rename = "sshCommand", skip_serializing_if = "Option::is_none")]
     pub ssh_command: Option<String>,
-    // Auth proxy: `password` is the stable local password; the proxy signs in
-    // to RDS with an IAM token or the secret's password.
-    #[serde(rename = "authProxy", default, skip_serializing_if = "std::ops::Not::not")]
-    pub auth_proxy: bool,
-    // Upstream auth method in use: "IAM", "IAM (auto)" or "password"
+    // Auth proxy in use: upstream method "IAM", "IAM (auto)" or "password".
+    // `password` is then the stable local password.
     #[serde(rename = "authMethod", default, skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
 }
@@ -696,6 +693,18 @@ impl TunnelManager {
                         local_password: local_password.clone(),
                         auth: UpstreamAuth::Auto {
                             password: credentials.password,
+                            refetch: Some(SecretRefetch {
+                                source: Arc::new(operations::SecretLocator {
+                                    profile: profile.to_string(),
+                                    region: project_config.region.clone(),
+                                    secret_prefix: project_config.secret_prefix.clone(),
+                                    database: effective_db.to_string(),
+                                    secret_path: project_config.secret_path.clone(),
+                                    username_field: project_config.secret_username_field.clone(),
+                                    password_field: project_config.secret_password_field.clone(),
+                                }),
+                                key: format!("{}:{}", project_key, profile),
+                            }),
                         },
                         sdk_config: build_aws_config(profile, &project_config.region).await,
                     };
@@ -724,7 +733,6 @@ impl TunnelManager {
             target_type: None,
             engine: project_config.engine.clone(),
             ssh_command: None,
-            auth_proxy: proxy_settings.is_some(),
             auth_method,
         };
 
@@ -909,7 +917,6 @@ impl TunnelManager {
             target_type: Some(target_type.to_string()),
             engine: None,
             ssh_command,
-            auth_proxy: false,
             auth_method: None,
         };
 

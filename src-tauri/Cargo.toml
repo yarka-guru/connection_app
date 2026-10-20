@@ -80,9 +80,8 @@ hmac = "0.13"
 md-5 = "0.11"
 subtle = "2"
 getrandom = "0.4"
-
-[dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+# Self-signed loopback certificate for the auth proxy, generated in memory.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 
 [features]
 default = ["gui"]

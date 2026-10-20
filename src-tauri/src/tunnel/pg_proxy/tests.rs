@@ -184,7 +184,91 @@ impl Harness {
 fn auto() -> UpstreamAuth {
     UpstreamAuth::Auto {
         password: SECRET.to_string(),
+        refetch: None,
     }
+}
+
+/// Secret source that returns `password` and counts fetches.
+struct FakeSecret {
+    password: &'static str,
+    fetches: AtomicUsize,
+}
+
+impl SecretSource for FakeSecret {
+    fn fetch(&self) -> BoxFuture<'_, Result<(String, String), String>> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { Ok((DB_USER.to_string(), self.password.to_string())) })
+    }
+}
+
+fn auto_with_refetch(source: Arc<FakeSecret>) -> UpstreamAuth {
+    UpstreamAuth::Auto {
+        password: SECRET.to_string(),
+        refetch: Some(SecretRefetch {
+            source,
+            key: format!("test:{}", uuid::Uuid::new_v4()),
+        }),
+    }
+}
+
+/// Trusts any certificate: the loopback certificate is self-signed on purpose.
+#[derive(Debug)]
+struct AcceptAnyCert(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        assert_eq!(server_name.to_str(), "localhost");
+        assert!(!end_entity.is_empty());
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// What libpq does with sslmode=require: SSLRequest, then TLS without verifying.
+async fn start_tls(mut client: DuplexStream) -> tokio_rustls::client::TlsStream<DuplexStream> {
+    send(&mut client, &wire::ssl_request()).await;
+    let mut answer = [0u8; 1];
+    client.read_exact(&mut answer).await.unwrap();
+    assert_eq!(&answer, b"S", "proxy must accept TLS on loopback");
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAnyCert(provider)))
+        .with_no_client_auth();
+    tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from("localhost").unwrap(), client)
+        .await
+        .expect("loopback TLS handshake")
 }
 
 async fn fake_rds(mut stream: Upstream, acceptor: TlsAcceptor, behaviour: Rds) -> Seen {
@@ -304,13 +388,13 @@ fn startup(user: &str) -> Vec<u8> {
     .encode()
 }
 
-async fn expect_auth(client: &mut DuplexStream, code: u32) -> Vec<u8> {
+async fn expect_auth<S: AsyncRead + Unpin>(client: &mut S, code: u32) -> Vec<u8> {
     let msg = wire::read_message(client, 4096).await.unwrap();
     assert_eq!(msg.auth_code(), Some(code), "unexpected message {:?}", msg);
     msg.body[4..].to_vec()
 }
 
-async fn expect_error(client: &mut DuplexStream) -> (String, String) {
+async fn expect_error<S: AsyncRead + Unpin>(client: &mut S) -> (String, String) {
     let msg = wire::read_message(client, 4096).await.unwrap();
     assert_eq!(msg.tag, b'E', "expected ErrorResponse, got {:?}", msg);
     (
@@ -319,13 +403,9 @@ async fn expect_error(client: &mut DuplexStream) -> (String, String) {
     )
 }
 
-/// SSLRequest (declined), StartupMessage, full SCRAM exchange with the proxy.
-async fn sign_in(client: &mut DuplexStream, user: &str, password: &str) -> Result<(), (String, String)> {
-    send(client, &wire::ssl_request()).await;
-    let mut answer = [0u8; 1];
-    client.read_exact(&mut answer).await.unwrap();
-    assert_eq!(&answer, b"N", "loopback hop must decline TLS");
-
+/// StartupMessage and a full SCRAM exchange with the proxy (no SSLRequest,
+/// as with sslmode=disable; wrap the stream with `start_tls` first for TLS).
+async fn sign_in<S: AsyncRead + AsyncWrite + Unpin>(client: &mut S, user: &str, password: &str) -> Result<(), (String, String)> {
     send(client, &startup(user)).await;
     let mechanisms = expect_auth(client, wire::AUTH_SASL).await;
     assert_eq!(mechanisms, b"SCRAM-SHA-256\0\0");
@@ -351,8 +431,12 @@ async fn sign_in(client: &mut DuplexStream, user: &str, password: &str) -> Resul
 }
 
 /// Sign in, read the relayed startup tail and run one echoed query.
-async fn full_session(client: &mut DuplexStream) {
-    sign_in(client, DB_USER, LOCAL_PASSWORD).await.unwrap();
+async fn full_session<S: AsyncRead + AsyncWrite + Unpin>(client: &mut S) {
+    full_session_as(client, LOCAL_PASSWORD).await
+}
+
+async fn full_session_as<S: AsyncRead + AsyncWrite + Unpin>(client: &mut S, password: &str) {
+    sign_in(client, DB_USER, password).await.unwrap();
     expect_auth(client, wire::AUTH_OK).await;
     assert_eq!(wire::read_message(client, 4096).await.unwrap().tag, b'S');
     let key_data = wire::read_message(client, 4096).await.unwrap();
@@ -395,13 +479,107 @@ async fn wrong_local_password_is_rejected_before_anything_goes_upstream() {
 }
 
 #[tokio::test]
-async fn the_secret_password_is_not_accepted_locally() {
+async fn secrets_project_also_accepts_the_secret_password_locally() {
     let pki = test_pki();
-    let h = Harness::new(&pki, auto(), vec![]);
+    let h = Harness::new(&pki, auto(), vec![Rds::Pam(TOKEN)]);
+    let mut client = h.client();
+    full_session_as(&mut client, SECRET).await;
+    assert_eq!(h.seen().await[0].cleartext.as_deref(), Some(TOKEN));
+}
+
+#[tokio::test]
+async fn iam_project_accepts_only_the_local_password() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, UpstreamAuth::IamOnly, vec![]);
     let mut client = h.client();
     let err = sign_in(&mut client, DB_USER, SECRET).await.unwrap_err();
     assert_eq!(err.0, "28P01");
     assert_eq!(h.dials(), 0);
+}
+
+#[tokio::test]
+async fn ssl_request_gets_loopback_tls_and_the_session_runs_over_it() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, auto(), vec![Rds::Scram(SECRET)]);
+    let mut client = start_tls(h.client()).await;
+    full_session(&mut client).await;
+    assert_eq!(h.proxy.method_label().as_deref(), Some("password"));
+}
+
+#[tokio::test]
+async fn gssenc_is_declined_then_ssl_is_accepted() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, auto(), vec![Rds::Pam(TOKEN)]);
+    let mut raw = h.client();
+    let mut gss = 8u32.to_be_bytes().to_vec();
+    gss.extend_from_slice(&wire::GSSENC_REQUEST_CODE.to_be_bytes());
+    send(&mut raw, &gss).await;
+    let mut answer = [0u8; 1];
+    raw.read_exact(&mut answer).await.unwrap();
+    assert_eq!(&answer, b"N");
+    let mut client = start_tls(raw).await;
+    full_session(&mut client).await;
+}
+
+#[tokio::test]
+async fn ssl_request_inside_tls_is_rejected() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, auto(), vec![]);
+    let mut client = start_tls(h.client()).await;
+    send(&mut client, &wire::ssl_request()).await;
+    let (code, message) = expect_error(&mut client).await;
+    assert_eq!(code, "08P01");
+    assert!(message.contains("unexpected encryption request"), "{}", message);
+    assert_eq!(h.dials(), 0);
+}
+
+#[tokio::test]
+async fn rejected_secret_password_is_re_read_once_and_retried() {
+    let pki = test_pki();
+    let source = Arc::new(FakeSecret {
+        password: "rotated-password",
+        fetches: AtomicUsize::new(0),
+    });
+    let h = Harness::new(
+        &pki,
+        auto_with_refetch(source.clone()),
+        vec![Rds::Scram("rotated-password"), Rds::Scram("rotated-password"), Rds::Scram("rotated-password")],
+    );
+    let mut client = h.client();
+    full_session(&mut client).await;
+    assert_eq!(source.fetches.load(Ordering::SeqCst), 1);
+    assert_eq!(h.dials(), 2, "old password refused, re-read password accepted");
+
+    // The re-read password is now the accepted one, upstream and locally.
+    let mut client = h.client();
+    full_session_as(&mut client, "rotated-password").await;
+    let mut client = h.client();
+    let err = sign_in(&mut client, DB_USER, SECRET).await.unwrap_err();
+    assert_eq!(err.0, "28P01", "the old secret password is no longer accepted locally");
+    assert_eq!(h.dials(), 3);
+}
+
+#[tokio::test]
+async fn secret_re_reads_are_rate_limited() {
+    let pki = test_pki();
+    let source = Arc::new(FakeSecret {
+        password: "still-wrong",
+        fetches: AtomicUsize::new(0),
+    });
+    let h = Harness::new(
+        &pki,
+        auto_with_refetch(source.clone()),
+        vec![Rds::Scram("rotated"), Rds::Scram("rotated"), Rds::Scram("rotated")],
+    );
+    for _ in 0..2 {
+        let mut client = h.client();
+        sign_in(&mut client, DB_USER, LOCAL_PASSWORD).await.unwrap();
+        let (code, _) = expect_error(&mut client).await;
+        assert_eq!(code, "28P01");
+    }
+    assert_eq!(source.fetches.load(Ordering::SeqCst), 1, "second failure within 60 s must not re-read");
+    // First session: old password, then the (changed but still wrong) re-read one. Second: one attempt.
+    assert_eq!(h.dials(), 3);
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@ use connection_app_lib::tunnel::native::{
     bind_local_listeners, start_multiplexed_port_forwarding, start_native_port_forwarding,
     LocalSource,
 };
-use connection_app_lib::tunnel::pg_proxy::{self, PgAuthProxy, ProxySettings, UpstreamAuth};
+use connection_app_lib::tunnel::pg_proxy::{self, PgAuthProxy, ProxySettings, SecretRefetch, UpstreamAuth};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -330,6 +330,18 @@ async fn run_rds_connect(
                 local_password: local_proxy_password(project_key, profile).await?,
                 auth: UpstreamAuth::Auto {
                     password: db_creds.password,
+                    refetch: Some(SecretRefetch {
+                        source: Arc::new(operations::SecretLocator {
+                            profile: profile.to_string(),
+                            region: project_config.region.clone(),
+                            secret_prefix: project_config.secret_prefix.clone(),
+                            database: effective_db.to_string(),
+                            secret_path: project_config.secret_path.clone(),
+                            username_field: project_config.secret_username_field.clone(),
+                            password_field: project_config.secret_password_field.clone(),
+                        }),
+                        key: format!("{}:{}", project_key, profile),
+                    }),
                 },
                 sdk_config: connection_app_lib::aws::credentials::build_aws_config(
                     profile,

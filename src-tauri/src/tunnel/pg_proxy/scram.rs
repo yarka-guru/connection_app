@@ -20,6 +20,7 @@ pub enum ScramError {
 }
 
 /// What the server stores for a password: never the password itself.
+#[derive(Clone)]
 pub struct ScramVerifier {
     salt: Vec<u8>,
     iterations: u32,
@@ -157,6 +158,17 @@ impl ScramVerifier {
         exchange: &ScramExchange,
         client_final: &[u8],
     ) -> Result<String, ScramError> {
+        Self::server_final_any(&[self], exchange, client_final).map(|(_, server_final)| server_final)
+    }
+
+    /// Verify client-final-message against several passwords that share one
+    /// salt and iteration count. Every verifier is checked, in constant time;
+    /// returns the index of the one that matched and server-final-message.
+    pub fn server_final_any(
+        verifiers: &[&ScramVerifier],
+        exchange: &ScramExchange,
+        client_final: &[u8],
+    ) -> Result<(usize, String), ScramError> {
         let msg = std::str::from_utf8(client_final)
             .map_err(|_| ScramError::Malformed("client-final-message is not UTF-8"))?;
         let proof_at = msg
@@ -193,17 +205,23 @@ impl ScramVerifier {
             "{},{},{}",
             exchange.client_first_bare, exchange.server_first, without_proof
         );
-        let client_signature = hmac(&self.stored_key, auth_message.as_bytes());
-        let mut client_key = [0u8; 32];
-        for (i, k) in client_key.iter_mut().enumerate() {
-            *k = proof[i] ^ client_signature[i];
+        let mut matched = None;
+        for (index, verifier) in verifiers.iter().enumerate() {
+            debug_assert!(verifier.salt == verifiers[0].salt && verifier.iterations == verifiers[0].iterations);
+            let client_signature = hmac(&verifier.stored_key, auth_message.as_bytes());
+            let mut client_key = [0u8; 32];
+            for (i, k) in client_key.iter_mut().enumerate() {
+                *k = proof[i] ^ client_signature[i];
+            }
+            let ok = bool::from(sha256(&client_key).ct_eq(&verifier.stored_key));
+            if ok && matched.is_none() {
+                matched = Some(index);
+            }
         }
-        if !bool::from(sha256(&client_key).ct_eq(&self.stored_key)) {
-            return Err(ScramError::InvalidProof);
-        }
+        let index = matched.ok_or(ScramError::InvalidProof)?;
 
-        let server_signature = hmac(&self.server_key, auth_message.as_bytes());
-        Ok(format!("v={}", BASE64.encode(server_signature)))
+        let server_signature = hmac(&verifiers[index].server_key, auth_message.as_bytes());
+        Ok((index, format!("v={}", BASE64.encode(server_signature))))
     }
 }
 
@@ -372,6 +390,31 @@ mod tests {
     fn client_and_server_agree_on_the_right_password_only() {
         assert_eq!(exchange("right-password", "right-password"), Ok(()));
         assert_eq!(exchange("right-password", "wrong-password"), Err(ScramError::InvalidProof));
+    }
+
+    #[test]
+    fn either_of_two_passwords_with_a_shared_salt_verifies() {
+        let salt = b"0123456789abcdef".to_vec();
+        let local = ScramVerifier::new("local-password", salt.clone(), 4096);
+        let secret = ScramVerifier::new("secret-password", salt, 4096);
+        for (password, expected) in [
+            ("local-password", Ok(0)),
+            ("secret-password", Ok(1)),
+            ("neither", Err(ScramError::InvalidProof)),
+        ] {
+            let (mut client, first) = ScramClient::new(password, "clientnonce");
+            let (exchange, server_first) = local.server_first(first.as_bytes(), "servernonce").unwrap();
+            let client_final = client.client_final(server_first.as_bytes()).unwrap();
+            let result = ScramVerifier::server_final_any(&[&local, &secret], &exchange, client_final.as_bytes());
+            match (result, expected) {
+                (Ok((index, server_final)), Ok(want)) => {
+                    assert_eq!(index, want);
+                    client.verify_server_final(server_final.as_bytes()).expect("signature of the matching verifier");
+                }
+                (Err(e), Err(want)) => assert_eq!(e, want),
+                (got, want) => panic!("{}: got {:?}, want {:?}", password, got.map(|r| r.0), want),
+            }
+        }
     }
 
     #[test]
