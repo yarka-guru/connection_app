@@ -86,6 +86,44 @@ pub struct Connection {
     cancel_token: CancellationToken,
 }
 
+/// Sign-in check through the auth proxy, run once the tunnel is up. Kept
+/// out of `connect` so callers can run it without holding the manager lock.
+pub struct AuthCheck {
+    proxy: Arc<PgAuthProxy>,
+    database: String,
+    connection_id: String,
+    connections: Arc<Mutex<HashMap<String, Connection>>>,
+    app_handle: AppHandle,
+}
+
+impl AuthCheck {
+    /// Sign in once and log out; records and returns the auth method label.
+    pub async fn run(self) -> String {
+        emit_status_event(&self.app_handle, "Checking database sign-in...", Some(&self.connection_id));
+        let probe = tokio::time::timeout(
+            tokio::time::Duration::from_secs(AUTH_PROBE_TIMEOUT_SECS),
+            self.proxy.probe(&self.database),
+        )
+        .await;
+        let label = match probe {
+            Ok(Ok(method)) => method,
+            Ok(Err(e)) => {
+                log::warn!("Database sign-in check failed: {}", e);
+                format!("check failed: {}", e)
+            }
+            Err(_) => {
+                log::warn!("Database sign-in check timed out");
+                "check timed out".to_string()
+            }
+        };
+        let mut guard = self.connections.lock().await;
+        if let Some(conn) = guard.get_mut(&self.connection_id) {
+            conn.connection_info.auth_method = Some(label.clone());
+        }
+        label
+    }
+}
+
 /// Manages all active tunnel connections.
 pub struct TunnelManager {
     connections: Arc<Mutex<HashMap<String, Connection>>>,
@@ -231,6 +269,7 @@ impl TunnelManager {
     }
 
     /// Connect to a project (dispatches to RDS or service based on connectionType).
+    /// For auth-proxy connections also returns the sign-in check to run next.
     pub async fn connect(
         &self,
         project_key: &str,
@@ -238,7 +277,7 @@ impl TunnelManager {
         local_port: Option<&str>,
         database: Option<&str>,
         used_ports: &[String],
-    ) -> Result<(String, ConnectionInfo), AppError> {
+    ) -> Result<(String, ConnectionInfo, Option<AuthCheck>), AppError> {
         // Validate profile
         if !PROFILE_SAFE_PATTERN.is_match(profile) {
             return Err(AppError::General(format!(
@@ -333,7 +372,7 @@ impl TunnelManager {
         let clients = create_aws_clients(profile, &project_config.region).await;
 
         // Dispatch based on connection type
-        let (mut connection_info, tunnel_target, proxy_settings) = match project_config.connection_type.as_str() {
+        let (connection_info, tunnel_target, proxy_settings) = match project_config.connection_type.as_str() {
             "service" => {
                 let (info, target) = self.resolve_service_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use).await?;
                 (info, target, None)
@@ -503,30 +542,13 @@ impl TunnelManager {
                     details: Some(format!("port {}", connection_info.port)),
                 })
                 .await;
-                if let Some(proxy) = &auth_proxy {
-                    self.emit_status("Checking database sign-in...", Some(&connection_id));
-                    let database = connection_info.database.clone().unwrap_or_default();
-                    let probe = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(AUTH_PROBE_TIMEOUT_SECS),
-                        proxy.probe(&database),
-                    )
-                    .await;
-                    connection_info.auth_method = Some(match probe {
-                        Ok(Ok(method)) => method,
-                        Ok(Err(e)) => {
-                            log::warn!("Database sign-in check failed: {}", e);
-                            format!("check failed: {}", e)
-                        }
-                        Err(_) => {
-                            log::warn!("Database sign-in check timed out");
-                            "check timed out".to_string()
-                        }
-                    });
-                    let mut guard = self.connections.lock().await;
-                    if let Some(conn) = guard.get_mut(&connection_id) {
-                        conn.connection_info = connection_info.clone();
-                    }
-                }
+                let auth_check = auth_proxy.map(|proxy| AuthCheck {
+                    proxy,
+                    database: connection_info.database.clone().unwrap_or_default(),
+                    connection_id: connection_id.clone(),
+                    connections: self.connections.clone(),
+                    app_handle: self.app_handle.clone(),
+                });
                 // Tunnel is ready — start periodic health checks
                 Self::spawn_health_check(
                     &self.app_handle,
@@ -534,7 +556,7 @@ impl TunnelManager {
                     &health_port,
                     &health_cancel,
                 );
-                Ok((connection_id, connection_info))
+                Ok((connection_id, connection_info, auth_check))
             }
             Ok(Ok(Err(e))) => {
                 proxy_cancel.cancel();
