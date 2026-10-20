@@ -6,6 +6,12 @@ use aws_sigv4::http_request::{
 use aws_sigv4::sign::v4;
 use std::time::{Duration, SystemTime};
 
+/// RDS accepts IAM auth tokens for at most 15 minutes.
+pub const MAX_TOKEN_LIFETIME: Duration = Duration::from_secs(900);
+
+/// Test-only override of the token lifetime, in seconds (10..=900).
+pub const TOKEN_LIFETIME_ENV: &str = "CONNECTION_APP_IAM_TOKEN_TTL_SECS";
+
 /// Generate an RDS IAM authentication token.
 ///
 /// The token is a presigned URL for `Action=connect` against the RDS endpoint,
@@ -17,6 +23,17 @@ pub async fn generate_rds_auth_token(
     hostname: &str,
     port: u16,
     username: &str,
+) -> Result<String, AppError> {
+    generate_rds_auth_token_valid_for(config, hostname, port, username, MAX_TOKEN_LIFETIME).await
+}
+
+/// Generate an RDS IAM authentication token valid for `lifetime` (capped at 15 minutes).
+pub async fn generate_rds_auth_token_valid_for(
+    config: &aws_config::SdkConfig,
+    hostname: &str,
+    port: u16,
+    username: &str,
+    lifetime: Duration,
 ) -> Result<String, AppError> {
     // Resolve credentials from the SDK config
     let credentials_provider = config
@@ -43,7 +60,7 @@ pub async fn generate_rds_auth_token(
     // Configure signing settings for presigned URL (query string signing)
     let mut signing_settings = SigningSettings::default();
     signing_settings.signature_location = SignatureLocation::QueryParams;
-    signing_settings.expires_in = Some(Duration::from_secs(900)); // 15 minutes
+    signing_settings.expires_in = Some(lifetime.min(MAX_TOKEN_LIFETIME));
 
     let identity = credentials.into();
     let signing_params = v4::SigningParams::builder()
@@ -82,9 +99,102 @@ pub async fn generate_rds_auth_token(
     Ok(token)
 }
 
+/// Token lifetime: 15 minutes, or the test override from `TOKEN_LIFETIME_ENV`.
+pub fn token_lifetime() -> Duration {
+    parse_token_lifetime(std::env::var(TOKEN_LIFETIME_ENV).ok().as_deref())
+}
+
+fn parse_token_lifetime(value: Option<&str>) -> Duration {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.clamp(10, MAX_TOKEN_LIFETIME.as_secs())))
+        .unwrap_or(MAX_TOKEN_LIFETIME)
+}
+
+/// True while a token issued at `issued_at` is younger than `max_age`.
+/// Uses wall-clock time: the token's expiry is wall-clock based, and a
+/// monotonic clock stops while the machine sleeps.
+fn is_fresh(issued_at: SystemTime, now: SystemTime, max_age: Duration) -> bool {
+    now.duration_since(issued_at)
+        .map(|age| age < max_age)
+        .unwrap_or(false)
+}
+
+struct CachedToken {
+    token: String,
+    issued_at: SystemTime,
+}
+
+/// Caches one RDS IAM auth token and mints a new one once it is two thirds
+/// through its lifetime (10 of 15 minutes). Every new token resolves AWS
+/// credentials again.
+pub struct RdsAuthTokenCache {
+    config: aws_config::SdkConfig,
+    hostname: String,
+    port: u16,
+    username: String,
+    lifetime: Duration,
+    refresh_after: Duration,
+    cached: tokio::sync::Mutex<Option<CachedToken>>,
+}
+
+impl RdsAuthTokenCache {
+    pub fn new(config: aws_config::SdkConfig, hostname: &str, port: u16, username: &str) -> Self {
+        let lifetime = token_lifetime();
+        Self {
+            config,
+            hostname: hostname.to_string(),
+            port,
+            username: username.to_string(),
+            lifetime,
+            refresh_after: lifetime * 2 / 3,
+            cached: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    pub async fn token(&self) -> Result<String, AppError> {
+        let mut cached = self.cached.lock().await;
+        if let Some(c) = cached.as_ref()
+            && is_fresh(c.issued_at, SystemTime::now(), self.refresh_after)
+        {
+            return Ok(c.token.clone());
+        }
+        let issued_at = SystemTime::now();
+        let token = generate_rds_auth_token_valid_for(
+            &self.config,
+            &self.hostname,
+            self.port,
+            &self.username,
+            self.lifetime,
+        )
+        .await?;
+        log::info!(
+            "Generated a new RDS IAM auth token for {}@{} (valid {}s, replaced after {}s)",
+            self.username,
+            self.hostname,
+            self.lifetime.as_secs(),
+            self.refresh_after.as_secs()
+        );
+        *cached = Some(CachedToken {
+            token: token.clone(),
+            issued_at,
+        });
+        Ok(token)
+    }
+
+    /// Drop the cached token so the next connection mints a fresh one.
+    pub async fn invalidate(&self) {
+        *self.cached.lock().await = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::generate_rds_auth_token;
+    use super::{
+        generate_rds_auth_token, generate_rds_auth_token_valid_for, is_fresh,
+        parse_token_lifetime, RdsAuthTokenCache, MAX_TOKEN_LIFETIME,
+    };
+    use std::time::{Duration, SystemTime};
     use aws_credential_types::provider::SharedCredentialsProvider;
     use aws_credential_types::Credentials;
 
@@ -150,5 +260,66 @@ mod tests {
         assert!(query_pairs(&token)
             .iter()
             .all(|(name, _)| name != "X-Amz-Security-Token"));
+    }
+
+    fn expires(token: &str) -> String {
+        query_pairs(token)
+            .into_iter()
+            .find(|(k, _)| k == "X-Amz-Expires")
+            .map(|(_, v)| v)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_token_lifetime_is_capped_at_15_minutes() {
+        let config = sdk_config(None);
+        let short = generate_rds_auth_token_valid_for(&config, "db.example.com", 5432, "u", Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(expires(&short), "30");
+        let long = generate_rds_auth_token_valid_for(&config, "db.example.com", 5432, "u", Duration::from_secs(3600))
+            .await
+            .unwrap();
+        assert_eq!(expires(&long), "900");
+    }
+
+    #[test]
+    fn test_lifetime_override_parsing() {
+        assert_eq!(parse_token_lifetime(None), MAX_TOKEN_LIFETIME);
+        assert_eq!(parse_token_lifetime(Some("30")), Duration::from_secs(30));
+        assert_eq!(parse_token_lifetime(Some(" 45 ")), Duration::from_secs(45));
+        assert_eq!(parse_token_lifetime(Some("1")), Duration::from_secs(10));
+        assert_eq!(parse_token_lifetime(Some("100000")), MAX_TOKEN_LIFETIME);
+        assert_eq!(parse_token_lifetime(Some("soon")), MAX_TOKEN_LIFETIME);
+    }
+
+    #[test]
+    fn test_freshness_uses_age_and_rejects_clock_going_backwards() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let max_age = Duration::from_secs(600);
+        assert!(is_fresh(t0, t0, max_age));
+        assert!(is_fresh(t0, t0 + Duration::from_secs(599), max_age));
+        assert!(!is_fresh(t0, t0 + Duration::from_secs(600), max_age));
+        // A wall clock that jumped back must not keep a token alive.
+        assert!(!is_fresh(t0, t0 - Duration::from_secs(5), max_age));
+    }
+
+    #[tokio::test]
+    async fn test_cache_reuses_token_until_refresh_age_and_after_invalidate() {
+        let cache = RdsAuthTokenCache::new(sdk_config(None), "db.example.com", 5432, "u");
+        let first = cache.token().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(cache.token().await.unwrap(), first, "token must be reused while fresh");
+        cache.invalidate().await;
+        let second = cache.token().await.unwrap();
+        assert_ne!(second, first, "a new signing time must produce a new token");
+
+        // Age the cached token past the refresh point.
+        {
+            let mut cached = cache.cached.lock().await;
+            cached.as_mut().unwrap().issued_at -= cache.refresh_after;
+        }
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_ne!(cache.token().await.unwrap(), second, "stale token must be replaced");
     }
 }
