@@ -2,34 +2,69 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.7.10] - 2026-10-21
 
 ### Added
-- PostgreSQL RDS connections go through a local auth proxy. Database
-  clients sign in with a stable local password (or, for `secrets`
-  projects, the secret's current password). The proxy signs in to RDS with
-  an IAM token or the secret's password, whichever the database user
-  needs, over verified TLS. IAM tokens are refreshed automatically, so
-  new logins no longer fail 15 minutes after Connect. Details and the
-  `sslmode` before/after table: README, "PostgreSQL connections: the local
-  auth proxy".
+- PostgreSQL RDS connections go through a local auth proxy on the same
+  port. Database clients sign in with a stable per-project/profile password
+  (stored in `~/.connection-app/iam-proxy-passwords.json`, 0600, created on
+  first use); for `secrets` projects the secret's current password is
+  accepted too, so stored client passwords keep working. The proxy signs in
+  to RDS over verified TLS (bundled AWS RDS CA bundle) with an IAM token or
+  the secret's password, whichever the database user needs, and renews IAM
+  tokens in the background (a new token after 10 of its 15 minutes), so new
+  logins no longer fail 15 minutes after Connect. The connection card and
+  the CLI show the auth method in use. Details and the `sslmode`
+  before/after table: README, "PostgreSQL connections: the local auth
+  proxy".
+- TLS on the loopback hop for clients using `sslmode=prefer` or `require`
+  (in-memory self-signed certificate). `sslmode=disable` works as well.
+- Cancel requests (Ctrl+C in psql) are forwarded to RDS.
 - Secret fallback: when no secret matches a project's `secretPrefix`, the
-  secret named `rds/<DBInstanceIdentifier>-credentials`
-  (`rds/<DBClusterIdentifier>-credentials` for clusters) is used, for the
-  instance or cluster being connected to. Projects with `"rds!db"` keep
-  working now that the RDS-managed master secret is gone.
+  secret named exactly `rds/<DBInstanceIdentifier>-credentials`
+  (`rds/<DBClusterIdentifier>-credentials` for clusters) of the instance or
+  cluster being connected to is used. The status line says so, and if both
+  lookups miss the error names both. `-master-credentials` and
+  `-local-credentials` secrets are never picked. Projects with `"rds!db"`
+  work again now that the RDS-managed master secret is gone.
 
 ### Changed
-- The CLI treats an unset `multiplexed` as on, like the desktop app.
+- If RDS rejects the secret's password, the secret is re-read (at most once
+  a minute, with the same fallback) and the sign-in retried.
+- Connect runs a one-time sign-in check and shows its result; it fails if
+  the connection is closed while the check runs.
 - RDS discovery prefers an available instance or cluster whose identifier
-  equals `rdsPattern` exactly; only without one does it take the first
-  identifier that contains it. With `rdsPattern: "covered-db"` this pins
-  prod to `covered-db` rather than the read replica `covered-db-ro`.
+  equals `rdsPattern` exactly, and only otherwise the first identifier that
+  contains it. With `rdsPattern: "covered-db"` this pins prod to
+  `covered-db` rather than the read replica `covered-db-ro`.
+- The CLI treats an unset `multiplexed` as on, like the desktop app.
+- MySQL projects and service tunnels (VNC/RDP/SSH) are unchanged and still
+  use the raw tunnel.
+- Dependencies: all npm and Rust dependencies at their latest releases
+  (tauri 2.12, tauri plugins, aws-sdk 1.12, vite 8.3, svelte 5.57, biome
+  2.5.15, `dirs` 7); CI on `actions/setup-node` v7 and
+  `tauri-apps/tauri-action` v1. macOS updater archives are now named
+  `ConnectionApp_<version>_<arch>.app.tar.gz`.
+
+### Fixed
+- Desktop: the sign-in check runs without holding the connection-manager
+  lock, so other actions are not blocked while it runs.
+- An unreadable or non-UTF-8 local password file is moved aside as a
+  `.bak` instead of failing Connect.
+
+### Security
+- Clients authenticate to the proxy with SCRAM-SHA-256. The proxy refuses
+  to send credentials to RDS without verified TLS, refuses `trust` and
+  unverified SCRAM finals, limits unauthenticated work (256 concurrent
+  sign-ins with a 5 s wait for a slot, 10 s for a client's first packet,
+  4 concurrent cancels, PostgreSQL's startup and message size caps) and
+  backs off after accept errors.
 
 ### Notes
 - `verify-ca`, `verify-full`, `channel_binding=require` and
-  `sslnegotiation=direct` no longer work against the local port; use
-  `prefer`, `require` or `disable`.
+  `sslnegotiation=direct` do not work against the local port; use
+  `prefer`, `require` or `disable`. This supersedes the 3.7.9 note about
+  IAM tokens expiring 15 minutes after Connect.
 
 ## [3.7.9] - 2026-10-20
 
