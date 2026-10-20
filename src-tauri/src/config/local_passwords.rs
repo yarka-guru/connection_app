@@ -80,10 +80,31 @@ fn get_or_create(path: &Path, key: &str) -> Result<String, AppError> {
 
 fn get_or_create_locked(path: &Path, key: &str) -> Result<String, AppError> {
     let mut passwords: BTreeMap<String, String> = match std::fs::read_to_string(path) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_else(|e| {
-            log::warn!("Ignoring unreadable {}: {}", path.display(), e);
-            BTreeMap::new()
-        }),
+        Ok(data) => match serde_json::from_str(&data) {
+            Ok(passwords) => passwords,
+            Err(e) => {
+                let backup = path.with_file_name(format!(
+                    "{}.{}.bak",
+                    FILE_NAME,
+                    chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+                ));
+                std::fs::rename(path, &backup).map_err(|re| {
+                    AppError::Config(format!(
+                        "{} is unreadable ({}) and could not be moved aside: {}",
+                        path.display(),
+                        e,
+                        re
+                    ))
+                })?;
+                log::warn!(
+                    "{} was unreadable ({}); moved it to {} and started a new one",
+                    path.display(),
+                    e,
+                    backup.display()
+                );
+                BTreeMap::new()
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => {
             return Err(AppError::Config(format!(
@@ -209,6 +230,32 @@ mod tests {
         for (key, password) in created {
             assert_eq!(stored.get(&key), Some(&password), "entry {} was lost", key);
         }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unreadable_file_is_kept_as_a_backup() {
+        let path = temp_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+        let pw = get_or_create(&path, "p:x").unwrap();
+        assert!(is_valid_password(&pw));
+
+        let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().ends_with(".bak"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{:?}", backups);
+        assert!(backups[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("iam-proxy-passwords.json."));
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "{ not json");
+        let stored: BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored.get("p:x"), Some(&pw));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
