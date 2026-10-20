@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `tunnel/websocket.rs` — WebSocket client with SigV4-signed connection
 - `tunnel/protocol.rs` — SSM binary protocol (channel open, data, ack, etc.)
 - `tunnel/manager.rs` — Multi-connection lifecycle manager with Tauri event emission
-- `tunnel/pg_proxy/` — PostgreSQL auth proxy for RDS connections (PostgreSQL engine only). Owns the local port, authenticates clients with the local password (SCRAM-SHA-256), opens TLS to RDS (embedded `certs/rds-global-bundle.pem`) through tunnel pipes, and signs in with an auto-refreshed IAM token or the secret's password, whichever RDS asks for
+- `tunnel/pg_proxy/` — PostgreSQL auth proxy for RDS connections (PostgreSQL engine only). Owns the local port, offers loopback TLS (self-signed, in memory), authenticates clients with SCRAM-SHA-256 against the local password (and, for `secrets` projects, the secret's current password), opens TLS to RDS (embedded `certs/rds-global-bundle.pem`) through tunnel pipes, and signs in with an auto-refreshed IAM token or the secret's password, whichever RDS asks for; re-reads the secret on a rejected password (at most once a minute). See README "PostgreSQL connections: the local auth proxy" for the sslmode before/after table
 
 #### macOS App Sandbox
 - `sandbox.rs` — Security-scoped bookmark management via CoreFoundation FFI

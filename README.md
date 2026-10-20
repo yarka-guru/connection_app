@@ -151,6 +151,43 @@ Commands:
 8. Starts an SSM session and opens a native WebSocket tunnel for port forwarding
 9. Displays connection details (host, port, username, password, database)
 
+### PostgreSQL connections: the local auth proxy
+
+For PostgreSQL RDS connections the app runs a small PostgreSQL proxy on the
+local port. Your database client signs in to the proxy; the proxy signs in to
+RDS over a verified TLS connection (AWS RDS CA bundle, built in) and then
+relays the session untouched.
+
+- **Password**: the app shows a stable local password (it never changes, so
+  clients can store it). For `secrets` projects the secret's current password
+  is accepted too, so clients that already store it keep working. For
+  `authType: "iam"` projects only the local password is accepted.
+- **Upstream sign-in** is picked automatically: an IAM token when the database
+  user is IAM-enabled (RDS asks for PAM), otherwise the secret's password. IAM
+  tokens are cached and replaced after 10 of their 15 minutes, so new
+  connections never hit an expired token. If RDS rejects the secret's
+  password, the secret is read again (at most once a minute) and the sign-in
+  retried.
+- **SSL on the local hop**: clients that ask for TLS get it with a self-signed
+  certificate for `localhost` / `127.0.0.1` / `::1`, generated in memory once
+  per app run and never written to disk. TLS to RDS is always verified by the
+  proxy.
+
+| Client `sslmode` | Before (raw tunnel to RDS) | Now (auth proxy) |
+|---|---|---|
+| `disable` | refused by RDS (`rds.force_ssl`: "no pg_hba.conf entry … no encryption") | works (plaintext on loopback, TLS to RDS) |
+| `prefer` (libpq/pgjdbc default) | TLS to RDS | TLS on loopback, TLS to RDS |
+| `require` (DBeaver/DataGrip "SSL on") | TLS to RDS | TLS on loopback, TLS to RDS |
+| `verify-ca` with the RDS CA bundle | worked | **fails**: the loopback certificate is self-signed |
+| `verify-full`, `host=localhost` | failed (the certificate names the RDS endpoint) | fails |
+| `verify-full`, `host=<endpoint> hostaddr=127.0.0.1` | worked | **fails** |
+| pgjdbc `ssl=true` alone (means `verify-full`) | failed without `~/.postgresql/root.crt` | same |
+
+Use `prefer`, `require` or `disable` against the local port. libpq treats
+`require` as `verify-ca` when a root certificate is configured (`sslrootcert`
+or `~/.postgresql/root.crt`); drop it for these connections. MySQL projects
+still use the raw tunnel.
+
 ### Error Recovery
 
 **TargetNotConnected** — when a bastion instance appears running but SSM agent is disconnected:

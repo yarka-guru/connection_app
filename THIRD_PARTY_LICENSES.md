@@ -17,7 +17,7 @@ The following libraries are dual-licensed under Apache-2.0 or MIT. This project 
 - **Tauri** — tauri, tauri-build, tauri-plugin-dialog, tauri-plugin-notification, tauri-plugin-opener, tauri-plugin-store, tauri-plugin-updater
   Copyright The Tauri Programme within The Commons Conservancy.
 
-- **Rust ecosystem** — base64, chrono, clap, dirs, env_logger, futures-util, getrandom, hmac, log, md-5, regex, reqwest, semver, serde, serde_json, sha1, sha2, socket2, thiserror, tokio-rustls, uuid
+- **Rust ecosystem** — base64, chrono, clap, dirs, env_logger, futures-util, getrandom, hmac, log, md-5, rcgen, regex, reqwest, semver, serde, serde_json, sha1, sha2, socket2, thiserror, tokio-rustls, uuid
 
 - **rustls** (Apache-2.0 OR ISC OR MIT)
 
