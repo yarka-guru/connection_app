@@ -61,8 +61,8 @@ function loadSignatures() {
 
 const signatures = loadSignatures()
 
-const macAarch64 = `${productName}_aarch64.app.tar.gz`
-const macX64 = `${productName}_x64.app.tar.gz`
+const macAarch64 = `${productName}_${version}_aarch64.app.tar.gz`
+const macX64 = `${productName}_${version}_x64.app.tar.gz`
 const linuxAmd64 = `${productName}_${version}_amd64.AppImage`
 const linuxAarch64 = `${productName}_${version}_aarch64.AppImage`
 
