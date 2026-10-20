@@ -21,6 +21,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - The CLI treats an unset `multiplexed` as on, like the desktop app.
+- RDS discovery prefers an available instance or cluster whose identifier
+  equals `rdsPattern` exactly; only without one does it take the first
+  identifier that contains it. With `rdsPattern: "covered-db"` this pins
+  prod to `covered-db` rather than the read replica `covered-db-ro`.
 
 ### Notes
 - `verify-ca`, `verify-full`, `channel_binding=require` and

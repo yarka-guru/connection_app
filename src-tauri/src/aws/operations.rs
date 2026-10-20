@@ -35,15 +35,21 @@ pub fn fallback_secret_name(identifier: &str) -> String {
     format!("rds/{}-credentials", identifier)
 }
 
-/// The first available RDS resource whose identifier contains `pattern`, in
-/// API order. Items are (identifier, status, endpoint).
+/// The available RDS resource whose identifier equals `pattern`, otherwise
+/// the first available one whose identifier contains it, in API order.
+/// Items are (identifier, status, endpoint).
 fn first_matching_target<'a>(
     items: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>,
     pattern: &str,
 ) -> Option<RdsTarget> {
-    items
+    let available: Vec<_> = items
         .into_iter()
-        .find(|(identifier, status, _)| *status == "available" && identifier.contains(pattern))
+        .filter(|(_, status, _)| *status == "available")
+        .collect();
+    available
+        .iter()
+        .find(|(identifier, _, _)| *identifier == pattern)
+        .or_else(|| available.iter().find(|(identifier, _, _)| identifier.contains(pattern)))
         .and_then(|(identifier, _, endpoint)| {
             endpoint.map(|endpoint| RdsTarget {
                 identifier: identifier.to_string(),
@@ -772,5 +778,37 @@ mod tests {
         assert!(target.endpoint.starts_with("covered-db-ro."));
 
         assert_eq!(first_matching_target([("other", "available", Some("x"))], "covered-db"), None);
+    }
+
+    #[test]
+    fn exact_identifier_wins_even_when_listed_after_a_substring_match() {
+        let instances = [
+            ("covered-db-ro", "available", Some("covered-db-ro.abc.us-west-1.rds.amazonaws.com")),
+            ("covered-db", "available", Some("covered-db.abc.us-west-1.rds.amazonaws.com")),
+        ];
+        let target = first_matching_target(instances, "covered-db").unwrap();
+        assert_eq!(target.identifier, "covered-db");
+        assert_eq!(target.endpoint, "covered-db.abc.us-west-1.rds.amazonaws.com");
+    }
+
+    #[test]
+    fn without_an_exact_identifier_the_first_substring_match_is_used() {
+        let instances = [
+            ("covered-db-dev", "available", Some("covered-db-dev.abc.us-west-1.rds.amazonaws.com")),
+            ("covered-db-dev-ro", "available", Some("covered-db-dev-ro.abc.us-west-1.rds.amazonaws.com")),
+        ];
+        let target = first_matching_target(instances, "covered-db").unwrap();
+        assert_eq!(target.identifier, "covered-db-dev");
+    }
+
+    #[test]
+    fn an_unavailable_exact_identifier_falls_back_to_a_substring_match() {
+        let instances = [
+            ("covered-db-ro", "available", Some("covered-db-ro.abc.us-west-1.rds.amazonaws.com")),
+            ("covered-db", "modifying", Some("covered-db.abc.us-west-1.rds.amazonaws.com")),
+        ];
+        let target = first_matching_target(instances, "covered-db").unwrap();
+        assert_eq!(target.identifier, "covered-db-ro");
+        assert!(target.endpoint.starts_with("covered-db-ro."));
     }
 }
