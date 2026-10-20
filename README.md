@@ -182,11 +182,19 @@ relays the session untouched.
 | `verify-full`, `host=localhost` | failed (the certificate names the RDS endpoint) | fails |
 | `verify-full`, `host=<endpoint> hostaddr=127.0.0.1` | worked | **fails** |
 | pgjdbc `ssl=true` alone (means `verify-full`) | failed without `~/.postgresql/root.crt` | same |
+| `channel_binding=require` | worked for password users (RDS offers `SCRAM-SHA-256-PLUS`) | **fails**: the proxy offers only `SCRAM-SHA-256`, without channel binding |
+| `sslnegotiation=direct` (libpq 17+) | worked (RDS PostgreSQL 17+ accepts direct TLS) | **fails**: the proxy expects an SSLRequest first |
 
 Use `prefer`, `require` or `disable` against the local port. libpq treats
 `require` as `verify-ca` when a root certificate is configured (`sslrootcert`
 or `~/.postgresql/root.crt`); drop it for these connections. MySQL projects
 still use the raw tunnel.
+
+**Hardening tip.** While the app is not running, anything can listen on the
+local port. With libpq 16+ add `require_auth=scram-sha-256` to your connection
+settings: the client then refuses to send its password to a server that does
+not use SCRAM, so a port squatter cannot collect it (the proxy always uses
+SCRAM).
 
 ### Error Recovery
 
