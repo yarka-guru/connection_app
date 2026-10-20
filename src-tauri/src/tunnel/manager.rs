@@ -623,13 +623,15 @@ impl TunnelManager {
         }
 
         self.emit_status("Getting RDS endpoint...", Some(connection_id));
-        let rds_endpoint = operations::get_rds_endpoint(
+        let rds_target = operations::get_rds_target(
             clients,
             &project_config.rds_type,
             &project_config.rds_pattern,
         )
         .await?
         .ok_or_else(|| AppError::Aws("Failed to find the RDS endpoint.".to_string()))?;
+        let fallback_secret = operations::fallback_secret_name(&rds_target.identifier);
+        let rds_endpoint = rds_target.endpoint;
 
         if !HOSTNAME_PATTERN.is_match(&rds_endpoint) {
             return Err(AppError::Aws(format!(
@@ -705,8 +707,17 @@ impl TunnelManager {
                     project_config.secret_path.as_deref(),
                     project_config.secret_username_field.as_deref(),
                     project_config.secret_password_field.as_deref(),
+                    Some(&fallback_secret),
                 )
                 .await?;
+                if credentials.via_fallback {
+                    let note = format!(
+                        "No secret matches '{}'; using {}",
+                        project_config.secret_prefix, credentials.secret_name
+                    );
+                    log::info!("{}", note);
+                    self.emit_status(&note, Some(connection_id));
+                }
                 if use_proxy {
                     let local_password =
                         local_passwords::local_proxy_password(project_key, profile).await?;
@@ -724,6 +735,7 @@ impl TunnelManager {
                                     secret_path: project_config.secret_path.clone(),
                                     username_field: project_config.secret_username_field.clone(),
                                     password_field: project_config.secret_password_field.clone(),
+                                    fallback_secret: Some(fallback_secret.clone()),
                                 }),
                                 key: format!("{}:{}", project_key, profile),
                             }),

@@ -1,5 +1,6 @@
 use crate::aws::credentials::AwsClients;
 use crate::error::AppError;
+use futures_util::future::BoxFuture;
 
 const DEFAULT_CREDENTIAL_TIMEOUT_SECS: u64 = 15;
 
@@ -17,6 +18,87 @@ pub struct DbCredentials {
     pub password: String,
     pub database: String,
     pub secret_name: String,
+    /// True when no secret matched the prefix and the IaC-named fallback was used.
+    pub via_fallback: bool,
+}
+
+/// The RDS instance or cluster a connection goes to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RdsTarget {
+    pub identifier: String,
+    pub endpoint: String,
+}
+
+/// Secret named by the IaC convention for an RDS instance or cluster:
+/// `rds/<DBInstanceIdentifier or DBClusterIdentifier>-credentials`.
+pub fn fallback_secret_name(identifier: &str) -> String {
+    format!("rds/{}-credentials", identifier)
+}
+
+/// The first available RDS resource whose identifier contains `pattern`, in
+/// API order. Items are (identifier, status, endpoint).
+fn first_matching_target<'a>(
+    items: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>,
+    pattern: &str,
+) -> Option<RdsTarget> {
+    items
+        .into_iter()
+        .find(|(identifier, status, _)| *status == "available" && identifier.contains(pattern))
+        .and_then(|(identifier, _, endpoint)| {
+            endpoint.map(|endpoint| RdsTarget {
+                identifier: identifier.to_string(),
+                endpoint: endpoint.to_string(),
+            })
+        })
+}
+
+/// Read access to Secrets Manager, so secret selection can be tested.
+pub trait SecretStore: Send + Sync {
+    /// Names of secrets whose name starts with `prefix`, in API order.
+    fn names_with_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<Vec<String>, AppError>>;
+    /// The SecretString of the secret named exactly `name`; `None` if no such secret exists.
+    fn secret_string<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Option<String>, AppError>>;
+}
+
+impl SecretStore for AwsClients {
+    fn names_with_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<Vec<String>, AppError>> {
+        Box::pin(async move {
+            let response = self
+                .secrets_manager
+                .list_secrets()
+                .filters(
+                    aws_sdk_secretsmanager::types::Filter::builder()
+                        .key(aws_sdk_secretsmanager::types::FilterNameStringType::Name)
+                        .values(prefix)
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(|e| AppError::Aws(format!("Failed to list secrets: {}", e)))?;
+            Ok(response
+                .secret_list()
+                .iter()
+                .filter_map(|s| s.name().map(str::to_string))
+                .collect())
+        })
+    }
+
+    fn secret_string<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Option<String>, AppError>> {
+        Box::pin(async move {
+            match self.secrets_manager.get_secret_value().secret_id(name).send().await {
+                Ok(response) => response.secret_string().map(|s| Some(s.to_string())).ok_or_else(|| {
+                    AppError::Aws(format!("Secret '{}' has no SecretString value.", name))
+                }),
+                Err(e)
+                    if e.as_service_error()
+                        .is_some_and(|se| se.is_resource_not_found_exception()) =>
+                {
+                    Ok(None)
+                }
+                Err(e) => Err(AppError::Aws(format!("Failed to get secret value: {}", e))),
+            }
+        })
+    }
 }
 
 /// Where a project's database secret lives, so it can be read again later
@@ -30,6 +112,7 @@ pub struct SecretLocator {
     pub secret_path: Option<String>,
     pub username_field: Option<String>,
     pub password_field: Option<String>,
+    pub fallback_secret: Option<String>,
 }
 
 impl SecretLocator {
@@ -42,6 +125,7 @@ impl SecretLocator {
             self.secret_path.as_deref(),
             self.username_field.as_deref(),
             self.password_field.as_deref(),
+            self.fallback_secret.as_deref(),
         )
         .await
     }
@@ -81,6 +165,9 @@ fn get_nested_field<'a>(value: &'a serde_json::Value, field_path: &str) -> Optio
 /// Get database credentials from Secrets Manager.
 ///
 /// If `secret_path` is provided, it is used directly as the secret ID (bypasses list_secrets).
+/// Otherwise the first secret whose name starts with `secret_prefix` is used,
+/// and when none does, the secret named exactly `fallback_secret` (see
+/// `fallback_secret_name`).
 /// `username_field` and `password_field` allow customizing the JSON field names
 /// (supports dot-notation for nested fields). Defaults to "username" and "password".
 pub async fn get_connection_credentials(
@@ -90,58 +177,55 @@ pub async fn get_connection_credentials(
     secret_path: Option<&str>,
     username_field: Option<&str>,
     password_field: Option<&str>,
+    fallback_secret: Option<&str>,
+) -> Result<DbCredentials, AppError> {
+    fetch_credentials(
+        clients,
+        secret_prefix,
+        database,
+        secret_path,
+        username_field,
+        password_field,
+        fallback_secret,
+    )
+    .await
+}
+
+async fn fetch_credentials(
+    store: &dyn SecretStore,
+    secret_prefix: &str,
+    database: &str,
+    secret_path: Option<&str>,
+    username_field: Option<&str>,
+    password_field: Option<&str>,
+    fallback_secret: Option<&str>,
 ) -> Result<DbCredentials, AppError> {
     let username_key = username_field.unwrap_or("username");
     let password_key = password_field.unwrap_or("password");
 
-    let secret_name = if let Some(path) = secret_path {
+    let not_found = |name: &str| AppError::Aws(format!("Secret '{}' was not found.", name));
+    let (secret_name, secret_string, via_fallback) = if let Some(path) = secret_path {
         // Use secret_path directly — skip list_secrets
-        path.to_string()
-    } else {
-        // Prefix-based search (original behavior)
-        let list_response = clients
-            .secrets_manager
-            .list_secrets()
-            .filters(
-                aws_sdk_secretsmanager::types::Filter::builder()
-                    .key(aws_sdk_secretsmanager::types::FilterNameStringType::Name)
-                    .values(secret_prefix)
-                    .build(),
-            )
-            .send()
-            .await
-            .map_err(|e| AppError::Aws(format!("Failed to list secrets: {}", e)))?;
-
-        let secrets = list_response.secret_list();
-        if secrets.is_empty() {
-            return Err(AppError::Aws(format!(
-                "No secret found matching prefix '{}'.",
-                secret_prefix
-            )));
-        }
-
-        secrets[0]
-            .name()
-            .ok_or_else(|| AppError::Aws("Secret has no name".to_string()))?
-            .to_string()
-    };
-
-    let get_response = clients
-        .secrets_manager
-        .get_secret_value()
-        .secret_id(&secret_name)
-        .send()
-        .await
-        .map_err(|e| AppError::Aws(format!("Failed to get secret value: {}", e)))?;
-
-    let secret_string = get_response
-        .secret_string()
-        .ok_or_else(|| {
+        let value = store.secret_string(path).await?.ok_or_else(|| not_found(path))?;
+        (path.to_string(), value, false)
+    } else if let Some(name) = store.names_with_prefix(secret_prefix).await?.into_iter().next() {
+        let value = store.secret_string(&name).await?.ok_or_else(|| not_found(&name))?;
+        (name, value, false)
+    } else if let Some(fallback) = fallback_secret {
+        let value = store.secret_string(fallback).await?.ok_or_else(|| {
             AppError::Aws(format!(
-                "Secret '{}' has no SecretString value.",
-                secret_name
+                "No secret found matching prefix '{}', and no secret named '{}'.",
+                secret_prefix, fallback
             ))
         })?;
+        (fallback.to_string(), value, true)
+    } else {
+        return Err(AppError::Aws(format!(
+            "No secret found matching prefix '{}'.",
+            secret_prefix
+        )));
+    };
+    let secret_string = secret_string.as_str();
 
     let credentials: serde_json::Value = serde_json::from_str(secret_string).map_err(|e| {
         AppError::Aws(format!(
@@ -173,6 +257,7 @@ pub async fn get_connection_credentials(
         password,
         database: database.to_string(),
         secret_name,
+        via_fallback,
     })
 }
 
@@ -254,6 +339,18 @@ pub async fn get_rds_endpoint(
     rds_type: &str,
     rds_pattern: &str,
 ) -> Result<Option<String>, AppError> {
+    Ok(get_rds_target(clients, rds_type, rds_pattern)
+        .await?
+        .map(|target| target.endpoint))
+}
+
+/// The RDS endpoint together with the identifier of the instance or cluster
+/// it belongs to (the first available match, as `get_rds_endpoint` picks).
+pub async fn get_rds_target(
+    clients: &AwsClients,
+    rds_type: &str,
+    rds_pattern: &str,
+) -> Result<Option<RdsTarget>, AppError> {
     match rds_type {
         "cluster" => {
             let response = clients
@@ -263,16 +360,16 @@ pub async fn get_rds_endpoint(
                 .await
                 .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {}", e)))?;
 
-            for cluster in response.db_clusters() {
-                let status = cluster.status().unwrap_or_default();
-                let identifier = cluster.db_cluster_identifier().unwrap_or_default();
-
-                if status == "available" && identifier.contains(rds_pattern) {
-                    return Ok(cluster.endpoint().map(|e| e.to_string()));
-                }
-            }
-
-            Ok(None)
+            Ok(first_matching_target(
+                response.db_clusters().iter().map(|cluster| {
+                    (
+                        cluster.db_cluster_identifier().unwrap_or_default(),
+                        cluster.status().unwrap_or_default(),
+                        cluster.endpoint(),
+                    )
+                }),
+                rds_pattern,
+            ))
         }
         "instance" => {
             let response = clients
@@ -282,19 +379,16 @@ pub async fn get_rds_endpoint(
                 .await
                 .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {}", e)))?;
 
-            for instance in response.db_instances() {
-                let status = instance.db_instance_status().unwrap_or_default();
-                let identifier = instance.db_instance_identifier().unwrap_or_default();
-
-                if status == "available" && identifier.contains(rds_pattern) {
-                    return Ok(instance
-                        .endpoint()
-                        .and_then(|e| e.address())
-                        .map(|a| a.to_string()));
-                }
-            }
-
-            Ok(None)
+            Ok(first_matching_target(
+                response.db_instances().iter().map(|instance| {
+                    (
+                        instance.db_instance_identifier().unwrap_or_default(),
+                        instance.db_instance_status().unwrap_or_default(),
+                        instance.endpoint().and_then(|e| e.address()),
+                    )
+                }),
+                rds_pattern,
+            ))
         }
         _ => Ok(None),
     }
@@ -555,4 +649,128 @@ pub async fn find_ecs_task_ip(
         "Could not find private IP for ECS task in service '{}'. Ensure awsvpc network mode is used.",
         service
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Secrets keyed by name; prefix listing is in name order like the API.
+    struct FakeStore(BTreeMap<String, String>);
+
+    impl FakeStore {
+        fn with(names: &[&str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.to_string(),
+                            format!(r#"{{"username":"user-of-{}","password":"pw-of-{}"}}"#, n, n),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl SecretStore for FakeStore {
+        fn names_with_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<Vec<String>, AppError>> {
+            Box::pin(async move { Ok(self.0.keys().filter(|k| k.starts_with(prefix)).cloned().collect()) })
+        }
+
+        fn secret_string<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Option<String>, AppError>> {
+            Box::pin(async move { Ok(self.0.get(name).cloned()) })
+        }
+    }
+
+    async fn select(store: &FakeStore, prefix: &str, fallback: Option<&str>) -> Result<DbCredentials, AppError> {
+        fetch_credentials(store, prefix, "covered_db", None, None, None, fallback).await
+    }
+
+    #[test]
+    fn fallback_name_follows_the_iac_convention() {
+        assert_eq!(fallback_secret_name("covered-db-staging"), "rds/covered-db-staging-credentials");
+        assert_eq!(fallback_secret_name("covered-db"), "rds/covered-db-credentials");
+    }
+
+    #[tokio::test]
+    async fn prefix_hit_wins_over_the_fallback() {
+        let store = FakeStore::with(&["rds!db-1234", "rds/covered-db-staging-credentials"]);
+        let creds = select(&store, "rds!db", Some("rds/covered-db-staging-credentials")).await.unwrap();
+        assert_eq!(creds.secret_name, "rds!db-1234");
+        assert_eq!(creds.username, "user-of-rds!db-1234");
+        assert!(!creds.via_fallback);
+    }
+
+    #[tokio::test]
+    async fn prefix_miss_uses_the_exact_fallback_name() {
+        let store = FakeStore::with(&[
+            "rds/covered-db-staging-credentials",
+            "rds/covered-db-staging-credentials-old",
+            "rds/covered-db-staging-local-credentials",
+            "rds/covered-db-staging-master-credentials",
+        ]);
+        let creds = select(&store, "rds!db", Some("rds/covered-db-staging-credentials")).await.unwrap();
+        assert_eq!(creds.secret_name, "rds/covered-db-staging-credentials");
+        assert_eq!(creds.password, "pw-of-rds/covered-db-staging-credentials");
+        assert!(creds.via_fallback);
+    }
+
+    #[tokio::test]
+    async fn both_misses_name_both_lookups() {
+        // Only the variants that must never be used exist.
+        let store = FakeStore::with(&[
+            "rds/covered-db-staging-master-credentials",
+            "rds/covered-db-staging-local-credentials",
+        ]);
+        let err = select(&store, "rds!db", Some("rds/covered-db-staging-credentials"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prefix 'rds!db'"), "{}", err);
+        assert!(err.contains("'rds/covered-db-staging-credentials'"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn without_a_fallback_the_old_error_stays() {
+        let store = FakeStore::with(&[]);
+        let err = select(&store, "rds!db", None).await.unwrap_err().to_string();
+        assert!(err.contains("No secret found matching prefix 'rds!db'."), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn secret_path_bypasses_prefix_and_fallback() {
+        let store = FakeStore::with(&["custom/path", "rds!db-1"]);
+        let creds = fetch_credentials(&store, "rds!db", "db", Some("custom/path"), None, None, Some("rds/x-credentials"))
+            .await
+            .unwrap();
+        assert_eq!(creds.secret_name, "custom/path");
+        assert!(!creds.via_fallback);
+    }
+
+    #[test]
+    fn target_is_the_first_available_match_in_api_order() {
+        // Prod lists the primary before its read replica; both match "covered-db".
+        let instances = [
+            ("covered-db", "available", Some("covered-db.abc.us-west-1.rds.amazonaws.com")),
+            ("covered-db-ro", "available", Some("covered-db-ro.abc.us-west-1.rds.amazonaws.com")),
+        ];
+        let target = first_matching_target(instances, "covered-db").unwrap();
+        assert_eq!(target.identifier, "covered-db");
+        assert_eq!(target.endpoint, "covered-db.abc.us-west-1.rds.amazonaws.com");
+        assert_eq!(fallback_secret_name(&target.identifier), "rds/covered-db-credentials");
+
+        // The identifier always belongs to the endpoint that is used.
+        let stopped_primary = [
+            ("covered-db", "stopped", Some("covered-db.abc.us-west-1.rds.amazonaws.com")),
+            ("covered-db-ro", "available", Some("covered-db-ro.abc.us-west-1.rds.amazonaws.com")),
+        ];
+        let target = first_matching_target(stopped_primary, "covered-db").unwrap();
+        assert_eq!(target.identifier, "covered-db-ro");
+        assert!(target.endpoint.starts_with("covered-db-ro."));
+
+        assert_eq!(first_matching_target([("other", "available", Some("x"))], "covered-db"), None);
+    }
 }

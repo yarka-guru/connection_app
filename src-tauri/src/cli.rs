@@ -247,7 +247,7 @@ async fn run_rds_connect(
 
     // Get RDS endpoint
     eprintln!("  \u{1F4E1} Getting RDS endpoint...");
-    let rds_endpoint = operations::get_rds_endpoint(
+    let rds_target = operations::get_rds_target(
         clients,
         &project_config.rds_type,
         &project_config.rds_pattern,
@@ -255,6 +255,8 @@ async fn run_rds_connect(
     .await
     .map_err(|e| format!("Failed to get RDS endpoint: {}", e))?
     .ok_or_else(|| "No matching RDS endpoint found.".to_string())?;
+    let fallback_secret = operations::fallback_secret_name(&rds_target.identifier);
+    let rds_endpoint = rds_target.endpoint;
 
     // Get RDS port
     let fallback_port = get_default_port_for_engine(project_config);
@@ -321,9 +323,16 @@ async fn run_rds_connect(
             project_config.secret_path.as_deref(),
             project_config.secret_username_field.as_deref(),
             project_config.secret_password_field.as_deref(),
+            Some(&fallback_secret),
         )
         .await
         .map_err(|e| format!("Failed to get credentials: {}", e))?;
+        if db_creds.via_fallback {
+            eprintln!(
+                "  \u{21AA}\u{FE0F}  No secret matches '{}'; using {}",
+                project_config.secret_prefix, db_creds.secret_name
+            );
+        }
         if use_proxy {
             let settings = ProxySettings {
                 db_user: db_creds.username.clone(),
@@ -339,6 +348,7 @@ async fn run_rds_connect(
                             secret_path: project_config.secret_path.clone(),
                             username_field: project_config.secret_username_field.clone(),
                             password_field: project_config.secret_password_field.clone(),
+                            fallback_secret: Some(fallback_secret.clone()),
                         }),
                         key: format!("{}:{}", project_key, profile),
                     }),
