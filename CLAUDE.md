@@ -17,6 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `config/aws_config.rs` — Reads/writes `~/.aws/config`, respects `AWS_CONFIG_FILE` env var for sandbox
 - `config/projects.rs` — Project config CRUD for `~/.connection-app/projects.json`
 - `config/validation.rs` — Validates required fields, region format, port format, shell-safe patterns
+- `config/local_passwords.rs` — Stable per project+profile local passwords for the auth proxy (`~/.connection-app/iam-proxy-passwords.json`, 0600, file-locked)
 - `error.rs` — Unified `AppError` enum with Tauri serialization
 
 #### Tunnel (Native WebSocket)
@@ -24,6 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `tunnel/websocket.rs` — WebSocket client with SigV4-signed connection
 - `tunnel/protocol.rs` — SSM binary protocol (channel open, data, ack, etc.)
 - `tunnel/manager.rs` — Multi-connection lifecycle manager with Tauri event emission
+- `tunnel/pg_proxy/` — PostgreSQL auth proxy for RDS connections (PostgreSQL engine only). Owns the local port, authenticates clients with the local password (SCRAM-SHA-256), opens TLS to RDS (embedded `certs/rds-global-bundle.pem`) through tunnel pipes, and signs in with an auto-refreshed IAM token or the secret's password, whichever RDS asks for
 
 #### macOS App Sandbox
 - `sandbox.rs` — Security-scoped bookmark management via CoreFoundation FFI
@@ -59,11 +61,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 3. Select project (filtered by available profiles)
 4. Filter environments (AWS profiles) based on project's `profileFilter`
 5. Ensure SSO session is valid (OIDC device authorization if needed)
-6. Query Secrets Manager for RDS credentials (project-specific `secretPrefix`)
+6. Query Secrets Manager for RDS credentials (project-specific `secretPrefix`), or prepare IAM auth (`authType: "iam"`)
 7. Find running bastion instance (tagged with `Name=*bastion*`)
 8. Get RDS endpoint (cluster or instance based on project's `rdsType`)
 9. Start SSM session and open native WebSocket port forwarding
-10. Display connection details for database client
+10. For PostgreSQL RDS: start the auth proxy on the local port and check sign-in once
+11. Display connection details for database client (the local password, not the database one)
 
 ## Development Commands
 

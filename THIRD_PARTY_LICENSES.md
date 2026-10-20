@@ -17,7 +17,9 @@ The following libraries are dual-licensed under Apache-2.0 or MIT. This project 
 - **Tauri** — tauri, tauri-build, tauri-plugin-dialog, tauri-plugin-notification, tauri-plugin-opener, tauri-plugin-store, tauri-plugin-updater
   Copyright The Tauri Programme within The Commons Conservancy.
 
-- **Rust ecosystem** — base64, chrono, clap, dirs, env_logger, futures-util, log, regex, reqwest, semver, serde, serde_json, sha1, sha2, socket2, thiserror, uuid
+- **Rust ecosystem** — base64, chrono, clap, dirs, env_logger, futures-util, getrandom, hmac, log, md-5, regex, reqwest, semver, serde, serde_json, sha1, sha2, socket2, thiserror, tokio-rustls, uuid
+
+- **rustls** (Apache-2.0 OR ISC OR MIT)
 
 ## MIT
 
@@ -34,6 +36,17 @@ The following libraries are licensed under the MIT License.
 
 - **byteorder** (Unlicense OR MIT)
   Copyright Andrew Gallant.
+
+## BSD-3-Clause
+
+- **subtle**
+  Copyright Isis Agora Lovecruft and Henry de Valence.
+
+## Bundled data
+
+- **Amazon RDS certificate bundle** (`src-tauri/certs/rds-global-bundle.pem`) — the public
+  AWS RDS root and intermediate CA certificates from
+  <https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem>, used to verify RDS servers.
 
 ## LGPL — bundled inside the Linux AppImage only
 
