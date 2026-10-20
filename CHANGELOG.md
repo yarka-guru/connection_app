@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- PostgreSQL RDS connections go through a local auth proxy. Database
+  clients sign in with a stable local password (or, for `secrets`
+  projects, the secret's current password). The proxy signs in to RDS with
+  an IAM token or the secret's password, whichever the database user
+  needs, over verified TLS. IAM tokens are refreshed automatically, so
+  new logins no longer fail 15 minutes after Connect. Details and the
+  `sslmode` before/after table: README, "PostgreSQL connections: the local
+  auth proxy".
+- Secret fallback: when no secret matches a project's `secretPrefix`, the
+  secret named `rds/<DBInstanceIdentifier>-credentials`
+  (`rds/<DBClusterIdentifier>-credentials` for clusters) is used, for the
+  instance or cluster being connected to. Projects with `"rds!db"` keep
+  working now that the RDS-managed master secret is gone.
+
+### Changed
+- The CLI treats an unset `multiplexed` as on, like the desktop app.
+
+### Notes
+- `verify-ca`, `verify-full`, `channel_binding=require` and
+  `sslnegotiation=direct` no longer work against the local port; use
+  `prefer`, `require` or `disable`.
+
 ## [3.7.9] - 2026-10-20
 
 ### Added

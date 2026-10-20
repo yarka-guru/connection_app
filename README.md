@@ -145,7 +145,8 @@ Commands:
 2. Loads project configurations from `~/.connection-app/projects.json`
 3. Filters profiles based on the selected project's `profileFilter`
 4. Ensures AWS SSO session is valid (OIDC device authorization if needed)
-5. Queries AWS Secrets Manager for RDS credentials (project-specific `secretPrefix`)
+5. Queries AWS Secrets Manager for RDS credentials (project-specific `secretPrefix`;
+   if no secret matches, the secret named `rds/<DB instance or cluster identifier>-credentials`)
 6. Finds a running bastion instance (tagged `Name=*bastion*`)
 7. Gets the RDS endpoint (cluster or instance depending on project `rdsType`)
 8. Starts an SSM session and opens a native WebSocket tunnel for port forwarding
@@ -224,7 +225,7 @@ Each project defines:
 | `name` | Display name | `"My Project"` |
 | `region` | AWS region | `"us-east-2"` |
 | `database` | Database name | `"mydb"` |
-| `secretPrefix` | Secrets Manager prefix | `"rds!cluster"` |
+| `secretPrefix` | Secrets Manager prefix; if nothing matches, `rds/<identifier>-credentials` is used | `"rds!cluster"` |
 | `rdsType` | `"cluster"` or `"instance"` | `"cluster"` |
 | `engine` | `"postgres"` or `"mysql"` | `"postgres"` |
 | `rdsPattern` | RDS identifier pattern | `"my-app-rds-aurora"` |
