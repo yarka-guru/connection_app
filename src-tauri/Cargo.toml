@@ -1,6 +1,6 @@
 [package]
 name = "connection-app"
-version = "3.7.9"
+version = "3.7.10"
 description = "Secure tunneling through AWS SSM"
 authors = ["Iaroslav Pyrogov"]
 edition = "2024"
@@ -72,6 +72,16 @@ futures-util = "0.3"
 base64 = "0.23"
 socket2 = "0.6"
 env_logger = "0.11"
+# TLS to RDS for the IAM auth proxy. Same rustls + aws-lc-rs stack that
+# aws-smithy-http-client and reqwest already pull in, so no second TLS stack.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "aws_lc_rs"] }
+hmac = "0.13"
+md-5 = "0.11"
+subtle = "2"
+getrandom = "0.4"
+# Self-signed loopback certificate for the auth proxy, generated in memory.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 
 [features]
 default = ["gui"]

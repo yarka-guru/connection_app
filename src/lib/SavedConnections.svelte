@@ -712,6 +712,18 @@ function handleGroupHeaderKeydown(e, groupName) {
               </button>
               <CopyButton value={info.password} label="Copy password" />
             </div>
+            {#if info.authMethod}
+              <div class="detail-row">
+                <span class="detail-label">Auth</span>
+                <code class="detail-value">{info.authMethod}</code>
+              </div>
+              {#if info.authMethod.startsWith('IAM')}
+                <div class="detail-row">
+                  <span class="detail-label">IAM</span>
+                  <span class="auth-note">IAM token is refreshed automatically</span>
+                </div>
+              {/if}
+            {/if}
           {/if}
           {#if info.database}
             <div class="detail-row">
@@ -1453,5 +1465,11 @@ function handleGroupHeaderKeydown(e, groupName) {
   .detail-value.ssh-command {
     color: var(--accent-secondary);
     font-size: 0.75rem;
+  }
+
+  .auth-note {
+    flex: 1;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
   }
 </style>

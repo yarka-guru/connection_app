@@ -2,13 +2,15 @@ use crate::aws::credentials::{build_aws_config, create_aws_clients, AwsClients};
 use crate::aws::iam_auth;
 use crate::aws::operations;
 use crate::aws::sso::{ensure_sso_session, TauriSsoHandler};
+use crate::config::local_passwords;
 use crate::config::preferences;
 use crate::config::projects::{
     get_default_port_for_engine, get_local_port, load_project_configs, ProjectConfig,
 };
 use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
-use crate::tunnel::native;
+use crate::tunnel::native::{self, LocalSource, PipeInbox};
+use crate::tunnel::pg_proxy::{self, PgAuthProxy, ProxySettings, SecretRefetch, UpstreamAuth};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -25,6 +27,9 @@ const AUTO_RECONNECT_DELAY_MS: u64 = 3000;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+
+// Sign-in check through the auth proxy right after the tunnel is up
+const AUTH_PROBE_TIMEOUT_SECS: u64 = 30;
 
 // Validation patterns
 static PROFILE_SAFE_PATTERN: std::sync::LazyLock<Regex> =
@@ -65,6 +70,10 @@ pub struct ConnectionInfo {
     // SSH-specific: pre-built SSH command for copy-paste
     #[serde(rename = "sshCommand", skip_serializing_if = "Option::is_none")]
     pub ssh_command: Option<String>,
+    // Auth proxy in use: upstream method "IAM", "IAM (auto)" or "password".
+    // `password` is then the stable local password.
+    #[serde(rename = "authMethod", default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +84,53 @@ pub struct Connection {
     pub local_port: String,
     pub connection_info: ConnectionInfo,
     cancel_token: CancellationToken,
+}
+
+/// Sign-in check through the auth proxy, run once the tunnel is up. Kept
+/// out of `connect` so callers can run it without holding the manager lock.
+pub struct AuthCheck {
+    proxy: Arc<PgAuthProxy>,
+    database: String,
+    connection_id: String,
+    connections: Arc<Mutex<HashMap<String, Connection>>>,
+    app_handle: AppHandle,
+}
+
+impl AuthCheck {
+    /// Sign in once and log out; records and returns the auth method label.
+    /// `None` when the connection was disconnected meanwhile.
+    pub async fn run(self) -> Option<String> {
+        emit_status_event(&self.app_handle, "Checking database sign-in...", Some(&self.connection_id));
+        let probe = tokio::time::timeout(
+            tokio::time::Duration::from_secs(AUTH_PROBE_TIMEOUT_SECS),
+            self.proxy.probe(&self.database),
+        )
+        .await;
+        let label = match probe {
+            Ok(Ok(method)) => method,
+            Ok(Err(e)) => {
+                log::warn!("Database sign-in check failed: {}", e);
+                format!("check failed: {}", e)
+            }
+            Err(_) => {
+                log::warn!("Database sign-in check timed out");
+                "check timed out".to_string()
+            }
+        };
+        let mut guard = self.connections.lock().await;
+        record_auth_method(&mut guard, &self.connection_id, label)
+    }
+}
+
+/// Store the auth method on a connection; `None` if it no longer exists.
+fn record_auth_method(
+    connections: &mut HashMap<String, Connection>,
+    connection_id: &str,
+    label: String,
+) -> Option<String> {
+    let conn = connections.get_mut(connection_id)?;
+    conn.connection_info.auth_method = Some(label.clone());
+    Some(label)
 }
 
 /// Manages all active tunnel connections.
@@ -222,6 +278,7 @@ impl TunnelManager {
     }
 
     /// Connect to a project (dispatches to RDS or service based on connectionType).
+    /// For auth-proxy connections also returns the sign-in check to run next.
     pub async fn connect(
         &self,
         project_key: &str,
@@ -229,7 +286,7 @@ impl TunnelManager {
         local_port: Option<&str>,
         database: Option<&str>,
         used_ports: &[String],
-    ) -> Result<(String, ConnectionInfo), AppError> {
+    ) -> Result<(String, ConnectionInfo, Option<AuthCheck>), AppError> {
         // Validate profile
         if !PROFILE_SAFE_PATTERN.is_match(profile) {
             return Err(AppError::General(format!(
@@ -324,12 +381,45 @@ impl TunnelManager {
         let clients = create_aws_clients(profile, &project_config.region).await;
 
         // Dispatch based on connection type
-        let (connection_info, tunnel_target) = match project_config.connection_type.as_str() {
-            "service" => self.resolve_service_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use).await?,
+        let (connection_info, tunnel_target, proxy_settings) = match project_config.connection_type.as_str() {
+            "service" => {
+                let (info, target) = self.resolve_service_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use).await?;
+                (info, target, None)
+            }
             _ => self.resolve_rds_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use, database).await?,
         };
 
         let cancel_token = CancellationToken::new();
+        // Stops the auth proxy listener on disconnect or when the tunnel gives up.
+        let proxy_cancel = cancel_token.child_token();
+
+        // The auth proxy owns the local port for the whole connection, across
+        // tunnel reconnects; each tunnel session takes its connections as pipes.
+        let mut auth_proxy: Option<Arc<PgAuthProxy>> = None;
+        let mut pipe_inbox: Option<PipeInbox> = None;
+        if let Some(settings) = proxy_settings {
+            let TunnelTarget::RemoteHost { remote_host, remote_port, .. } = &tunnel_target else {
+                return Err(AppError::Tunnel("Auth proxy needs an RDS target".to_string()));
+            };
+            let rds_port: u16 = remote_port
+                .parse()
+                .map_err(|_| AppError::General(format!("Invalid RDS port number: {}", remote_port)))?;
+            let (listener_v4, listener_v6) =
+                native::bind_local_listeners(port_num).map_err(AppError::Tunnel)?;
+            let (dialer, inbox) = pg_proxy::tunnel_pipes();
+            let proxy = Arc::new(
+                PgAuthProxy::for_rds(settings, remote_host, rds_port, Arc::new(dialer))
+                    .map_err(AppError::Tunnel)?,
+            );
+            tokio::spawn(pg_proxy::run_listener(
+                proxy.clone(),
+                listener_v4,
+                listener_v6,
+                proxy_cancel.clone(),
+            ));
+            auth_proxy = Some(proxy);
+            pipe_inbox = Some(inbox);
+        }
 
         let connection = Connection {
             id: connection_id.clone(),
@@ -360,6 +450,7 @@ impl TunnelManager {
         let project_key_owned = project_key.to_string();
         let profile_owned = profile.to_string();
         let project_config = project_config.clone();
+        let lifecycle_proxy_cancel = proxy_cancel.clone();
 
         tokio::spawn(async move {
             let conn_label = format!("{} {}", project_key_owned, profile_owned);
@@ -370,6 +461,7 @@ impl TunnelManager {
                 &port_to_use,
                 &project_config,
                 tunnel_target,
+                pipe_inbox,
                 cancel_token.clone(),
                 Some(ready_tx),
                 &conn_label,
@@ -442,6 +534,7 @@ impl TunnelManager {
                     );
                 }
             }
+            lifecycle_proxy_cancel.cancel();
         });
 
         self.emit_status("Starting port forwarding...", Some(&connection_id));
@@ -458,6 +551,13 @@ impl TunnelManager {
                     details: Some(format!("port {}", connection_info.port)),
                 })
                 .await;
+                let auth_check = auth_proxy.map(|proxy| AuthCheck {
+                    proxy,
+                    database: connection_info.database.clone().unwrap_or_default(),
+                    connection_id: connection_id.clone(),
+                    connections: self.connections.clone(),
+                    app_handle: self.app_handle.clone(),
+                });
                 // Tunnel is ready — start periodic health checks
                 Self::spawn_health_check(
                     &self.app_handle,
@@ -465,14 +565,16 @@ impl TunnelManager {
                     &health_port,
                     &health_cancel,
                 );
-                Ok((connection_id, connection_info))
+                Ok((connection_id, connection_info, auth_check))
             }
             Ok(Ok(Err(e))) => {
+                proxy_cancel.cancel();
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
                 Err(AppError::Tunnel(e))
             }
             Ok(Err(_)) => {
+                proxy_cancel.cancel();
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
                 Err(AppError::Tunnel(
@@ -480,6 +582,7 @@ impl TunnelManager {
                 ))
             }
             Err(_) => {
+                proxy_cancel.cancel();
                 let mut guard = self.connections.lock().await;
                 guard.remove(&connection_id);
                 Err(AppError::Tunnel(
@@ -500,7 +603,7 @@ impl TunnelManager {
         project_config: &ProjectConfig,
         local_port: &str,
         selected_database: Option<&str>,
-    ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
+    ) -> Result<(ConnectionInfo, TunnelTarget, Option<ProxySettings>), AppError> {
         let effective_db = project_config.effective_database(selected_database);
 
         self.emit_status("Finding bastion instance...", Some(connection_id));
@@ -529,13 +632,15 @@ impl TunnelManager {
         }
 
         self.emit_status("Getting RDS endpoint...", Some(connection_id));
-        let rds_endpoint = operations::get_rds_endpoint(
+        let rds_target = operations::get_rds_target(
             clients,
             &project_config.rds_type,
             &project_config.rds_pattern,
         )
         .await?
         .ok_or_else(|| AppError::Aws("Failed to find the RDS endpoint.".to_string()))?;
+        let fallback_secret = operations::fallback_secret_name(&rds_target.identifier);
+        let rds_endpoint = rds_target.endpoint;
 
         if !HOSTNAME_PATTERN.is_match(&rds_endpoint) {
             return Err(AppError::Aws(format!(
@@ -561,7 +666,8 @@ impl TunnelManager {
             project_config.auth_type.as_str()
         };
 
-        let (username, password) = match auth_type {
+        let use_proxy = project_config.uses_pg_auth_proxy();
+        let (username, password, proxy_settings) = match auth_type {
             "iam" => {
                 self.emit_status("Generating IAM auth token...", Some(connection_id));
                 let iam_username = project_config.iam_username.as_deref().ok_or_else(|| {
@@ -584,7 +690,21 @@ impl TunnelManager {
                 )
                 .await?;
 
-                (iam_username.to_string(), token)
+                if use_proxy {
+                    // The token above only proves the credential chain works;
+                    // the proxy mints its own on demand.
+                    let local_password =
+                        local_passwords::local_proxy_password(project_key, profile).await?;
+                    let settings = ProxySettings {
+                        db_user: iam_username.to_string(),
+                        local_password: local_password.clone(),
+                        auth: UpstreamAuth::IamOnly,
+                        sdk_config,
+                    };
+                    (iam_username.to_string(), local_password, Some(settings))
+                } else {
+                    (iam_username.to_string(), token, None)
+                }
             }
             _ => {
                 // "secrets" auth type — get credentials from Secrets Manager
@@ -596,10 +716,50 @@ impl TunnelManager {
                     project_config.secret_path.as_deref(),
                     project_config.secret_username_field.as_deref(),
                     project_config.secret_password_field.as_deref(),
+                    Some(&fallback_secret),
                 )
                 .await?;
-                (credentials.username, credentials.password)
+                if credentials.via_fallback {
+                    let note = format!(
+                        "No secret matches '{}'; using {}",
+                        project_config.secret_prefix, credentials.secret_name
+                    );
+                    log::info!("{}", note);
+                    self.emit_status(&note, Some(connection_id));
+                }
+                if use_proxy {
+                    let local_password =
+                        local_passwords::local_proxy_password(project_key, profile).await?;
+                    let settings = ProxySettings {
+                        db_user: credentials.username.clone(),
+                        local_password: local_password.clone(),
+                        auth: UpstreamAuth::Auto {
+                            password: credentials.password,
+                            refetch: Some(SecretRefetch {
+                                source: Arc::new(operations::SecretLocator {
+                                    profile: profile.to_string(),
+                                    region: project_config.region.clone(),
+                                    secret_prefix: project_config.secret_prefix.clone(),
+                                    database: effective_db.to_string(),
+                                    secret_path: project_config.secret_path.clone(),
+                                    username_field: project_config.secret_username_field.clone(),
+                                    password_field: project_config.secret_password_field.clone(),
+                                    fallback_secret: Some(fallback_secret.clone()),
+                                }),
+                                key: format!("{}:{}", project_key, profile),
+                            }),
+                        },
+                        sdk_config: build_aws_config(profile, &project_config.region).await,
+                    };
+                    (credentials.username, local_password, Some(settings))
+                } else {
+                    (credentials.username, credentials.password, None)
+                }
             }
+        };
+        let auth_method = match (&proxy_settings, auth_type) {
+            (Some(_), "iam") => Some("IAM".to_string()),
+            _ => None,
         };
 
         let connection_info = ConnectionInfo {
@@ -616,6 +776,7 @@ impl TunnelManager {
             target_type: None,
             engine: project_config.engine.clone(),
             ssh_command: None,
+            auth_method,
         };
 
         let target = TunnelTarget::RemoteHost {
@@ -625,7 +786,7 @@ impl TunnelManager {
             multiplexed: project_config.multiplexed.unwrap_or(true),
         };
 
-        Ok((connection_info, target))
+        Ok((connection_info, target, proxy_settings))
     }
 
     /// Resolve service target: find EC2/ECS target, optionally find bastion.
@@ -799,6 +960,7 @@ impl TunnelManager {
             target_type: Some(target_type.to_string()),
             engine: None,
             ssh_command,
+            auth_method: None,
         };
 
         Ok((connection_info, tunnel_target))
@@ -949,6 +1111,7 @@ async fn run_tunnel_lifecycle(
     local_port: &str,
     project_config: &ProjectConfig,
     mut target: TunnelTarget,
+    pipe_inbox: Option<PipeInbox>,
     cancel_token: CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     conn_label: &str,
@@ -967,6 +1130,7 @@ async fn run_tunnel_lifecycle(
             clients,
             local_port,
             &target,
+            pipe_inbox.as_ref(),
             project_config.bastion_pattern(),
             &cancel_token,
             ready_tx.take(),
@@ -1156,6 +1320,7 @@ async fn start_port_forwarding_with_retry(
     clients: &AwsClients,
     local_port: &str,
     target: &TunnelTarget,
+    pipe_inbox: Option<&PipeInbox>,
     bastion_pattern: &str,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -1169,6 +1334,7 @@ async fn start_port_forwarding_with_retry(
             clients,
             local_port,
             &current_target,
+            pipe_inbox,
             cancel_token,
             ready_tx.take(),
         )
@@ -1224,6 +1390,7 @@ async fn execute_port_forwarding(
     clients: &AwsClients,
     local_port: &str,
     target: &TunnelTarget,
+    pipe_inbox: Option<&PipeInbox>,
     cancel_token: &CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), PortForwardError> {
@@ -1258,6 +1425,10 @@ async fn execute_port_forwarding(
         .map_err(|_| PortForwardError::Failed(format!("Invalid port: {}", local_port)))?;
 
     let multiplexed = target.is_multiplexed();
+    let local = match pipe_inbox {
+        Some(inbox) => LocalSource::Pipes(inbox.clone()),
+        None => LocalSource::Listen(port_num),
+    };
 
     // Run port forwarding — multiplexed or basic mode
     let cancel_child = cancel_token.child_token();
@@ -1266,7 +1437,7 @@ async fn execute_port_forwarding(
         native::start_multiplexed_port_forwarding(
             stream_url,
             token_value,
-            port_num,
+            local,
             cancel_child,
             ready_tx,
         )
@@ -1275,7 +1446,7 @@ async fn execute_port_forwarding(
         native::start_native_port_forwarding(
             stream_url,
             token_value,
-            port_num,
+            local,
             cancel_child,
             ready_tx,
         )
@@ -1316,4 +1487,51 @@ fn emit_status_event(app_handle: &AppHandle, message: &str, connection_id: Optio
         payload["connectionId"] = serde_json::json!(id);
     }
     let _ = app_handle.emit("status", &payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connection(id: &str) -> Connection {
+        Connection {
+            id: id.to_string(),
+            project_key: "covered".to_string(),
+            profile: "covered-dev".to_string(),
+            local_port: "5462".to_string(),
+            connection_info: ConnectionInfo {
+                host: "localhost".to_string(),
+                port: "5462".to_string(),
+                connection_type: "rds".to_string(),
+                username: Some("covered_app".to_string()),
+                password: Some("local".to_string()),
+                database: Some("covered_db".to_string()),
+                rds_endpoint: None,
+                instance_id: None,
+                service_type: None,
+                remote_host: None,
+                target_type: None,
+                engine: None,
+                ssh_command: None,
+                auth_method: None,
+            },
+            cancel_token: CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn auth_method_is_recorded_on_a_live_connection() {
+        let mut connections = HashMap::from([("conn_1".to_string(), connection("conn_1"))]);
+        assert_eq!(
+            record_auth_method(&mut connections, "conn_1", "IAM (auto)".to_string()).as_deref(),
+            Some("IAM (auto)")
+        );
+        assert_eq!(connections["conn_1"].connection_info.auth_method.as_deref(), Some("IAM (auto)"));
+    }
+
+    #[test]
+    fn a_connection_closed_during_the_check_is_reported() {
+        let mut connections = HashMap::new();
+        assert_eq!(record_auth_method(&mut connections, "conn_1", "password".to_string()), None);
+    }
 }
