@@ -79,8 +79,11 @@ fn get_or_create(path: &Path, key: &str) -> Result<String, AppError> {
 }
 
 fn get_or_create_locked(path: &Path, key: &str) -> Result<String, AppError> {
-    let mut passwords: BTreeMap<String, String> = match std::fs::read_to_string(path) {
-        Ok(data) => match serde_json::from_str(&data) {
+    let mut passwords: BTreeMap<String, String> = match std::fs::read(path) {
+        Ok(data) => match std::str::from_utf8(&data)
+            .map_err(|e| e.to_string())
+            .and_then(|text| serde_json::from_str(text).map_err(|e| e.to_string()))
+        {
             Ok(passwords) => passwords,
             Err(e) => {
                 let backup = path.with_file_name(format!(
@@ -256,6 +259,21 @@ mod tests {
         let stored: BTreeMap<String, String> =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(stored.get("p:x"), Some(&pw));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn non_utf8_file_is_kept_as_a_backup_too() {
+        let path = temp_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"\xff\xfe{}").unwrap();
+        let pw = get_or_create(&path, "p:x").unwrap();
+        assert!(is_valid_password(&pw));
+        let backups = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().to_string_lossy().ends_with(".bak"))
+            .count();
+        assert_eq!(backups, 1);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
