@@ -189,13 +189,11 @@ pub async fn save_project_config(key: String, config: ProjectConfig) -> Result<(
     projects::save_project_config(&key, config).await
 }
 
-/// Replace one project with raw JSON. It is stored even when it does not
-/// read as a project, and then shows as broken.
+/// Replace one project with raw JSON. Refused, with nothing written, unless
+/// the JSON is a valid project; a broken project it replaces is backed up.
 #[tauri::command]
 pub async fn save_project_raw(key: String, json: String) -> Result<(), AppError> {
-    let mut file = project_file::load_project_file().await?;
-    file.upsert_raw(&key, &json).map_err(AppError::Config)?;
-    project_file::write_project_file(&file).await
+    project_file::save_project_raw_at(&get_config_path(), &key, &json).await
 }
 
 #[tauri::command]

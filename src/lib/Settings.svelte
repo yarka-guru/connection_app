@@ -693,16 +693,12 @@ async function saveProjectJson() {
   saving = true
   jsonEditError = ''
   try {
+    // Refused, with nothing written, unless the JSON is a valid project
     await invoke('save_project_raw', { key, json: jsonEditText })
+    closeJsonEditor()
     await afterSave('Project saved')
-    const entry = entries.find((e) => e.key === key)
-    if (entry?.error) {
-      jsonEditError = `Saved, but the project still can't be read: ${entry.error}`
-    } else {
-      closeJsonEditor()
-    }
   } catch (err) {
-    jsonEditError = `Failed to save project: ${err}`
+    jsonEditError = `${err}`
   } finally {
     saving = false
   }
@@ -1164,7 +1160,7 @@ onDestroy(() => {
             {:else}
               <p>Saving from this form rewrites the project from what could be read.</p>
             {/if}
-            <p>To keep everything, cancel and use <strong>Edit JSON</strong> instead.</p>
+            <p>A backup of projects.json is made before saving. To keep everything in place, cancel and use <strong>Edit JSON</strong> instead.</p>
             <label class="broken-confirm">
               <input type="checkbox" bind:checked={brokenSaveConfirmed} />
               I understand the fields listed above will be removed

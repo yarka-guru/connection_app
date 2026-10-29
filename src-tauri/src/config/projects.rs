@@ -275,20 +275,18 @@ pub async fn load_project_configs() -> Result<HashMap<String, ProjectConfig>, Ap
     Ok(project_file::load_project_file().await?.valid_configs())
 }
 
-/// Save one project. Broken projects in the file are written back unchanged.
+/// Save one project. Broken projects in the file are written back unchanged;
+/// a broken project this replaces is backed up with the file first.
 pub async fn save_project_config(
     key: &str,
     config: ProjectConfig,
 ) -> Result<(), AppError> {
-    let mut file = project_file::load_project_file().await?;
-    file.upsert(key, config);
-    project_file::write_project_file(&file).await
+    project_file::save_project_at(&get_config_path(), key, config).await
 }
 
+/// Delete one project. A broken project is backed up with the file first.
 pub async fn delete_project_config(key: &str) -> Result<(), AppError> {
-    let mut file = project_file::load_project_file().await?;
-    file.remove(key);
-    project_file::write_project_file(&file).await
+    project_file::delete_project_at(&get_config_path(), key).await
 }
 
 /// Get profiles matching a project's filter from the full list of AWS profiles.

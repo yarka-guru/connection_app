@@ -273,6 +273,11 @@ impl ProjectFile {
         self.entries.remove(key);
     }
 
+    /// True when `key` is in the file and could not be read as a project.
+    pub fn is_broken(&self, key: &str) -> bool {
+        matches!(self.entries.get(key), Some(ProjectEntry::Broken { .. }))
+    }
+
     /// Pretty-printed with a trailing newline. Broken entries are emitted from
     /// their raw JSON verbatim.
     pub fn to_json(&self) -> String {
@@ -374,6 +379,73 @@ pub async fn write_project_file_at(path: &Path, file: &ProjectFile) -> Result<()
 
 pub async fn write_project_file(file: &ProjectFile) -> Result<(), AppError> {
     write_project_file_at(&get_config_path(), file).await
+}
+
+/// Back up the file at `path` when `key` is a broken entry that is about to
+/// be replaced or removed: its raw JSON exists nowhere else.
+pub async fn backup_before_replacing_at(
+    path: &Path,
+    file: &ProjectFile,
+    key: &str,
+) -> Result<Option<PathBuf>, AppError> {
+    if file.is_broken(key) {
+        backup_project_file_at(path).await
+    } else {
+        Ok(None)
+    }
+}
+
+/// One project from the single-project JSON editor. Refused unless it reads
+/// as a project and passes validation, so the editor never stores a project
+/// that is still broken.
+pub fn parse_project_raw(json: &str) -> Result<ProjectConfig, String> {
+    let raw: Box<RawValue> =
+        serde_json::from_str(json).map_err(|e| format!("Not valid JSON: {e}"))?;
+    if !is_object(&raw) {
+        return Err("A project must be a JSON object".to_string());
+    }
+    match load_entry("", raw) {
+        ProjectEntry::Broken { error, .. } => Err(format!("Not saved: {error}")),
+        ProjectEntry::Valid { problems, .. } if !problems.is_empty() => {
+            let list: Vec<String> = problems
+                .iter()
+                .map(|p| {
+                    if p.field.is_empty() {
+                        p.message.clone()
+                    } else {
+                        format!("{}: {}", p.field, p.message)
+                    }
+                })
+                .collect();
+            Err(format!("Not saved: {}", list.join("; ")))
+        }
+        ProjectEntry::Valid { config, .. } => Ok(config),
+    }
+}
+
+/// Save one project into the file at `path`. A broken entry it replaces is
+/// backed up first; other broken entries are written back unchanged.
+pub async fn save_project_at(path: &Path, key: &str, config: ProjectConfig) -> Result<(), AppError> {
+    let mut file = load_project_file_at(path).await?;
+    backup_before_replacing_at(path, &file, key).await?;
+    file.upsert(key, config);
+    write_project_file_at(path, &file).await
+}
+
+/// Replace one project with JSON from the editor. Nothing is written unless
+/// the JSON is a valid project (see [`parse_project_raw`]).
+pub async fn save_project_raw_at(path: &Path, key: &str, json: &str) -> Result<(), AppError> {
+    let config = parse_project_raw(json).map_err(AppError::Config)?;
+    save_project_at(path, key, config).await
+}
+
+/// Remove one project from the file at `path`, backing the file up first
+/// when the project is broken.
+pub async fn delete_project_at(path: &Path, key: &str) -> Result<(), AppError> {
+    let mut file = load_project_file_at(path).await?;
+    backup_before_replacing_at(path, &file, key).await?;
+    file.remove(key);
+    write_project_file_at(path, &file).await
 }
 
 /// Copy the file to `<name>.bak-YYYYMMDD-HHMMSS` (local time) next to it.
@@ -886,5 +958,126 @@ mod tests {
 
         let not_object = RawValue::from_string("[1]".to_string()).unwrap();
         assert!(salvage_config(&not_object).is_none());
+    }
+
+    fn backups_in(dir: &Path) -> Vec<String> {
+        file_names(dir)
+            .into_iter()
+            .filter(|n| n.starts_with("projects.json.bak-"))
+            .collect()
+    }
+
+    const BROKEN_FILE: &str = r#"{"bad": {"name": 5}, "good": GOOD_PLACEHOLDER}"#;
+
+    fn broken_file() -> String {
+        BROKEN_FILE.replace("GOOD_PLACEHOLDER", GOOD)
+    }
+
+    #[test]
+    fn is_broken_only_for_broken_entries() {
+        let mut file = ProjectFile::default();
+        file.upsert_raw("good", GOOD).unwrap();
+        file.upsert_raw("bad", r#"{"name": 5}"#).unwrap();
+        assert!(file.is_broken("bad"));
+        assert!(!file.is_broken("good"));
+        assert!(!file.is_broken("missing"));
+    }
+
+    #[test]
+    fn parse_project_raw_refuses_broken_or_invalid_projects() {
+        assert!(parse_project_raw(GOOD).is_ok());
+        let err = parse_project_raw(r#"{"name": 5}"#).unwrap_err();
+        assert!(err.starts_with("Not saved:"), "{err}");
+        let err = parse_project_raw(&GOOD.replace("us-east-1", "nope")).unwrap_err();
+        assert!(err.contains("region"), "{err}");
+        assert!(parse_project_raw("[1]").is_err());
+        assert!(parse_project_raw("{ nope").unwrap_err().starts_with("Not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn backup_before_replacing_backs_up_only_broken_entries() {
+        let dir = temp_dir("backup-broken");
+        let path = dir.join("projects.json");
+        write(&path, &broken_file());
+        let file = load_project_file_at(&path).await.unwrap();
+
+        assert!(backup_before_replacing_at(&path, &file, "good").await.unwrap().is_none());
+        assert!(backups_in(&dir).is_empty());
+
+        let backup = backup_before_replacing_at(&path, &file, "bad").await.unwrap().unwrap();
+        assert_eq!(read(&backup), broken_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn saving_over_a_broken_entry_backs_it_up_first() {
+        let dir = temp_dir("save-over-broken");
+        let path = dir.join("projects.json");
+        write(&path, &broken_file());
+        let config: ProjectConfig = serde_json::from_str(GOOD).unwrap();
+
+        save_project_at(&path, "bad", config).await.unwrap();
+        let backups = backups_in(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(read(&dir.join(&backups[0])), broken_file());
+        assert!(!load_project_file_at(&path).await.unwrap().is_broken("bad"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn saving_a_valid_entry_makes_no_backup() {
+        let dir = temp_dir("save-valid");
+        let path = dir.join("projects.json");
+        write(&path, &broken_file());
+        let config: ProjectConfig = serde_json::from_str(GOOD).unwrap();
+        save_project_at(&path, "good", config).await.unwrap();
+        assert!(backups_in(&dir).is_empty());
+        // The broken entry is still written back.
+        assert!(load_project_file_at(&path).await.unwrap().is_broken("bad"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_broken_entry_backs_it_up_first() {
+        let dir = temp_dir("delete-broken");
+        let path = dir.join("projects.json");
+        write(&path, &broken_file());
+
+        delete_project_at(&path, "bad").await.unwrap();
+        let backups = backups_in(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(read(&dir.join(&backups[0])), broken_file());
+        let after = load_project_file_at(&path).await.unwrap();
+        assert!(!after.entries.contains_key("bad"));
+        assert!(after.entries.contains_key("good"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn raw_save_that_is_still_broken_writes_nothing() {
+        let dir = temp_dir("raw-still-broken");
+        let path = dir.join("projects.json");
+        write(&path, &broken_file());
+
+        let err = save_project_raw_at(&path, "bad", r#"{"name": 6}"#).await.unwrap_err();
+        assert!(err.to_string().contains("Not saved"), "{err}");
+        assert_eq!(read(&path), broken_file());
+        assert!(backups_in(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn raw_save_that_fixes_a_broken_entry_backs_up_then_writes() {
+        let dir = temp_dir("raw-fixes");
+        let path = dir.join("projects.json");
+        write(&path, &broken_file());
+
+        save_project_raw_at(&path, "bad", GOOD).await.unwrap();
+        let backups = backups_in(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(read(&dir.join(&backups[0])), broken_file());
+        let after = load_project_file_at(&path).await.unwrap();
+        assert!(!after.is_broken("bad"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
