@@ -17,9 +17,9 @@ import Settings from './lib/Settings.svelte'
 import ConfirmDialog from './lib/ConfirmDialog.svelte'
 
 let projects = $state([])
-let profiles = $state([])
 let selectedProject = $state('')
-let selectedProfile = $state('')
+let selectedEnvironment = $state('')
+let profileOverride = $state('')
 let selectedDatabase = $state('')
 let connectionStatus = $state('disconnected')
 let statusMessage = $state('')
@@ -58,6 +58,8 @@ let isGrantingAccess = $state(false)
 let showMigrationOffer = $state(false)
 let isImporting = $state(false)
 let migrationResult = $state('')
+// AWS profile template to prefill in Settings (set by "Create profile")
+let pendingProfileTemplate = $state(null)
 
 let invoke = null
 let listen = null
@@ -259,7 +261,7 @@ async function setupListenersAndLoad() {
   listen('tray-quick-connect', (ev) => {
     const savedId = ev.payload
     const saved = savedConnections.find((c) => c.id === savedId)
-    if (saved) {
+    if (saved && !saved.needsAttention) {
       handleSavedConnectionConnect(saved)
     }
   }).then((fn) => { unlistenTrayQuickConnect = fn })
@@ -281,7 +283,8 @@ async function setupListenersAndLoad() {
 
   // Load projects
   try {
-    projects = await invoke('list_projects')
+    const overview = await invoke('list_projects')
+    projects = overview.projects
   } catch (err) {
     errorMessage = `Failed to load projects: ${err}`
   } finally {
@@ -421,26 +424,64 @@ async function checkForUpdates() {
   }
 }
 
-async function loadProfiles() {
-  if (!selectedProject) return
+async function refreshProjects() {
   try {
-    profiles = await invoke('list_profiles', { projectKey: selectedProject })
-    selectedProfile = ''
+    const overview = await invoke('list_projects')
+    projects = overview.projects
   } catch (err) {
-    errorMessage = `Failed to load profiles: ${err}`
+    errorMessage = `Failed to refresh projects: ${err}`
+    return
+  }
+  // Keep the selection while it still exists
+  const project = projects.find((p) => p.key === selectedProject && p.reachable)
+  if (!project) {
+    selectedProject = ''
+    selectedEnvironment = ''
+    profileOverride = ''
+    selectedDatabase = ''
+    return
+  }
+  const resolved = project.environments.find((e) => e.environment.name === selectedEnvironment)
+  if (!resolved) {
+    selectedEnvironment = ''
+    profileOverride = ''
+  } else if (profileOverride && !resolved.candidates.includes(profileOverride)) {
+    profileOverride = ''
+  }
+  if (selectedDatabase && !(project.databases || []).includes(selectedDatabase)) {
+    selectedDatabase = ''
   }
 }
 
-async function refreshProjects() {
+async function reloadSavedConnections() {
   try {
-    projects = await invoke('list_projects')
+    savedConnections = await invoke('load_saved_connections')
   } catch (err) {
-    errorMessage = `Failed to refresh projects: ${err}`
+    errorMessage = `Failed to load saved connections: ${err}`
+  }
+}
+
+async function handleSelectProfile(accountId, profile) {
+  try {
+    await invoke('set_account_profile', { accountId, profile })
+    profileOverride = profile
+    await refreshProjects()
+  } catch (err) {
+    errorMessage = `Failed to select profile: ${err}`
+  }
+}
+
+async function handleCreateProfile(accountId) {
+  try {
+    pendingProfileTemplate = await invoke('aws_profile_template', { accountId })
+    showSettings = true
+  } catch (err) {
+    errorMessage = `Failed to prepare AWS profile: ${err}`
   }
 }
 
 async function handleConnect() {
-  if (!selectedProject || !selectedProfile) return
+  if (!selectedProject || !selectedEnvironment) return
 
   errorMessage = ''
   connectionStatus = 'connecting'
@@ -449,7 +490,8 @@ async function handleConnect() {
   try {
     const result = await invoke('connect', {
       projectKey: selectedProject,
-      profile: selectedProfile,
+      environment: selectedEnvironment,
+      profile: profileOverride || null,
       localPort: null,
       database: selectedDatabase || null,
       savedConnectionId: null,
@@ -461,7 +503,8 @@ async function handleConnect() {
       {
         id: result.connectionId,
         projectKey: selectedProject,
-        profile: selectedProfile,
+        environment: result.connectionInfo.environment || selectedEnvironment,
+        profile: result.connectionInfo.profile,
         localPort: result.connectionInfo.port,
         connectionInfo: result.connectionInfo,
         status: 'connected',
@@ -474,7 +517,8 @@ async function handleConnect() {
     // Show save prompt
     lastConnectedConfig = {
       projectKey: selectedProject,
-      profile: selectedProfile,
+      environment: result.connectionInfo.environment || selectedEnvironment,
+      profile: result.connectionInfo.profile,
       database: selectedDatabase || null,
     }
     showSavePrompt = true
@@ -495,7 +539,8 @@ async function handleSavedConnectionConnect(savedConnection) {
   try {
     const result = await invoke('connect', {
       projectKey: savedConnection.projectKey,
-      profile: savedConnection.profile,
+      environment: savedConnection.environment,
+      profile: null,
       localPort: null,
       database: savedConnection.database || null,
       savedConnectionId: savedConnection.id,
@@ -508,7 +553,8 @@ async function handleSavedConnectionConnect(savedConnection) {
         id: result.connectionId,
         savedConnectionId: savedConnection.id,
         projectKey: savedConnection.projectKey,
-        profile: savedConnection.profile,
+        environment: result.connectionInfo.environment || savedConnection.environment,
+        profile: result.connectionInfo.profile,
         localPort: result.connectionInfo.port,
         connectionInfo: result.connectionInfo,
         status: 'connected',
@@ -571,7 +617,7 @@ async function handleDisconnectAll() {
 function initSavePrompt() {
   if (!lastConnectedConfig) return
   const project = projects.find((p) => p.key === lastConnectedConfig.projectKey)
-  saveConnectionName = `${project?.name || lastConnectedConfig.projectKey} - ${lastConnectedConfig.profile}`
+  saveConnectionName = `${project?.name || lastConnectedConfig.projectKey} - ${lastConnectedConfig.environment}`
 }
 
 async function handleSaveConnection() {
@@ -581,6 +627,7 @@ async function handleSaveConnection() {
     const saved = await invoke('save_connection', {
       name: saveConnectionName.trim(),
       projectKey: lastConnectedConfig.projectKey,
+      environment: lastConnectedConfig.environment,
       profile: lastConnectedConfig.profile,
       database: lastConnectedConfig.database || null,
     })
@@ -617,10 +664,10 @@ function cancelDelete() {
   showDeleteConfirm = null
 }
 
-async function handleUpdateSavedConnection(id, name) {
+async function handleUpdateSavedConnection(id, name, environment) {
   try {
-    const updated = await invoke('update_saved_connection', { id, name })
-    savedConnections = savedConnections.map((c) => (c.id === updated.id ? updated : c))
+    await invoke('update_saved_connection', { id, name, environment: environment || null })
+    await reloadSavedConnections()
   } catch (err) {
     errorMessage = `Failed to update connection: ${err}`
   }
@@ -639,8 +686,8 @@ async function handleReorderSavedConnections(ids) {
 
 async function handleMoveToGroup(id, group) {
   try {
-    const updated = await invoke('move_connection_to_group', { id, group })
-    savedConnections = savedConnections.map((c) => (c.id === updated.id ? updated : c))
+    await invoke('move_connection_to_group', { id, group })
+    await reloadSavedConnections()
   } catch (err) {
     errorMessage = `Failed to move connection: ${err}`
   }
@@ -648,8 +695,8 @@ async function handleMoveToGroup(id, group) {
 
 async function handleRenameGroup(oldName, newName) {
   try {
-    const updated = await invoke('rename_connection_group', { oldName, newName })
-    savedConnections = updated
+    await invoke('rename_connection_group', { oldName, newName })
+    await reloadSavedConnections()
   } catch (err) {
     errorMessage = `Failed to rename group: ${err}`
   }
@@ -657,8 +704,8 @@ async function handleRenameGroup(oldName, newName) {
 
 async function handleDeleteGroup(groupName) {
   try {
-    const updated = await invoke('delete_connection_group', { groupName })
-    savedConnections = updated
+    await invoke('delete_connection_group', { groupName })
+    await reloadSavedConnections()
   } catch (err) {
     errorMessage = `Failed to delete group: ${err}`
   }
@@ -695,20 +742,6 @@ function handleDismissUpdate() {
   showUpdateBanner = false
   updateError = null
   updateProgress = null
-}
-
-function handleProjectChange(newProject) {
-  selectedProject = newProject
-  selectedDatabase = ''
-  loadProfiles()
-}
-
-function handleProfileChange(newProfile) {
-  selectedProfile = newProfile
-}
-
-function handleDatabaseChange(newDatabase) {
-  selectedDatabase = newDatabase
 }
 
 function dismissError() {
@@ -760,7 +793,7 @@ const filteredProjects = $derived(
 // Computed: check if the selected project/profile is already saved
 const isAlreadySaved = $derived(
   savedConnections.some(
-    (c) => c.projectKey === selectedProject && c.profile === selectedProfile && (c.database || null) === (selectedDatabase || null),
+    (c) => c.projectKey === selectedProject && c.environment === selectedEnvironment && (c.database || null) === (selectedDatabase || null),
   ),
 )
 </script>
@@ -899,7 +932,7 @@ const isAlreadySaved = $derived(
         <button
           class="main-tab"
           class:active={activeTab === 'rds'}
-          onclick={() => { activeTab = 'rds'; selectedProject = ''; selectedProfile = ''; profiles = [] }}
+          onclick={() => { activeTab = 'rds'; selectedProject = ''; selectedEnvironment = ''; profileOverride = ''; selectedDatabase = '' }}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/>
@@ -912,7 +945,7 @@ const isAlreadySaved = $derived(
         <button
           class="main-tab"
           class:active={activeTab === 'service'}
-          onclick={() => { activeTab = 'service'; selectedProject = ''; selectedProfile = ''; profiles = [] }}
+          onclick={() => { activeTab = 'service'; selectedProject = ''; selectedEnvironment = ''; profileOverride = ''; selectedDatabase = '' }}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
@@ -945,15 +978,14 @@ const isAlreadySaved = $derived(
 
         <ConnectionForm
           projects={filteredProjects}
-          {profiles}
-          {selectedProject}
-          {selectedProfile}
-          {selectedDatabase}
+          bind:selectedProject
+          bind:selectedEnvironment
+          bind:profileOverride
+          bind:selectedDatabase
           isConnecting={connectionStatus === 'connecting'}
           isLoadingProjects={loadingProjects}
-          onProjectChange={handleProjectChange}
-          onProfileChange={handleProfileChange}
-          onDatabaseChange={handleDatabaseChange}
+          onCreateProfile={handleCreateProfile}
+          onSelectProfile={handleSelectProfile}
           onConnect={handleConnect}
         />
 
@@ -1048,7 +1080,8 @@ const isAlreadySaved = $derived(
 
     {#if showSettings}
       <Settings
-        onClose={() => showSettings = false}
+        onClose={() => { showSettings = false; pendingProfileTemplate = null }}
+        initialProfileTemplate={pendingProfileTemplate}
         {invoke}
         onProjectsChanged={refreshProjects}
         {currentTheme}

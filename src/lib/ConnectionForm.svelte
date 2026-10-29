@@ -1,41 +1,77 @@
 <script>
-const {
+let {
   projects = [],
-  profiles = [],
-  selectedProject = '',
-  selectedProfile = '',
-  selectedDatabase = '',
+  selectedProject = $bindable(''),
+  selectedEnvironment = $bindable(''),
+  profileOverride = $bindable(''),
+  selectedDatabase = $bindable(''),
   isConnecting = false,
   isLoadingProjects = false,
-  onProjectChange,
-  onProfileChange,
-  onDatabaseChange,
+  onCreateProfile,
+  onSelectProfile,
   onConnect,
 } = $props()
 
-// Get databases for the selected project
-const currentProjectDatabases = $derived(() => {
-  if (!selectedProject) return []
-  const project = projects.find((p) => p.key === selectedProject)
-  return project?.databases || []
-})
+// Only reachable projects are listed; broken ones stay visible but disabled.
+const listedProjects = $derived(projects.filter((p) => p.reachable))
 
-const hasDatabases = $derived(currentProjectDatabases().length > 1)
+const currentProject = $derived(projects.find((p) => p.key === selectedProject))
+const currentEnvironments = $derived(currentProject?.environments ?? [])
+const currentResolved = $derived(
+  currentEnvironments.find((e) => e.environment.name === selectedEnvironment),
+)
+const currentDatabases = $derived(currentProject?.databases || [])
+const hasDatabases = $derived(currentDatabases.length > 1)
+
+// The profile that will be used: the user's choice, else the resolved one.
+const effectiveProfile = $derived(profileOverride || currentResolved?.profile || '')
+const showProfilePicker = $derived((currentResolved?.candidates?.length ?? 0) > 1)
+const needsProfile = $derived(!!currentResolved && !currentResolved.profile)
 
 const canConnect = $derived(
-  selectedProject && selectedProfile && !isConnecting && (!hasDatabases || selectedDatabase),
+  !!currentProject &&
+    !currentProject.broken &&
+    !!currentResolved &&
+    !!effectiveProfile &&
+    !isConnecting &&
+    (!hasDatabases || selectedDatabase),
 )
 
-function handleProjectSelect(e) {
-  onProjectChange?.(e.target.value)
+function shortAccount(accountId) {
+  if (!accountId || accountId.length < 9) return accountId || 'unknown account'
+  return `${accountId.slice(0, 4)}…${accountId.slice(-4)}`
 }
 
-function handleProfileSelect(e) {
-  onProfileChange?.(e.target.value)
+function projectLabel(project) {
+  const reason = project.broken || project.problems?.[0]?.message
+  return reason ? `${project.name} — ${reason}` : project.name
+}
+
+function environmentLabel(resolved) {
+  if (resolved.profile) return resolved.environment.name
+  return `${resolved.environment.name} — no AWS profile for ${shortAccount(resolved.environment.accountId)}`
+}
+
+function handleProjectSelect(e) {
+  selectedProject = e.target.value
+  selectedEnvironment = ''
+  profileOverride = ''
+  selectedDatabase = ''
+}
+
+function handleEnvironmentSelect(e) {
+  selectedEnvironment = e.target.value
+  profileOverride = ''
+}
+
+function handleViaProfileSelect(e) {
+  const profile = e.target.value
+  if (!profile || !currentResolved) return
+  onSelectProfile?.(currentResolved.environment.accountId, profile)
 }
 
 function handleDatabaseSelect(e) {
-  onDatabaseChange?.(e.target.value)
+  selectedDatabase = e.target.value
 }
 
 function handleConnectClick() {
@@ -69,8 +105,8 @@ function handleConnectClick() {
           disabled={isConnecting || isLoadingProjects}
         >
           <option value="">{isLoadingProjects ? 'Loading projects...' : 'Choose a project'}</option>
-          {#each projects as project}
-            <option value={project.key}>{project.name}</option>
+          {#each listedProjects as project (project.key)}
+            <option value={project.key} disabled={!!project.broken}>{projectLabel(project)}</option>
           {/each}
         </select>
         <div class="select-icon">
@@ -82,27 +118,62 @@ function handleConnectClick() {
     </div>
 
     <div class="field-group">
-      <label for="profile">
-        <span class="label-text">AWS Profile</span>
+      <label for="environment">
+        <span class="label-text">Environment</span>
       </label>
-      <div class="select-wrapper">
-        <select
-          id="profile"
-          value={selectedProfile}
-          onchange={handleProfileSelect}
-          disabled={!selectedProject || isConnecting}
-        >
-          <option value="">Choose an AWS profile</option>
-          {#each profiles as profile}
-            <option value={profile}>{profile}</option>
-          {/each}
-        </select>
-        <div class="select-icon">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+      <div class="env-row">
+        <div class="select-wrapper">
+          <select
+            id="environment"
+            value={selectedEnvironment}
+            onchange={handleEnvironmentSelect}
+            disabled={!selectedProject || isConnecting}
+          >
+            <option value="">Choose an environment</option>
+            {#each currentEnvironments as resolved (resolved.environment.name)}
+              <option value={resolved.environment.name} class:no-profile={!resolved.profile}>{environmentLabel(resolved)}</option>
+            {/each}
+          </select>
+          <div class="select-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
         </div>
+        {#if needsProfile}
+          <button
+            class="btn-create-profile"
+            type="button"
+            disabled={isConnecting}
+            onclick={() => onCreateProfile?.(currentResolved.environment.accountId)}
+          >
+            Create profile
+          </button>
+        {/if}
       </div>
+      {#if showProfilePicker}
+        <div class="via-profile">
+          <label for="via-profile" class="via-label">via profile</label>
+          <div class="select-wrapper">
+            <select
+              id="via-profile"
+              class="select-compact"
+              value={effectiveProfile}
+              onchange={handleViaProfileSelect}
+              disabled={isConnecting}
+            >
+              {#each currentResolved.candidates as candidate (candidate)}
+                <option value={candidate}>{candidate}</option>
+              {/each}
+            </select>
+            <div class="select-icon">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      {/if}
     </div>
 
     {#if hasDatabases}
@@ -118,7 +189,7 @@ function handleConnectClick() {
             disabled={!selectedProject || isConnecting}
           >
             <option value="">Choose a database</option>
-            {#each currentProjectDatabases() as db}
+            {#each currentDatabases as db}
               <option value={db}>{db}</option>
             {/each}
           </select>
@@ -249,6 +320,70 @@ function handleConnectClick() {
     background: var(--bg-secondary);
     color: var(--text-primary);
     padding: 12px;
+  }
+
+  .env-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .env-row .select-wrapper {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .btn-create-profile {
+    flex-shrink: 0;
+    padding: 0 14px;
+    background: rgba(var(--accent-primary-rgb), 0.15);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.4);
+    border-radius: 12px;
+    color: var(--accent-primary-light);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+  }
+
+  .btn-create-profile:hover:not(:disabled) {
+    background: rgba(var(--accent-primary-rgb), 0.25);
+  }
+
+  .btn-create-profile:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .via-profile {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .via-label {
+    font-size: 0.8rem;
+    color: #9e9ea7;
+    white-space: nowrap;
+  }
+
+  .via-profile .select-wrapper {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .select-compact {
+    padding: 8px 36px 8px 12px;
+    font-size: 0.85rem;
+    border-radius: 10px;
+  }
+
+  select option.no-profile {
+    color: #9e9ea7;
+  }
+
+  select option:disabled {
+    color: #9e9ea7;
   }
 
   .select-icon {

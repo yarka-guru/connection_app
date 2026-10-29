@@ -4,7 +4,8 @@ import { trapFocus, safeTimeout } from './utils.js'
 import { themes, darkThemeNames, lightThemeNames } from './themes.js'
 import ThemeSwitcher from './ThemeSwitcher.svelte'
 
-const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, currentLightTheme = 'light', onLightThemeChange, scheme = 'dark', onSchemeChange, appVersion = '' } = $props()
+const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, currentLightTheme = 'light', onLightThemeChange, scheme = 'dark', onSchemeChange, appVersion = '', initialProfileTemplate = null } = $props()
+// TODO(Task 13): when initialProfileTemplate is set, open the AWS profile editor prefilled with it.
 
 // Collapsible section state for project form
 let sectionGeneral = $state(true)

@@ -60,6 +60,7 @@ const groupedConnectionsMap = $derived(() => {
 let expandedId = $state(null)
 let editingId = $state(null)
 let editName = $state('')
+let editEnvironment = $state('')
 let collapsedGroups = $state(new Set())
 let showNewGroupInput = $state(false)
 let newGroupName = $state('')
@@ -97,12 +98,17 @@ function getProjectName(projectKey) {
   return project?.name || projectKey
 }
 
+function getEnvironmentNames(projectKey) {
+  const project = projects.find((p) => p.key === projectKey)
+  return (project?.environments ?? []).map((e) => e.environment.name)
+}
+
 function getActiveConnection(savedConnection) {
   return activeConnections.find(
     (ac) =>
       ac.savedConnectionId === savedConnection.id ||
       (ac.projectKey === savedConnection.projectKey &&
-        ac.profile === savedConnection.profile),
+        ac.environment === savedConnection.environment),
   )
 }
 
@@ -150,19 +156,30 @@ function startEdit(connection, e) {
   e.stopPropagation()
   editingId = connection.id
   editName = connection.name
+  editEnvironment = connection.environment || ''
 }
 
 function cancelEdit() {
   editingId = null
   editName = ''
+  editEnvironment = ''
+}
+
+// Save only when focus leaves the whole edit form (name input and select)
+function handleEditFocusOut(e) {
+  if (e.currentTarget.contains(e.relatedTarget)) return
+  saveEdit(e)
 }
 
 function saveEdit(e) {
   e?.preventDefault()
   if (!editingId || !editName.trim()) return
-  onUpdate?.(editingId, editName.trim())
+  const original = savedConnections.find((c) => c.id === editingId)
+  const environment = editEnvironment && editEnvironment !== original?.environment ? editEnvironment : null
+  onUpdate?.(editingId, editName.trim(), environment)
   editingId = null
   editName = ''
+  editEnvironment = ''
 }
 
 function handleEditKeydown(e) {
@@ -522,14 +539,21 @@ function handleGroupHeaderKeydown(e, groupName) {
       <div class="connection-info">
         {#if editingId === connection.id}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <form class="edit-name-form" onsubmit={saveEdit} onclick={(e) => e.stopPropagation()} onkeydown={handleEditKeydown}>
+          <form class="edit-name-form" onsubmit={saveEdit} onclick={(e) => e.stopPropagation()} onkeydown={handleEditKeydown} onfocusout={handleEditFocusOut}>
             <input
               type="text"
               class="edit-name-input"
               bind:value={editName}
               autofocus
-              onblur={saveEdit}
             />
+            <select class="edit-env-select" bind:value={editEnvironment} aria-label="Environment">
+              {#if !editEnvironment || !getEnvironmentNames(connection.projectKey).includes(editEnvironment)}
+                <option value={editEnvironment} disabled>{editEnvironment ? `${editEnvironment} (not found)` : 'Choose an environment'}</option>
+              {/if}
+              {#each getEnvironmentNames(connection.projectKey) as envName (envName)}
+                <option value={envName}>{envName}</option>
+              {/each}
+            </select>
           </form>
         {:else}
           <div class="connection-name-row">
@@ -543,8 +567,17 @@ function handleGroupHeaderKeydown(e, groupName) {
           <span class="connecting-text">Connecting...</span>
         {:else if editingId !== connection.id}
           <span class="connection-meta">
-            {getProjectName(connection.projectKey)} / {connection.profile}
+            {getProjectName(connection.projectKey)} / {connection.environment || connection.profile}
+            {#if activeConn?.profile}
+              <span class="connection-profile">via {activeConn.profile}</span>
+            {/if}
           </span>
+          {#if connection.needsAttention}
+            <span class="attention-row">
+              <span class="attention-badge">Environment not found</span>
+              <button class="btn-attention-edit" onclick={(e) => startEdit(connection, e)}>Edit</button>
+            </span>
+          {/if}
           {#if !activeConn}
             <span class="connection-last-used">
               Last used: {formatLastUsed(connection.lastUsedAt)}
@@ -621,7 +654,7 @@ function handleGroupHeaderKeydown(e, groupName) {
           </button>
           <button
             class="btn-connect"
-            disabled={!!connectingId}
+            disabled={!!connectingId || connection.needsAttention}
             onclick={(e) => { e.stopPropagation(); handleConnect(connection); }}
             aria-label="Connect to {connection.name}"
           >
@@ -1195,6 +1228,53 @@ function handleGroupHeaderKeydown(e, groupName) {
 
   .btn-connect:active {
     transform: var(--press-scale);
+  }
+
+  .connection-profile {
+    margin-left: 6px;
+    color: #9e9ea7;
+  }
+
+  .attention-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .attention-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--color-warning, #e0a63a);
+    border: 1px solid currentColor;
+  }
+
+  .btn-attention-edit {
+    font-size: 0.75rem;
+    padding: 2px 10px;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--accent-primary-light);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.4);
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+  }
+
+  .btn-attention-edit:hover {
+    background: rgba(var(--accent-primary-rgb), 0.15);
+  }
+
+  .edit-env-select {
+    margin-top: 6px;
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 0.8rem;
+    border-radius: 8px;
+    background: rgba(var(--glass-rgb), 0.05);
+    border: 1px solid rgba(var(--glass-rgb), 0.15);
+    color: var(--text-primary);
   }
 
   .btn-edit {
