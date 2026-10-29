@@ -12,8 +12,9 @@ let {
   onConnect,
 } = $props()
 
-// Only reachable projects are listed; broken ones stay visible but disabled.
-const listedProjects = $derived(projects.filter((p) => p.reachable))
+// Reachable projects are listed. Broken ones are always listed, disabled and
+// with the reason, even when none of their environments has a profile.
+const listedProjects = $derived(projects.filter((p) => p.reachable || !!p.broken))
 
 const currentProject = $derived(projects.find((p) => p.key === selectedProject))
 const currentEnvironments = $derived(currentProject?.environments ?? [])
