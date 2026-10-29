@@ -114,7 +114,7 @@ connection-app-cli
 
 1. On first run with no projects configured, create one in `~/.connection-app/projects.json`
 2. Select a project
-3. Select an environment (AWS profile)
+3. Select an environment (resolved to an AWS profile by account ID)
 4. SSO session is validated automatically (opens browser if needed)
 5. The tool retrieves credentials from Secrets Manager, finds a bastion instance, and starts native WebSocket port forwarding
 6. Use the displayed connection details with your database client (`psql`, `mysql`, pgAdmin, DBeaver, etc.)
@@ -128,7 +128,8 @@ connection-app-cli [OPTIONS] [COMMAND]
 
 Options:
   -p, --project <NAME>    Project name (skip interactive selection)
-      --profile <NAME>    AWS profile name (skip interactive selection)
+  -e, --env <NAME>        Environment name (skip interactive selection)
+      --profile <NAME>    AWS profile name; must reach the environment's account
       --port <PORT>       Local port override
       --debug             Enable debug logging (RUST_LOG levels)
   -V, --version           Print version
@@ -143,8 +144,8 @@ Commands:
 
 1. Reads AWS profiles from `~/.aws/config`
 2. Loads project configurations from `~/.connection-app/projects.json`
-3. Filters profiles based on the selected project's `profileFilter`
-4. Ensures AWS SSO session is valid (OIDC device authorization if needed)
+3. Resolves the selected environment to an AWS profile: the profile whose account ID equals the environment's `accountId`
+4. Ensures AWS SSO session is valid (OIDC device authorization if needed), then checks the credentials belong to the environment's account
 5. Queries AWS Secrets Manager for RDS credentials (project-specific `secretPrefix`;
    if no secret matches, the secret named `rds/<DB instance or cluster identifier>-credentials`)
 6. Finds a running bastion instance (tagged `Name=*bastion*`)
@@ -229,9 +230,62 @@ Each project defines:
 | `rdsType` | `"cluster"` or `"instance"` | `"cluster"` |
 | `engine` | `"postgres"` or `"mysql"` | `"postgres"` |
 | `rdsPattern` | RDS identifier pattern | `"my-app-rds-aurora"` |
-| `profileFilter` | AWS profile prefix filter (optional) | `"my-app"` |
-| `envPortMapping` | Environment suffix to local port mapping | `{"-staging": "5433"}` |
-| `defaultPort` | Fallback local port | `"5432"` |
+| `authType` | `"secrets"` or `"iam"` | `"secrets"` |
+| `passwordOnly` | PostgreSQL only: `true` signs in to RDS with the secret's password only | `false` |
+| `environments` | Ordered list of environments, see below | |
+| `defaultPort` | Suggested port for a new environment | `"5432"` |
+| `profileFilter`, `envPortMapping` | Legacy. Ignored when `environments` is present, kept in the file for 3.7.x | |
+
+### Environments
+
+An environment is an AWS account, not an AWS profile name, so the same file
+works for everyone whatever their profiles are called.
+
+| Field | Description | Example |
+|---|---|---|
+| `name` | Unique within the project, shell-safe | `"prod"` |
+| `accountId` | 12-digit AWS account ID, stored as a string | `"073813807522"` |
+| `port` | Local port, digits only, unique within the project | `"5460"` |
+| `rdsPattern`, `region` | Optional overrides for this environment | `null` |
+| `targetPattern`, `ecsCluster`, `ecsService`, `bastionPattern` | Optional overrides for service projects | `null` |
+
+The app finds the profile for an account in `~/.aws/config` (`sso_account_id`,
+or the account in `role_arn`; an account resolved by an STS lookup is
+cached in `~/.connection-app/profile-accounts.json`). With one match it is
+used. With several, the first is used until you pick one in the connection
+form; the choice is stored per account in `~/.connection-app/preferences.json`.
+With none, the environment is greyed out and offers "Create profile". Before
+the tunnel opens, the account of the credentials must equal `accountId`,
+otherwise the connection is refused. `preferences.json` and
+`profile-accounts.json` are local and never exported.
+
+### Authentication
+
+For PostgreSQL the project form offers three choices:
+
+- **Automatic** (default for new projects): the local auth proxy uses an IAM
+  token or the secret's password, whichever the database asks for.
+- **IAM only**: `authType: "iam"`.
+- **Password only**: `authType: "secrets"` with `passwordOnly: true`.
+
+MySQL offers IAM or Password.
+
+### Loading, repair and migration
+
+- `projects.json` is read project by project. A broken project is shown with
+  its errors (Edit, Edit JSON, Delete in Settings) and does not hide the others.
+  If the file is not valid JSON, Settings shows the line and column, a raw
+  editor and Restore backup.
+- Projects without `environments` are legacy. On first start a "Config needs
+  updating" dialog proposes environments by account, with ports kept as they
+  are today. Apply copies `projects.json` to `projects.json.bak-YYYYMMDD-HHMMSS`
+  first. "Later" leaves the file alone and legacy projects keep working.
+  Import creates the same kind of backup before writing.
+- A migrated file still works in 3.7.x because the legacy fields are kept.
+  Projects created in 3.8 carry `profileFilter: "__connection-app-3.8__"`, so
+  3.7.x hides them. The CLI never writes `projects.json`; legacy
+  projects keep resolving by profile name, and it prints a note to open the
+  app to update them.
 
 Example `projects.json`:
 
@@ -245,12 +299,15 @@ Example `projects.json`:
     "rdsType": "cluster",
     "engine": "postgres",
     "rdsPattern": "my-app-rds-aurora",
-    "profileFilter": null,
-    "envPortMapping": {
-      "-prod": "5432",
-      "-staging": "5433"
-    },
-    "defaultPort": "5432"
+    "authType": "secrets",
+    "passwordOnly": false,
+    "profileFilter": "__connection-app-3.8__",
+    "envPortMapping": {},
+    "defaultPort": "5432",
+    "environments": [
+      { "name": "prod", "accountId": "111122223333", "port": "5432" },
+      { "name": "staging", "accountId": "444455556666", "port": "5433" }
+    ]
   }
 }
 ```
@@ -295,6 +352,11 @@ src-tauri/src/
   config/
     aws_config.rs     ~/.aws/config reader/writer
     projects.rs       Project config CRUD (~/.connection-app/projects.json)
+    project_file.rs   Per-project loading, atomic writes, backups
+    accounts.rs       AWS account of each profile
+    environments.rs   Environment to profile resolution
+    migration.rs      Legacy to account-environment migration
+    preferences.rs    Local per-account profile choices
     validation.rs     Project config validation
   tunnel/
     native.rs         Native SSM port forwarding over WebSocket
@@ -305,6 +367,7 @@ src-tauri/src/
     connection.rs     Connect/disconnect Tauri commands
     profiles.rs       AWS profile management commands
     projects.rs       Project config management commands
+    repair.rs         Project file repair, migration and import commands
     saved.rs          Saved connections CRUD commands
     system.rs         Updates, version, sandbox, quit commands
 src/
@@ -315,7 +378,10 @@ src/
     ConfirmDialog.svelte  Reusable confirmation modal
     ConnectionForm.svelte Project/environment selector + connect button
     SavedConnections.svelte  Bookmarked connections list
-    ActiveConnections.svelte Live connection panels with credentials
+    EnvironmentsEditor.svelte  Environment table in the project form
+    ProjectFileRepair.svelte   Broken project / broken file actions
+    MigrationDialog.svelte     Legacy config migration
+    ImportDialog.svelte        Import with per-project conflict choice
     SessionStatus.svelte    Connection status indicator
     Settings.svelte       Project management + AWS profile CRUD + raw config editor
     UpdateBanner.svelte   In-app update notification

@@ -16,6 +16,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `aws/sso.rs` — AWS SSO OIDC device authorization flow with trait-based handler (`GuiSsoHandler`, `CliSsoHandler`)
 - `config/aws_config.rs` — Reads/writes `~/.aws/config`, respects `AWS_CONFIG_FILE` env var for sandbox
 - `config/projects.rs` — Project config CRUD for `~/.connection-app/projects.json`
+- `config/project_file.rs` — Per-project loading of `projects.json` (broken projects kept with raw JSON), atomic writes, `.bak-YYYYMMDD-HHMMSS` backups
+- `config/accounts.rs` — AWS account of each profile (`sso_account_id`, `role_arn`, cached `profile-accounts.json`)
+- `config/environments.rs` — Environment → AWS profile resolution by account ID; remembered choices in `preferences.json`
+- `config/migration.rs` — Legacy (profile-name) projects → account environments proposal and apply
 - `config/validation.rs` — Validates required fields, region format, port format, shell-safe patterns
 - `config/local_passwords.rs` — Stable per project+profile local passwords for the auth proxy (`~/.connection-app/iam-proxy-passwords.json`, 0600, file-locked)
 - `error.rs` — Unified `AppError` enum with Tauri serialization
@@ -34,6 +38,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `AwsDirAccess` — RAII guard that calls `stopAccessingSecurityScopedResource` on drop
 
 #### Tauri Commands (`commands/`)
+- `repair.rs` — project file raw edit, backups, migration proposal/apply, import
 - `connection.rs` — connect, disconnect, disconnect_all, get_active_connections_list, sso_login
 - `profiles.rs` — list_profiles, read_aws_config, save/delete_aws_profile, raw config editor
 - `projects.rs` — list_projects, list_project_configs, save/delete_project_config
@@ -46,8 +51,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Frontend (`src/`)
 - `App.svelte` — Main app shell (Svelte 5 with runes), sandbox setup screen
 - `lib/ConnectionForm.svelte` — Project/environment selector + connect button
-- `lib/ActiveConnections.svelte` — Live connection panels with credentials
-- `lib/SavedConnections.svelte` — Bookmarked connections list
+- `lib/SavedConnections.svelte` — Bookmarked connections list; active connections render here too (`ActiveConnections.svelte` no longer exists)
+- `lib/EnvironmentsEditor.svelte` — Environment table in the project form
+- `lib/ProjectFileRepair.svelte` — Broken project / broken file actions
+- `lib/MigrationDialog.svelte` — Legacy config migration dialog
+- `lib/ImportDialog.svelte` — Import with per-project conflict choice
 - `lib/Settings.svelte` — Project management + AWS profile CRUD + raw config editor
 - `lib/SessionStatus.svelte` — Connection status indicator
 - `lib/UpdateBanner.svelte` — In-app update notification
@@ -58,8 +66,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Core Flow
 1. Read AWS profiles from `~/.aws/config`
 2. Load project configs from `~/.connection-app/projects.json`
-3. Select project (filtered by available profiles)
-4. Filter environments (AWS profiles) based on project's `profileFilter`
+3. Select project
+4. Select environment (resolved to an AWS profile by account ID)
 5. Ensure SSO session is valid (OIDC device authorization if needed)
 6. Query Secrets Manager for RDS credentials (project-specific `secretPrefix`), or prepare IAM auth (`authType: "iam"`)
 7. Find running bastion instance (tagged with `Name=*bastion*`)

@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.8.0] - 2026-10-29
+
+### Added
+- Environments are identified by AWS account ID. Each project has an
+  `environments` list (name, `accountId`, port, optional `rdsPattern` /
+  `region` / service overrides). The app finds the AWS profile for an
+  account from `~/.aws/config`; with several matches the choice is remembered
+  per account in `~/.connection-app/preferences.json`; with none the
+  environment is greyed out with a "Create profile" action. Before the tunnel
+  opens, the account of the credentials must equal the environment's
+  `accountId`.
+- Per-project loading of `projects.json`: a broken project is shown with its
+  errors and Edit / Edit JSON / Delete actions and does not hide the others.
+  A file that is not valid JSON shows the line and column, a raw editor and
+  Restore backup.
+- A "Config needs updating" dialog converts existing projects to account
+  environments. It keeps each profile's current port and writes
+  `projects.json.bak-YYYYMMDD-HHMMSS` before applying. Import offers the same
+  per-project handling (Replace, Keep mine, Import as copy) and backs up first.
+- The Settings project form shows every project field, an environments
+  editor, Copy environments from another project, Duplicate project and inline
+  validation.
+- Authentication choice for PostgreSQL: Automatic (default), IAM only,
+  Password only (`passwordOnly: true`).
+- CLI: `--env <NAME>`; `projects` prints environments, accounts, ports and
+  resolved profiles.
+
+### Changed
+- The connection form, saved connections and `connect` use environment names
+  instead of AWS profile names. `--profile` must belong to one of the
+  project's environments.
+- Local passwords and bastion choices are keyed by environment.
+- After any save in Settings the main form reloads projects and environments.
+- The CLI never writes `projects.json`; legacy projects keep resolving by
+  profile name, and it prints a note to open the app to update them.
+
+### Fixed
+- One malformed project no longer hides every project.
+- Environments whose profile names do not match `profileFilter` (for example
+  `aws configure sso` default names) are found by account.
+
+### Notes
+- A migrated file still works in 3.7.x: the legacy `profileFilter`,
+  `envPortMapping`, `defaultPort` and `authType` are kept. Projects created
+  in 3.8 are hidden in 3.7.x (`profileFilter: "__connection-app-3.8__"`).
+- `preferences.json` and `profile-accounts.json` are local and never exported.
+
 ## [Unreleased]
 
 ### Added
