@@ -216,12 +216,18 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             }
         }
 
-        // secretPrefix is required only for "secrets" auth type (unless secretPath is set)
+        // A "secrets" project needs a secret (secretPrefix or secretPath).
+        // Automatic auth with no secret signs in as iamUsername instead;
+        // Password only always needs a secret.
         if auth_type == "secrets"
             && config.secret_prefix.is_empty()
             && config.secret_path.as_deref().is_none_or(|s| s.is_empty())
         {
-            err(&mut errors, "secretPrefix", "Missing required field: secretPrefix (required when authType is \"secrets\" and secretPath is not set)".to_string());
+            if config.password_only == Some(true) {
+                err(&mut errors, "secretPrefix", "Missing required field: secretPrefix (Password only needs secretPrefix or secretPath)".to_string());
+            } else if config.iam_username.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                err(&mut errors, "secretPrefix", "Set secretPrefix (or secretPath) to use a secret, or iamUsername to sign in as an IAM DB user".to_string());
+            }
         }
 
         // IAM-specific validation
@@ -858,6 +864,46 @@ mod tests {
         config.auth_type = "secrets".to_string();
         config.secret_prefix = String::new();
         config.secret_path = None;
+        let result = validate_project_config(&config);
+        assert!(!result.valid);
+        assert!(result.messages().iter().any(|e| e.contains("secretPrefix")));
+    }
+
+    #[test]
+    fn test_automatic_without_secret_but_iam_username_is_valid() {
+        let mut config = valid_config();
+        config.auth_type = "secrets".to_string();
+        config.secret_prefix = String::new();
+        config.secret_path = None;
+        config.iam_username = Some("app_user".to_string());
+        let result = validate_project_config(&config);
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_automatic_without_secret_or_iam_username_names_both_fields() {
+        let mut config = valid_config();
+        config.auth_type = "secrets".to_string();
+        config.secret_prefix = String::new();
+        config.secret_path = None;
+        config.iam_username = Some(String::new());
+        let result = validate_project_config(&config);
+        assert!(!result.valid);
+        let msg = result
+            .messages()
+            .into_iter()
+            .find(|e| e.contains("secretPrefix"))
+            .expect("secretPrefix error");
+        assert!(msg.contains("iamUsername"), "{msg}");
+    }
+
+    #[test]
+    fn test_password_only_without_secret_is_invalid_even_with_iam_username() {
+        let mut config = valid_config();
+        config.secret_prefix = String::new();
+        config.secret_path = None;
+        config.iam_username = Some("app_user".to_string());
+        config.password_only = Some(true);
         let result = validate_project_config(&config);
         assert!(!result.valid);
         assert!(result.messages().iter().any(|e| e.contains("secretPrefix")));

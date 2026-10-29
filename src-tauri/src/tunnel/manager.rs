@@ -717,7 +717,8 @@ impl TunnelManager {
         .await?;
 
         let use_proxy = project_config.uses_pg_auth_proxy();
-        let auth_mode = project_config.auth_mode();
+        // Automatic with no secret configured signs in as iamUsername, like IAM only.
+        let auth_mode = project_config.connect_auth_mode();
         let (username, password, proxy_settings) = match auth_mode {
             AuthMode::IamOnly => {
                 self.emit_status("Generating IAM auth token...", Some(connection_id));

@@ -167,6 +167,30 @@ impl ProjectConfig {
         }
     }
 
+    /// True when the project has no secret configured (empty `secretPrefix`
+    /// and no `secretPath`).
+    pub fn has_no_secret_configured(&self) -> bool {
+        self.secret_prefix.trim().is_empty()
+            && self.secret_path.as_deref().is_none_or(|s| s.trim().is_empty())
+    }
+
+    /// Automatic auth with no secret configured signs in as "IAM DB User".
+    pub fn uses_iam_without_secret(&self) -> bool {
+        self.auth_mode() == AuthMode::Auto
+            && self.has_no_secret_configured()
+            && self.iam_username.as_deref().is_some_and(|u| !u.trim().is_empty())
+    }
+
+    /// How a connect signs in: like [`auth_mode`](Self::auth_mode), except
+    /// that Automatic with no secret configured is IAM only for `iamUsername`.
+    pub fn connect_auth_mode(&self) -> AuthMode {
+        if self.uses_iam_without_secret() {
+            AuthMode::IamOnly
+        } else {
+            self.auth_mode()
+        }
+    }
+
     /// Returns the effective database name.
     /// If `selected_database` is provided (from multi-database selection), use it.
     /// Otherwise fall back to the single `database` field.
@@ -445,6 +469,52 @@ mod tests {
         assert_eq!(c.auth_mode(), AuthMode::PasswordOnly);
         c.auth_type = "iam".into();
         assert_eq!(c.auth_mode(), AuthMode::IamOnly);
+    }
+
+    #[test]
+    fn automatic_without_secret_uses_iam() {
+        let mut c = test_config(None);
+        c.secret_prefix = String::new();
+        c.secret_path = None;
+        c.iam_username = Some("app_user".into());
+        assert!(c.uses_iam_without_secret());
+        assert_eq!(c.auth_mode(), AuthMode::Auto);
+        assert_eq!(c.connect_auth_mode(), AuthMode::IamOnly);
+    }
+
+    #[test]
+    fn automatic_with_a_secret_keeps_the_secret() {
+        let mut c = test_config(None);
+        c.iam_username = Some("app_user".into());
+        c.secret_prefix = "rds!cluster".into();
+        assert!(!c.uses_iam_without_secret());
+        assert_eq!(c.connect_auth_mode(), AuthMode::Auto);
+
+        c.secret_prefix = String::new();
+        c.secret_path = Some("arn:aws:secretsmanager:us-east-1:1:secret:x".into());
+        assert!(!c.uses_iam_without_secret());
+        assert_eq!(c.connect_auth_mode(), AuthMode::Auto);
+    }
+
+    #[test]
+    fn no_secret_and_no_iam_user_is_not_iam() {
+        let mut c = test_config(None);
+        c.secret_prefix = String::new();
+        c.secret_path = None;
+        c.iam_username = Some("  ".into());
+        assert!(!c.uses_iam_without_secret());
+        c.iam_username = None;
+        assert!(!c.uses_iam_without_secret());
+    }
+
+    #[test]
+    fn password_only_without_secret_is_not_iam() {
+        let mut c = test_config(None);
+        c.secret_prefix = String::new();
+        c.iam_username = Some("app_user".into());
+        c.password_only = Some(true);
+        assert!(!c.uses_iam_without_secret());
+        assert_eq!(c.connect_auth_mode(), AuthMode::PasswordOnly);
     }
 
     #[test]

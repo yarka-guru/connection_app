@@ -30,7 +30,8 @@ const NEW_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/
 const VALIDATE_DELAY_MS = 300
 
 const AUTH_HINTS = {
-  auto: 'Uses an IAM token or the password, whichever the database asks for',
+  auto: "Signs in as the secret's user with an IAM token or the password, whichever the database asks for. With no secret configured, signs in as the IAM DB User with an IAM token",
+  autoNoSecret: 'No secret configured: signs in as the IAM DB User with an IAM token',
   iam: 'Signs in with an IAM token as the IAM DB user; never reads a secret',
   password: 'Signs in with the password from the secret',
 }
@@ -79,6 +80,9 @@ let projectSecretPath = $state('')
 let projectSecretUsernameField = $state('')
 let projectSecretPasswordField = $state('')
 let projectMultiplexed = $state(true)
+const authHintKey = $derived(
+  projectAuthMode === 'auto' && !projectSecretPrefix.trim() && !projectSecretPath.trim() ? 'autoNoSecret' : projectAuthMode,
+)
 
 // Service-specific state
 let projectConnectionType = $state('rds')
@@ -1289,7 +1293,7 @@ onDestroy(() => {
                       {/if}
                     </select>
                     {#if projectEngine !== 'mysql'}
-                      <span class="field-hint">{AUTH_HINTS[projectAuthMode]}</span>
+                      <span class="field-hint">{AUTH_HINTS[authHintKey]}</span>
                     {/if}
                     {@render fieldErrorText('authType')}
                     {@render fieldErrorText('passwordOnly')}
@@ -1309,7 +1313,7 @@ onDestroy(() => {
                         <label for="project-iam-username">IAM DB User</label>
                         <input id="project-iam-username" type="text" bind:value={projectIamUsername} placeholder="db_user" />
                         <span class="field-hint">
-                          {projectAuthMode === 'auto' ? 'Used only when no secret is configured' : 'Database role granted rds_iam; the token is valid for 15 minutes'}
+                          {projectAuthMode === 'auto' ? 'Used only when Secret Prefix and Secret Path are both empty' : 'Database role granted rds_iam; the token is valid for 15 minutes'}
                         </span>
                         {@render fieldErrorText('iamUsername')}
                       </div>
