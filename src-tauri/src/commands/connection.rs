@@ -15,11 +15,13 @@ pub struct ConnectResult {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn connect(
     app_handle: AppHandle,
     tunnel_manager: State<'_, Arc<Mutex<TunnelManager>>>,
     project_key: String,
-    profile: String,
+    environment: String,
+    profile: Option<String>,
     local_port: Option<String>,
     database: Option<String>,
     saved_connection_id: Option<String>,
@@ -33,7 +35,8 @@ pub async fn connect(
         manager
             .connect(
                 &project_key,
-                &profile,
+                &environment,
+                profile.as_deref(),
                 local_port.as_deref(),
                 database.as_deref(),
                 &used_ports,

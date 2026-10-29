@@ -176,6 +176,18 @@ pub async fn caller_account_id(clients: &AwsClients) -> Result<String, AppError>
     }
 }
 
+/// Refuse to connect when the credentials belong to another account than
+/// the environment.
+pub fn ensure_account(expected: &str, actual: &str, environment: &str) -> Result<(), AppError> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(AppError::Aws(format!(
+        "Profile signed in to account {}, but environment '{}' is account {}. Pick another profile in Settings.",
+        actual, environment, expected
+    )))
+}
+
 /// Ask AWS which account `profile` belongs to and remember the answer in the
 /// detected-account cache, keyed to the profile's current config.
 pub async fn detect_profile_account(profile: &str, region: &str) -> Result<String, AppError> {
@@ -733,6 +745,24 @@ mod tests {
 
     async fn select(store: &FakeStore, prefix: &str, fallback: Option<&str>) -> Result<DbCredentials, AppError> {
         fetch_credentials(store, prefix, "covered_db", None, None, None, fallback).await
+    }
+
+    #[test]
+    fn ensure_account_mismatch_message_names_both_accounts() {
+        let err = ensure_account("231030592327", "073813807522", "prod").unwrap_err();
+        assert!(matches!(err, AppError::Aws(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(
+                "Profile signed in to account 073813807522, but environment 'prod' is account 231030592327. Pick another profile in Settings."
+            ),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn ensure_account_match_ok() {
+        assert!(ensure_account("231030592327", "231030592327", "prod").is_ok());
     }
 
     #[test]

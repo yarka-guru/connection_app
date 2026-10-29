@@ -15,6 +15,12 @@ static SSH_USERNAME_PATTERN: LazyLock<Regex> =
 static SSH_KEY_PATH_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._/~-]+$").unwrap());
 
+/// True for names safe to use in keys, labels and filters (the rule
+/// environment names are validated against).
+pub fn is_shell_safe(value: &str) -> bool {
+    SHELL_SAFE_PATTERN.is_match(value)
+}
+
 const VALID_RDS_TYPES: &[&str] = &["cluster", "instance"];
 const VALID_ENGINES: &[&str] = &["postgres", "mysql"];
 const VALID_CONNECTION_TYPES: &[&str] = &["rds", "service"];

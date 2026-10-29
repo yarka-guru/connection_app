@@ -2,11 +2,18 @@ use crate::aws::credentials::{build_aws_config, create_aws_clients, AwsClients};
 use crate::aws::iam_auth;
 use crate::aws::operations;
 use crate::aws::sso::{ensure_sso_session, TauriSsoHandler};
+use crate::config::accounts;
+use crate::config::aws_config::read_aws_config;
+use crate::config::environments::{
+    effective_project_config, find_environment, pick_profile, resolve_environments,
+    ResolvedEnvironment,
+};
 use crate::config::local_passwords;
 use crate::config::preferences;
 use crate::config::projects::{
-    get_default_port_for_engine, get_local_port, load_project_configs, AuthMode, ProjectConfig,
+    get_default_port_for_engine, load_project_configs, AuthMode, ProjectConfig,
 };
+use crate::config::validation::is_shell_safe;
 use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
 use crate::tunnel::native::{self, LocalSource, PipeInbox};
@@ -45,6 +52,8 @@ static IP_PATTERN: std::sync::LazyLock<Regex> =
 pub struct ConnectionInfo {
     pub host: String,
     pub port: String,
+    #[serde(default)]
+    pub environment: String,
     #[serde(rename = "connectionType", default)]
     pub connection_type: String,
     // RDS-specific fields (None for service connections)
@@ -80,6 +89,7 @@ pub struct ConnectionInfo {
 pub struct Connection {
     pub id: String,
     pub project_key: String,
+    pub environment: String,
     pub profile: String,
     pub local_port: String,
     pub connection_info: ConnectionInfo,
@@ -269,6 +279,7 @@ impl TunnelManager {
             .map(|c| ActiveConnectionInfo {
                 id: c.id.clone(),
                 project_key: c.project_key.clone(),
+                environment: c.environment.clone(),
                 profile: c.profile.clone(),
                 local_port: c.local_port.clone(),
                 connection_info: c.connection_info.clone(),
@@ -277,16 +288,49 @@ impl TunnelManager {
             .collect()
     }
 
-    /// Connect to a project (dispatches to RDS or service based on connectionType).
+    /// Connect to an environment of a project (dispatches to RDS or service
+    /// based on connectionType). The profile is the environment's resolved
+    /// profile unless `profile_override` names another one for its account.
     /// For auth-proxy connections also returns the sign-in check to run next.
     pub async fn connect(
         &self,
         project_key: &str,
-        profile: &str,
+        environment: &str,
+        profile_override: Option<&str>,
         local_port: Option<&str>,
         database: Option<&str>,
         used_ports: &[String],
     ) -> Result<(String, ConnectionInfo, Option<AuthCheck>), AppError> {
+        if !is_shell_safe(environment) {
+            return Err(AppError::General(format!(
+                "Invalid environment name: {}",
+                environment
+            )));
+        }
+
+        // Load project config
+        let configs = load_project_configs().await?;
+        let project = configs.get(project_key).ok_or_else(|| {
+            AppError::Config(format!("Unknown project: {}", project_key))
+        })?;
+
+        // Resolve the environment to a profile
+        let profiles = read_aws_config().await?;
+        let profile_accounts =
+            accounts::profile_accounts(&profiles, &accounts::load_account_cache().await);
+        let prefs = preferences::load_preferences().await;
+        let resolved_all = resolve_environments(project, &configs, &profile_accounts, &prefs);
+        let resolved = find_environment(&resolved_all, environment)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Config(format!(
+                    "Unknown environment '{}' in project {}",
+                    environment, project_key
+                ))
+            })?;
+        let profile = pick_profile(&resolved, profile_override)?;
+        let profile = profile.as_str();
+
         // Validate profile
         if !PROFILE_SAFE_PATTERN.is_match(profile) {
             return Err(AppError::General(format!(
@@ -295,16 +339,12 @@ impl TunnelManager {
             )));
         }
 
-        // Load project config
-        let configs = load_project_configs().await?;
-        let project_config = configs.get(project_key).ok_or_else(|| {
-            AppError::Config(format!("Unknown project: {}", project_key))
-        })?;
+        let project_config = &effective_project_config(project, &resolved);
 
         // Determine port
         let requested_port = local_port
             .map(|p| p.to_string())
-            .unwrap_or_else(|| get_local_port(profile, project_config));
+            .unwrap_or_else(|| resolved.environment.port.clone());
 
         let mut port_num: u16 = requested_port
             .parse()
@@ -380,13 +420,24 @@ impl TunnelManager {
         // Create AWS clients
         let clients = create_aws_clients(profile, &project_config.region).await;
 
+        // The profile must sign in to the environment's account
+        if !resolved.legacy {
+            self.emit_status("Checking AWS account...", Some(&connection_id));
+            let actual = operations::caller_account_id(&clients).await?;
+            operations::ensure_account(
+                &resolved.environment.account_id,
+                &actual,
+                &resolved.environment.name,
+            )?;
+        }
+
         // Dispatch based on connection type
         let (connection_info, tunnel_target, proxy_settings) = match project_config.connection_type.as_str() {
             "service" => {
-                let (info, target) = self.resolve_service_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use).await?;
+                let (info, target) = self.resolve_service_target(&clients, &connection_id, project_key, &resolved, project_config, &port_to_use).await?;
                 (info, target, None)
             }
-            _ => self.resolve_rds_target(&clients, &connection_id, project_key, profile, project_config, &port_to_use, database).await?,
+            _ => self.resolve_rds_target(&clients, &connection_id, project_key, &resolved, profile, project_config, &port_to_use, database).await?,
         };
 
         let cancel_token = CancellationToken::new();
@@ -424,6 +475,7 @@ impl TunnelManager {
         let connection = Connection {
             id: connection_id.clone(),
             project_key: project_key.to_string(),
+            environment: resolved.environment.name.clone(),
             profile: profile.to_string(),
             local_port: port_to_use.clone(),
             connection_info: connection_info.clone(),
@@ -449,11 +501,13 @@ impl TunnelManager {
         let conn_id = connection_id.clone();
         let project_key_owned = project_key.to_string();
         let profile_owned = profile.to_string();
+        let conn_label = format!("{} {}", project_key, resolved.environment.name);
+        // Auto-reconnect rediscovers with this same effective config and clients,
+        // so it never switches environment overrides or profile mid-session.
         let project_config = project_config.clone();
         let lifecycle_proxy_cancel = proxy_cancel.clone();
 
         tokio::spawn(async move {
-            let conn_label = format!("{} {}", project_key_owned, profile_owned);
             let result = run_tunnel_lifecycle(
                 &app_handle,
                 &clients,
@@ -599,22 +653,21 @@ impl TunnelManager {
         clients: &AwsClients,
         connection_id: &str,
         project_key: &str,
+        resolved: &ResolvedEnvironment,
         profile: &str,
         project_config: &ProjectConfig,
         local_port: &str,
         selected_database: Option<&str>,
     ) -> Result<(ConnectionInfo, TunnelTarget, Option<ProxySettings>), AppError> {
         let effective_db = project_config.effective_database(selected_database);
+        let environment = resolved.environment.name.as_str();
+        let legacy_profiles = resolved.candidates.as_slice();
 
         self.emit_status("Finding bastion instance...", Some(connection_id));
         let prefs = preferences::load_preferences().await;
-        let preferred = preferences::get_preferred_bastion(
-            &prefs,
-            project_key,
-            profile,
-            &[profile.to_string()],
-        )
-            .map(|s| s.to_string());
+        let preferred =
+            preferences::get_preferred_bastion(&prefs, project_key, environment, legacy_profiles)
+                .map(|s| s.to_string());
         let instance_id = operations::find_bastion_instance(
             clients,
             project_config.bastion_pattern(),
@@ -625,7 +678,7 @@ impl TunnelManager {
         // Save bastion preference for next time
         {
             let mut prefs = prefs;
-            preferences::set_preferred_bastion(&mut prefs, project_key, profile, &instance_id);
+            preferences::set_preferred_bastion(&mut prefs, project_key, environment, &instance_id);
             preferences::save_preferences(&prefs).await;
         }
 
@@ -693,7 +746,7 @@ impl TunnelManager {
                     // The token above only proves the credential chain works;
                     // the proxy mints its own on demand.
                     let local_password =
-                        local_passwords::local_proxy_password(project_key, profile, &[profile.to_string()]).await?;
+                        local_passwords::local_proxy_password(project_key, environment, legacy_profiles).await?;
                     let settings = ProxySettings {
                         db_user: iam_username.to_string(),
                         local_password: local_password.clone(),
@@ -728,7 +781,7 @@ impl TunnelManager {
                 }
                 if use_proxy {
                     let local_password =
-                        local_passwords::local_proxy_password(project_key, profile, &[profile.to_string()]).await?;
+                        local_passwords::local_proxy_password(project_key, environment, legacy_profiles).await?;
                     let settings = ProxySettings {
                         db_user: credentials.username.clone(),
                         local_password: local_password.clone(),
@@ -745,7 +798,7 @@ impl TunnelManager {
                                     password_field: project_config.secret_password_field.clone(),
                                     fallback_secret: Some(fallback_secret.clone()),
                                 }),
-                                key: format!("{}:{}", project_key, profile),
+                                key: format!("{}:{}", project_key, environment),
                             });
                             if auth_mode == AuthMode::PasswordOnly {
                                 UpstreamAuth::PasswordOnly { password, refetch }
@@ -769,6 +822,7 @@ impl TunnelManager {
         let connection_info = ConnectionInfo {
             host: "localhost".to_string(),
             port: local_port.to_string(),
+            environment: environment.to_string(),
             connection_type: "rds".to_string(),
             username: Some(username),
             password: Some(password),
@@ -799,10 +853,12 @@ impl TunnelManager {
         clients: &AwsClients,
         connection_id: &str,
         project_key: &str,
-        profile: &str,
+        resolved: &ResolvedEnvironment,
         project_config: &ProjectConfig,
         local_port: &str,
     ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
+        let environment = resolved.environment.name.as_str();
+        let legacy_profiles = resolved.candidates.as_slice();
         let target_type = project_config
             .target_type
             .as_deref()
@@ -845,12 +901,12 @@ impl TunnelManager {
                 self.emit_status("Finding bastion instance...", Some(connection_id));
                 let prefs = preferences::load_preferences().await;
                 let preferred = preferences::get_preferred_bastion(
-            &prefs,
-            project_key,
-            profile,
-            &[profile.to_string()],
-        )
-                    .map(|s| s.to_string());
+                    &prefs,
+                    project_key,
+                    environment,
+                    legacy_profiles,
+                )
+                .map(|s| s.to_string());
                 let bastion_id = operations::find_bastion_instance(
                     clients,
                     project_config.bastion_pattern(),
@@ -861,7 +917,7 @@ impl TunnelManager {
                 // Save bastion preference
                 {
                     let mut prefs = prefs;
-                    preferences::set_preferred_bastion(&mut prefs, project_key, profile, &bastion_id);
+                    preferences::set_preferred_bastion(&mut prefs, project_key, environment, &bastion_id);
                     preferences::save_preferences(&prefs).await;
                 }
 
@@ -897,12 +953,12 @@ impl TunnelManager {
                 self.emit_status("Finding bastion instance...", Some(connection_id));
                 let prefs = preferences::load_preferences().await;
                 let preferred = preferences::get_preferred_bastion(
-            &prefs,
-            project_key,
-            profile,
-            &[profile.to_string()],
-        )
-                    .map(|s| s.to_string());
+                    &prefs,
+                    project_key,
+                    environment,
+                    legacy_profiles,
+                )
+                .map(|s| s.to_string());
                 let bastion_id = operations::find_bastion_instance(
                     clients,
                     project_config.bastion_pattern(),
@@ -913,7 +969,7 @@ impl TunnelManager {
                 // Save bastion preference
                 {
                     let mut prefs = prefs;
-                    preferences::set_preferred_bastion(&mut prefs, project_key, profile, &bastion_id);
+                    preferences::set_preferred_bastion(&mut prefs, project_key, environment, &bastion_id);
                     preferences::save_preferences(&prefs).await;
                 }
 
@@ -963,6 +1019,7 @@ impl TunnelManager {
         let connection_info = ConnectionInfo {
             host: "localhost".to_string(),
             port: local_port.to_string(),
+            environment: environment.to_string(),
             connection_type: "service".to_string(),
             username: None,
             password: None,
@@ -1081,6 +1138,8 @@ pub struct ActiveConnectionInfo {
     pub id: String,
     #[serde(rename = "projectKey")]
     pub project_key: String,
+    #[serde(default)]
+    pub environment: String,
     pub profile: String,
     #[serde(rename = "localPort")]
     pub local_port: String,
@@ -1511,11 +1570,13 @@ mod tests {
         Connection {
             id: id.to_string(),
             project_key: "covered".to_string(),
+            environment: "dev".to_string(),
             profile: "covered-dev".to_string(),
             local_port: "5462".to_string(),
             connection_info: ConnectionInfo {
                 host: "localhost".to_string(),
                 port: "5462".to_string(),
+                environment: "dev".to_string(),
                 connection_type: "rds".to_string(),
                 username: Some("covered_app".to_string()),
                 password: Some("local".to_string()),

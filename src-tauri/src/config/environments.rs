@@ -3,6 +3,7 @@ use crate::config::preferences::{Preferences, get_account_profile};
 use crate::config::projects::{
     Environment, ProjectConfig, get_local_port, get_profiles_for_project,
 };
+use crate::error::AppError;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -87,6 +88,43 @@ pub fn find_environment<'a>(
     name: &str,
 ) -> Option<&'a ResolvedEnvironment> {
     resolved.iter().find(|r| r.environment.name == name)
+}
+
+/// The project config a connection to `resolved` uses: the project itself for
+/// a legacy environment, otherwise the project with the environment's overrides.
+pub fn effective_project_config(
+    project: &ProjectConfig,
+    resolved: &ResolvedEnvironment,
+) -> ProjectConfig {
+    if resolved.legacy {
+        project.clone()
+    } else {
+        project.for_environment(&resolved.environment)
+    }
+}
+
+/// The profile to connect with: `profile_override` when it reaches the
+/// environment's account, otherwise the resolved profile.
+pub fn pick_profile(
+    resolved: &ResolvedEnvironment,
+    profile_override: Option<&str>,
+) -> Result<String, AppError> {
+    let env = &resolved.environment;
+    if let Some(p) = profile_override {
+        if !resolved.candidates.iter().any(|c| c == p) {
+            return Err(AppError::Config(format!(
+                "Profile '{}' is not a profile for account {} (environment '{}')",
+                p, env.account_id, env.name
+            )));
+        }
+        return Ok(p.to_string());
+    }
+    resolved.profile.clone().ok_or_else(|| {
+        AppError::Config(format!(
+            "No AWS profile for account {} (environment '{}')",
+            env.account_id, env.name
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -221,5 +259,59 @@ mod tests {
         assert_eq!(r[0].environment.account_id, ACCT);
         assert_eq!(r[1].environment.account_id, "");
         assert_eq!(r[1].profile.as_deref(), Some("covered-dev"));
+    }
+
+    #[test]
+    fn effective_config_uses_environment_overrides() {
+        let p = env_project(json!([
+            { "name": "blue", "accountId": ACCT, "port": "5460", "rdsPattern": "db-blue" },
+            { "name": "green", "accountId": ACCT, "port": "5461", "rdsPattern": "db-green",
+              "region": "eu-west-1" }
+        ]));
+        let r = resolve(&p, &[pa("p", Some(ACCT))], &Preferences::default());
+        let blue = effective_project_config(&p, find_environment(&r, "blue").unwrap());
+        let green = effective_project_config(&p, find_environment(&r, "green").unwrap());
+        assert_eq!(blue.rds_pattern, "db-blue");
+        assert_eq!(blue.region, "us-east-1");
+        assert_eq!(green.rds_pattern, "db-green");
+        assert_eq!(green.region, "eu-west-1");
+    }
+
+    #[test]
+    fn effective_config_of_a_legacy_environment_is_the_project() {
+        let p = project(json!({ "rdsPattern": "covered-db", "profileFilter": "covered" }));
+        let r = resolve(&p, &[pa("covered", Some(ACCT))], &Preferences::default());
+        let c = effective_project_config(&p, &r[0]);
+        assert_eq!(c.rds_pattern, "covered-db");
+        assert_eq!(c.region, p.region);
+    }
+
+    #[test]
+    fn profile_override_must_be_a_candidate() {
+        let profiles = [pa("covered", Some(ACCT)), pa(SSO, Some(ACCT)), pa("other", Some("1"))];
+        let r = resolve(&one_env(ACCT), &profiles, &Preferences::default());
+        assert_eq!(pick_profile(&r[0], Some(SSO)).unwrap(), SSO);
+        let err = pick_profile(&r[0], Some("other")).unwrap_err();
+        assert!(matches!(err, AppError::Config(_)), "{err:?}");
+        assert!(err.to_string().contains("other"), "{err}");
+    }
+
+    #[test]
+    fn without_override_the_resolved_profile_is_used() {
+        let profiles = [pa("covered", Some(ACCT)), pa(SSO, Some(ACCT))];
+        let r = resolve(&one_env(ACCT), &profiles, &Preferences::default());
+        assert_eq!(pick_profile(&r[0], None).unwrap(), "covered");
+    }
+
+    #[test]
+    fn no_profile_for_the_account_is_a_config_error() {
+        let r = resolve(&one_env("000000000000"), &[pa("covered", Some(ACCT))], &Preferences::default());
+        let err = pick_profile(&r[0], None).unwrap_err();
+        assert!(matches!(err, AppError::Config(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("No AWS profile for account 000000000000 (environment 'prod')"),
+            "{err}"
+        );
     }
 }
