@@ -124,10 +124,17 @@ const copySources = $derived(
     .map((e) => ({ key: e.key, name: e.config.name || e.key, environments: e.config.environments })),
 )
 
-// The project being edited was stored without environments (profile-name based)
+// The project being edited was stored without environments (profile-name based).
+// A broken project whose environments could not be read is not legacy.
 const projectIsLegacy = $derived(
-  !!editingProject && !editingProject.isNew && !(projectBaseConfig.environments?.length > 0),
+  !!editingProject
+    && !editingProject.isNew
+    && !(projectBaseConfig.environments?.length > 0)
+    && !editingProject.broken?.hadEnvironments,
 )
+
+// Set when the form edits a broken project and the user accepted losing fields
+let brokenSaveConfirmed = $state(false)
 
 onMount(() => {
   loadData()
@@ -313,11 +320,41 @@ function authModeOf(config) {
   return 'auto'
 }
 
-// Open the project form. mode: 'new' | 'edit' | 'duplicate'
-function openProjectForm(mode, key = '', source = null) {
+// Top-level fields of a broken project's raw JSON that its salvaged config
+// lost: absent, or empty where the raw value was not
+function droppedFields(raw, config) {
+  return Object.keys(raw).filter((field) => {
+    const rawValue = raw[field]
+    const kept = config[field]
+    if (rawValue === null || rawValue === undefined) return false
+    return kept === undefined || kept === null || (kept === '' && rawValue !== '')
+  })
+}
+
+// What the form would lose by saving a broken entry from its salvaged config
+function brokenInfo(entry, config) {
+  let raw = null
+  try {
+    raw = JSON.parse(entry.raw)
+  } catch {
+    // raw is not an object we can compare; list nothing
+  }
+  const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+  return {
+    error: entry.error,
+    droppedFields: isObject ? droppedFields(raw, config) : [],
+    hadEnvironments: isObject && Array.isArray(raw.environments) && raw.environments.length > 0,
+  }
+}
+
+// Open the project form. mode: 'new' | 'edit' | 'duplicate'. `entry` is the
+// list entry, used to warn when a broken project is edited through the form.
+function openProjectForm(mode, key = '', source = null, entry = null) {
   const config = source ? $state.snapshot(source) : {}
   const isNew = mode !== 'edit'
-  editingProject = { isNew, key: isNew ? null : key }
+  const broken = !isNew && entry?.error ? brokenInfo($state.snapshot(entry), config) : null
+  editingProject = { isNew, key: isNew ? null : key, broken }
+  brokenSaveConfirmed = false
   validationErrors = []
   error = ''
   sectionAdvanced = false
@@ -456,8 +493,15 @@ const localErrors = $derived.by(() => {
   if (projectConnectionType === 'service' && projectRemotePort.trim() && parseRemotePort(projectRemotePort) === null) {
     errors.push({ field: 'remotePort', message: 'Remote port must be a number from 1 to 65535' })
   }
+  // Without environments a non-legacy project matches no profile and can never connect
+  if (!projectIsLegacy && projectEnvironments.length === 0) {
+    errors.push({ field: 'environments', message: 'Add at least one environment' })
+  }
   return errors
 })
+
+// Save needs an explicit OK when it would drop fields of a broken project
+const brokenSaveBlocked = $derived(!!editingProject?.broken && !brokenSaveConfirmed)
 
 const formErrors = $derived.by(() => {
   const local = new Set(localErrors.map((e) => e.field))
@@ -465,6 +509,7 @@ const formErrors = $derived.by(() => {
 })
 
 const environmentErrors = $derived(formErrors.filter((e) => e.field.startsWith('environments[')))
+const hasEnvironmentsError = $derived(hasErrorIn(['environments']))
 
 // Fields the form currently shows an input for
 const visibleFields = $derived.by(() => {
@@ -487,6 +532,7 @@ const visibleFields = $derived.by(() => {
 
 function isPlaced(field) {
   return visibleFields.has(field)
+    || field === 'environments'
     || field.startsWith('environments[')
     || (projectConnectionType === 'rds' && field.startsWith('databases['))
     || (projectIsLegacy && field.startsWith('envPortMapping.'))
@@ -509,7 +555,7 @@ const SERVICE_FIELDS = ['serviceType', 'remotePort', 'targetType', 'targetPatter
 const ADVANCED_FIELDS = ['secretPath', 'secretUsernameField', 'secretPasswordField', 'bastionPattern']
 
 // A section with an error stays open so the error is visible
-const environmentsOpen = $derived(sectionEnvironments || environmentErrors.length > 0)
+const environmentsOpen = $derived(sectionEnvironments || hasEnvironmentsError)
 const advancedOpen = $derived(sectionAdvanced || hasErrorIn(ADVANCED_FIELDS))
 
 // Validate 300 ms after the last change to the form
@@ -528,7 +574,7 @@ $effect(() => {
 })
 
 async function saveProject() {
-  if (localErrors.length > 0) return
+  if (localErrors.length > 0 || brokenSaveBlocked) return
   const key = editingProject.isNew ? projectKey.trim() : editingProject.key
   const config = buildConfig()
 
@@ -752,7 +798,7 @@ onDestroy(() => {
                     </div>
                     <div class="profile-actions">
                       {#if config}
-                        <button class="btn-icon" onclick={() => openProjectForm('edit', entry.key, config)} aria-label="Edit {name}" title="Edit">
+                        <button class="btn-icon" onclick={() => openProjectForm('edit', entry.key, config, entry)} aria-label="Edit {name}" title="Edit">
                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                             <path d="M10.5 1.5l2 2-8 8H2.5v-2l8-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                           </svg>
@@ -1027,6 +1073,28 @@ onDestroy(() => {
 
         {#if error}
           <div class="message error">{error}</div>
+        {/if}
+
+        {#if editingProject.broken}
+          <div class="broken-warning" role="alert">
+            <p class="broken-warning-title">This project can't be read as it is</p>
+            <p class="broken-warning-error">{editingProject.broken.error}</p>
+            {#if editingProject.broken.droppedFields.length > 0}
+              <p>Saving from this form removes these fields, which could not be read:</p>
+              <ul>
+                {#each editingProject.broken.droppedFields as field (field)}
+                  <li><code>{field}</code></li>
+                {/each}
+              </ul>
+            {:else}
+              <p>Saving from this form rewrites the project from what could be read.</p>
+            {/if}
+            <p>To keep everything, cancel and use <strong>Edit JSON</strong> instead.</p>
+            <label class="broken-confirm">
+              <input type="checkbox" bind:checked={brokenSaveConfirmed} />
+              I understand the fields listed above will be removed
+            </label>
+          </div>
         {/if}
 
         <div class="project-form-scroll">
@@ -1322,6 +1390,7 @@ onDestroy(() => {
             </button>
             {#if environmentsOpen}
               <div class="section-body">
+                {@render fieldErrorText('environments')}
                 {#if projectIsLegacy}
                   <div class="legacy-notice">
                     <p>
@@ -1415,7 +1484,7 @@ onDestroy(() => {
 
         <div class="edit-actions">
           <button class="btn-cancel" onclick={closeProjectModal}>Cancel</button>
-          <button class="btn-save" onclick={saveProject} disabled={saving || formErrors.length > 0}>
+          <button class="btn-save" onclick={saveProject} disabled={saving || formErrors.length > 0 || brokenSaveBlocked}>
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -2068,6 +2137,56 @@ onDestroy(() => {
 
   .json-editor {
     min-height: 280px;
+  }
+
+  .broken-warning {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--text-primary);
+    background: rgba(var(--color-error-rgb), 0.08);
+    border: 1px solid rgba(var(--color-error-rgb), 0.3);
+  }
+
+  .broken-warning p {
+    margin: 0 0 6px;
+  }
+
+  .broken-warning ul {
+    margin: 0 0 6px;
+    padding-left: 18px;
+  }
+
+  .broken-warning code,
+  .broken-warning-error {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.75rem;
+  }
+
+  .broken-warning-title {
+    font-weight: 600;
+    color: var(--color-error-soft);
+  }
+
+  .broken-warning-error {
+    color: var(--color-error-soft);
+    word-break: break-word;
+  }
+
+  .broken-confirm {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .broken-confirm input {
+    margin: 0;
+    accent-color: var(--color-error);
   }
 
   .template-note {
