@@ -600,7 +600,7 @@ async function handleConnect() {
     showSavePrompt = true
     initSavePrompt()
   } catch (err) {
-    errorMessage = err instanceof Error ? err.message : 'Connection failed'
+    errorMessage = typeof err === 'string' ? err : (err?.message ?? 'Connection failed')
     connectionStatus = 'disconnected'
     statusMessage = ''
   }
@@ -641,7 +641,7 @@ async function handleSavedConnectionConnect(savedConnection) {
     statusMessage = 'Tunnel active'
     connectingId = null
   } catch (err) {
-    errorMessage = err instanceof Error ? err.message : 'Connection failed'
+    errorMessage = typeof err === 'string' ? err : (err?.message ?? 'Connection failed')
     connectionStatus =
       activeConnections.length > 0 ? 'connected' : 'disconnected'
     statusMessage = activeConnections.length > 0 ? 'Tunnel active' : ''
