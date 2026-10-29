@@ -94,11 +94,26 @@ fn propose_project(
             .find(|p| mapped_port(p, config).is_some())
             .cloned();
         let preferred = mapped.clone().unwrap_or_else(|| group[0].clone());
+        let port = get_local_port(&preferred, config);
+        // Another mapped profile of the same account loses its own port.
+        for other in group.iter().filter(|p| **p != preferred) {
+            if let Some(other_port) = mapped_port(other, config)
+                && other_port != port
+            {
+                skipped.push(SkippedProfile {
+                    profile: other.clone(),
+                    reason: format!(
+                        "same account as {}; its port {} is not kept",
+                        preferred, other_port
+                    ),
+                });
+            }
+        }
         let taken: Vec<String> = environments.iter().map(|e| e.name.clone()).collect();
         environments.push(ProposedEnvironment {
             name: environment_name(&preferred, config.profile_filter.as_deref(), &taken),
             account_id,
-            port: get_local_port(&preferred, config),
+            port,
             profiles: group,
             preferred_profile: preferred,
             selected: mapped.is_some(),
@@ -131,9 +146,15 @@ pub fn propose_migration(
 
 /// Turn the confirmed environments into account environments. Legacy fields
 /// stay as they are so 3.7.x can still read the file.
+///
+/// `profiles` are all local profiles with their accounts. Whenever an
+/// account has more than one of them, the environment's preferred profile is
+/// remembered for it, so resolution does not switch to another profile that
+/// comes first in `~/.aws/config` (for example one the filter never matched).
 pub fn apply_migration(
     file: &mut ProjectFile,
     choices: &[MigrationChoice],
+    profiles: &[ProfileAccount],
     prefs: &mut Preferences,
 ) {
     for choice in choices {
@@ -164,7 +185,11 @@ pub fn apply_migration(
                 .collect(),
         );
         for e in &selected {
-            if e.profiles.len() > 1 {
+            let candidates = profiles
+                .iter()
+                .filter(|p| p.account_id.as_deref() == Some(e.account_id.as_str()))
+                .count();
+            if candidates > 1 || e.profiles.len() > 1 {
                 set_account_profile(prefs, &e.account_id, &e.preferred_profile);
             }
         }
@@ -338,7 +363,7 @@ mod tests {
         envs[1].selected = true;
         let choice = MigrationChoice { project_key: "covered".into(), environments: envs };
         let mut prefs = Preferences::default();
-        apply_migration(&mut file, &[choice], &mut prefs);
+        apply_migration(&mut file, &[choice], &profiles, &mut prefs);
 
         let after = config_of(&file, "covered");
         let envs = after.environments.clone().unwrap();
@@ -357,6 +382,52 @@ mod tests {
     }
 
     #[test]
+    fn apply_remembers_profile_when_an_unmatched_profile_shares_the_account() {
+        // The SSO default name is not matched by the filter but comes first
+        // in config order; without a remembered choice it would win.
+        let cfg = project(Some("covered"), &[("covered", "5460")]);
+        let mut file = file_with("covered", cfg.clone());
+        let profiles = vec![
+            pa("d-9067836ed2-111111111111-AdministratorAccess", Some(A)),
+            pa("covered", Some(A)),
+            pa("covered-dev", Some(C)),
+        ];
+        let proposal = propose_migration(&one("covered", cfg), &profiles);
+        let envs = proposal[0].environments.clone();
+        assert_eq!(envs[0].profiles, vec!["covered"]);
+        let choice = MigrationChoice { project_key: "covered".into(), environments: envs };
+        let mut prefs = Preferences::default();
+        apply_migration(&mut file, &[choice], &profiles, &mut prefs);
+        assert_eq!(get_account_profile(&prefs, A), Some("covered"));
+        assert_eq!(get_account_profile(&prefs, C), None);
+    }
+
+    #[test]
+    fn mapped_profile_of_the_same_account_with_another_port_is_listed_as_skipped() {
+        let cfg = project(Some("covered"), &[("covered", "5460"), ("covered-admin", "5470")]);
+        let profiles = vec![pa("covered", Some(A)), pa("covered-admin", Some(A))];
+        let out = propose_migration(&one("covered", cfg), &profiles);
+        assert_eq!(out[0].environments.len(), 1);
+        assert_eq!(out[0].environments[0].port, "5460");
+        assert_eq!(out[0].environments[0].preferred_profile, "covered");
+        assert_eq!(
+            out[0].skipped,
+            vec![SkippedProfile {
+                profile: "covered-admin".into(),
+                reason: "same account as covered; its port 5470 is not kept".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn same_account_same_port_is_not_skipped() {
+        let cfg = project(Some("covered"), &[("covered", "5460"), ("covered-admin", "5460")]);
+        let profiles = vec![pa("covered", Some(A)), pa("covered-admin", Some(A))];
+        let out = propose_migration(&one("covered", cfg), &profiles);
+        assert!(out[0].skipped.is_empty());
+    }
+
+    #[test]
     fn apply_with_nothing_selected_leaves_project_legacy() {
         let cfg = project(Some("covered"), &[]);
         let mut file = file_with("covered", cfg.clone());
@@ -369,7 +440,7 @@ mod tests {
             environments: proposal[0].environments.clone(),
         };
         let mut prefs = Preferences::default();
-        apply_migration(&mut file, &[choice], &mut prefs);
+        apply_migration(&mut file, &[choice], &owner_profiles(), &mut prefs);
         assert!(config_of(&file, "covered").is_legacy());
         assert!(prefs.account_profiles.is_empty());
     }
@@ -388,7 +459,7 @@ mod tests {
                 selected: true,
             }],
         };
-        apply_migration(&mut file, &[choice], &mut Preferences::default());
+        apply_migration(&mut file, &[choice], &[], &mut Preferences::default());
         assert_eq!(file.entries.len(), 1);
         assert!(config_of(&file, "a").is_legacy());
     }

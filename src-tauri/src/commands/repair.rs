@@ -3,6 +3,7 @@
 //! the current file before writing.
 
 use crate::commands::projects::load_profile_accounts;
+use crate::config::accounts::ProfileAccount;
 use crate::config::migration::{self, MigrationChoice, ProjectProposal};
 use crate::config::preferences::{self, Preferences};
 use crate::config::project_file::{
@@ -84,6 +85,7 @@ pub async fn restore_project_backup(path: String) -> Result<(), AppError> {
 fn migrate(
     file: &mut ProjectFile,
     choices: &[MigrationChoice],
+    profiles: &[ProfileAccount],
     prefs: &mut Preferences,
 ) -> Result<bool, AppError> {
     let legacy: Vec<MigrationChoice> = choices
@@ -96,7 +98,7 @@ fn migrate(
         })
         .cloned()
         .collect();
-    migration::apply_migration(file, &legacy, prefs);
+    migration::apply_migration(file, &legacy, profiles, prefs);
 
     let mut migrated = false;
     let mut problems = Vec::new();
@@ -141,7 +143,8 @@ pub async fn get_migration_proposal() -> Result<Vec<ProjectProposal>, AppError> 
 #[tauri::command]
 pub async fn apply_migration(choices: Vec<MigrationChoice>) -> Result<(), AppError> {
     let mut prefs = preferences::load_preferences().await;
-    if migrate_file_at(&get_config_path(), &choices, &mut prefs).await? {
+    let profiles = load_profile_accounts().await;
+    if migrate_file_at(&get_config_path(), &choices, &profiles, &mut prefs).await? {
         preferences::save_preferences(&prefs).await;
     }
     Ok(())
@@ -152,10 +155,11 @@ pub async fn apply_migration(choices: Vec<MigrationChoice>) -> Result<(), AppErr
 async fn migrate_file_at(
     path: &Path,
     choices: &[MigrationChoice],
+    profiles: &[ProfileAccount],
     prefs: &mut Preferences,
 ) -> Result<bool, AppError> {
     let mut file = load_project_file_at(path).await?;
-    if !migrate(&mut file, choices, prefs)? {
+    if !migrate(&mut file, choices, profiles, prefs)? {
         return Ok(false);
     }
     backup_project_file_at(path).await?;
@@ -452,7 +456,7 @@ mod tests {
                 proposed("staging", DEV, "5461", &["covered-staging"]),
             ],
         }];
-        assert!(migrate(&mut file, &choices, &mut prefs).unwrap());
+        assert!(migrate(&mut file, &choices, &[], &mut prefs).unwrap());
         let envs = config(&file, "covered").environments.clone().unwrap();
         assert_eq!(envs.len(), 2);
         assert_eq!(get_account_profile(&prefs, PROD), Some("covered-admin"));
@@ -467,7 +471,7 @@ mod tests {
             project_key: "covered".to_string(),
             environments: vec![proposed("dev", DEV, "5462", &["covered-dev"])],
         }];
-        assert!(!migrate(&mut file, &choices, &mut prefs).unwrap());
+        assert!(!migrate(&mut file, &choices, &[], &mut prefs).unwrap());
         let envs = config(&file, "covered").environments.clone().unwrap();
         assert_eq!(envs.len(), 1);
         assert_eq!(envs[0].name, "prod");
@@ -485,7 +489,7 @@ mod tests {
                 proposed("prod", "12345", "5461", &["covered-staging"]),
             ],
         }];
-        let err = migrate(&mut file, &choices, &mut prefs)
+        let err = migrate(&mut file, &choices, &[], &mut prefs)
             .unwrap_err()
             .to_string();
         assert!(err.contains("covered"), "{err}");
@@ -504,7 +508,7 @@ mod tests {
             project_key: "covered".to_string(),
             environments: vec![proposed("prod", PROD, "5460", &["covered"])],
         }];
-        assert!(migrate(&mut file, &choices, &mut prefs).unwrap());
+        assert!(migrate(&mut file, &choices, &[], &mut prefs).unwrap());
         assert!(!config(&file, "covered").is_legacy());
     }
 
@@ -525,7 +529,7 @@ mod tests {
                 proposed("prod", DEV, "5461", &["covered-staging"]),
             ],
         }];
-        let err = migrate_file_at(&path, &choices, &mut prefs)
+        let err = migrate_file_at(&path, &choices, &[], &mut prefs)
             .await
             .unwrap_err()
             .to_string();
@@ -548,7 +552,7 @@ mod tests {
             project_key: "covered".to_string(),
             environments: vec![proposed("prod", PROD, "5460", &["covered"])],
         }];
-        assert!(migrate_file_at(&path, &choices, &mut prefs).await.unwrap());
+        assert!(migrate_file_at(&path, &choices, &[], &mut prefs).await.unwrap());
         let names = file_names(&dir);
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(
