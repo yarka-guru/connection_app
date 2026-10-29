@@ -163,6 +163,12 @@ pub enum UpstreamAuth {
         password: String,
         refetch: Option<SecretRefetch>,
     },
+    /// Password only: never asks `TokenSource` for a token and never retries
+    /// with one; a rejection goes back to the client as RDS sent it.
+    PasswordOnly {
+        password: String,
+        refetch: Option<SecretRefetch>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,6 +209,8 @@ pub struct PgAuthProxy {
     /// `secrets` projects only: the secret's current password, upstream and locally.
     secret: Option<RwLock<(String, scram::ScramVerifier)>>,
     refetch: Option<SecretRefetch>,
+    /// Never use an IAM token and never retry with the other credential.
+    password_only: bool,
     tokens: Arc<dyn TokenSource>,
     tls: TlsConnector,
     server_name: ServerName<'static>,
@@ -422,11 +430,15 @@ impl PgAuthProxy {
         let server_name = ServerName::try_from(upstream_host.to_string())
             .map_err(|e| format!("Invalid RDS host name {}: {}", upstream_host, e))?;
         let salt = random_bytes::<16>()?.to_vec();
-        let (secret, refetch) = match auth {
-            UpstreamAuth::IamOnly => (None, None),
+        let (secret, refetch, password_only) = match auth {
+            UpstreamAuth::IamOnly => (None, None, false),
             UpstreamAuth::Auto { password, refetch } => {
                 let verifier = scram::ScramVerifier::new(&password, salt.clone(), scram::DEFAULT_ITERATIONS);
-                (Some(RwLock::new((password, verifier))), refetch)
+                (Some(RwLock::new((password, verifier))), refetch, false)
+            }
+            UpstreamAuth::PasswordOnly { password, refetch } => {
+                let verifier = scram::ScramVerifier::new(&password, salt.clone(), scram::DEFAULT_ITERATIONS);
+                (Some(RwLock::new((password, verifier))), refetch, true)
             }
         };
         Ok(Self {
@@ -435,6 +447,7 @@ impl PgAuthProxy {
             salt,
             secret,
             refetch,
+            password_only,
             tokens,
             tls: TlsConnector::from(tls),
             server_name,
@@ -471,7 +484,9 @@ impl PgAuthProxy {
     }
 
     fn cleartext_choice(&self) -> Credential {
-        if self.is_auto() {
+        if self.password_only {
+            Credential::Password
+        } else if self.is_auto() {
             *self.cleartext_choice.lock().unwrap_or_else(|e| e.into_inner())
         } else {
             Credential::IamToken
@@ -758,7 +773,7 @@ impl PgAuthProxy {
                 cleartext: Some(used),
                 ref sqlstate,
                 ..
-            }) if self.is_auto() && is_auth_error(sqlstate) => {
+            }) if self.is_auto() && !self.password_only && is_auth_error(sqlstate) => {
                 let other = used.other();
                 log::info!(
                     "Auth proxy: RDS refused the {} for {}, retrying with the {}",

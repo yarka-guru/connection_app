@@ -6,7 +6,7 @@ use connection_app_lib::aws::sso::{ensure_sso_session, CliSsoHandler};
 use connection_app_lib::config::aws_config::read_aws_profile_names;
 use connection_app_lib::config::projects::{
     get_default_port_for_engine, get_local_port, get_profiles_for_project, load_project_configs,
-    ProjectConfig,
+    AuthMode, ProjectConfig,
 };
 use connection_app_lib::tunnel::native::{
     bind_local_listeners, start_multiplexed_port_forwarding, start_native_port_forwarding,
@@ -269,19 +269,14 @@ async fn run_rds_connect(
     .await
     .map_err(|e| format!("Failed to get RDS port: {}", e))?;
 
-    // Determine auth type (default to "secrets")
-    let auth_type = if project_config.auth_type.is_empty() {
-        "secrets"
-    } else {
-        project_config.auth_type.as_str()
-    };
+    let auth_mode = project_config.auth_mode();
 
     let use_proxy = project_config.uses_pg_auth_proxy();
     let rds_port_num: u16 = rds_port
         .parse()
         .map_err(|_| format!("Invalid RDS port number: {}", rds_port))?;
 
-    let (username, password, proxy_settings) = if auth_type == "iam" {
+    let (username, password, proxy_settings) = if auth_mode == AuthMode::IamOnly {
         eprintln!("  \u{1F511} Generating IAM auth token...");
         let iam_username = project_config
             .iam_username
@@ -337,9 +332,9 @@ async fn run_rds_connect(
             let settings = ProxySettings {
                 db_user: db_creds.username.clone(),
                 local_password: local_proxy_password(project_key, profile).await?,
-                auth: UpstreamAuth::Auto {
-                    password: db_creds.password,
-                    refetch: Some(SecretRefetch {
+                auth: {
+                    let password = db_creds.password;
+                    let refetch = Some(SecretRefetch {
                         source: Arc::new(operations::SecretLocator {
                             profile: profile.to_string(),
                             region: project_config.region.clone(),
@@ -351,7 +346,12 @@ async fn run_rds_connect(
                             fallback_secret: Some(fallback_secret.clone()),
                         }),
                         key: format!("{}:{}", project_key, profile),
-                    }),
+                    });
+                    if auth_mode == AuthMode::PasswordOnly {
+                        UpstreamAuth::PasswordOnly { password, refetch }
+                    } else {
+                        UpstreamAuth::Auto { password, refetch }
+                    }
                 },
                 sdk_config: connection_app_lib::aws::credentials::build_aws_config(
                     profile,

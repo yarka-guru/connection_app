@@ -192,6 +192,13 @@ fn auto() -> UpstreamAuth {
     }
 }
 
+fn password_only() -> UpstreamAuth {
+    UpstreamAuth::PasswordOnly {
+        password: SECRET.to_string(),
+        refetch: None,
+    }
+}
+
 /// Secret source that returns `password` and counts fetches.
 struct FakeSecret {
     password: &'static str,
@@ -756,6 +763,67 @@ async fn cached_method_is_re_probed_when_it_stops_working() {
     let seen = h.seen().await;
     assert_eq!(seen.len(), 2, "password refused, token on a fresh connection");
     assert_eq!(h.proxy.method_label().as_deref(), Some("IAM (auto)"));
+}
+
+#[tokio::test]
+async fn password_only_never_mints_a_token() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, password_only(), vec![Rds::Scram(SECRET)]);
+    let mut client = h.client();
+    full_session(&mut client).await;
+    assert_eq!(h.dials(), 1);
+    assert_eq!(h.tokens_issued(), 0);
+    assert_eq!(h.proxy.method_label().as_deref(), Some("password"));
+}
+
+#[tokio::test]
+async fn password_only_sends_password_when_rds_asks_cleartext() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, password_only(), vec![Rds::Pam(SECRET)]);
+    let mut client = h.client();
+    full_session(&mut client).await;
+    let seen = h.seen().await;
+    assert_eq!(seen.len(), 1, "no token attempt first");
+    assert_eq!(seen[0].cleartext.as_deref(), Some(SECRET));
+    assert!(seen[0].signed_in);
+    assert_eq!(h.tokens_issued(), 0);
+    assert_eq!(h.proxy.method_label().as_deref(), Some("password"));
+}
+
+#[tokio::test]
+async fn password_only_relays_a_cleartext_rejection_without_trying_a_token() {
+    let pki = test_pki();
+    let h = Harness::new(&pki, password_only(), vec![Rds::Pam("something-else"), Rds::Pam(TOKEN)]);
+    let mut client = h.client();
+    sign_in(&mut client, DB_USER, LOCAL_PASSWORD).await.unwrap();
+    let (code, _) = expect_error(&mut client).await;
+    assert_eq!(code, "28000", "RDS's sqlstate reaches the client");
+    assert_eq!(h.dials(), 1, "no retry with the other credential");
+    assert_eq!(h.tokens_issued(), 0);
+    let seen = h.seen().await;
+    assert_eq!(seen[0].cleartext.as_deref(), Some(SECRET));
+}
+
+#[tokio::test]
+async fn password_only_re_reads_a_rejected_secret_once() {
+    let pki = test_pki();
+    let source = Arc::new(FakeSecret {
+        password: "rotated-password",
+        fetches: AtomicUsize::new(0),
+    });
+    let auth = UpstreamAuth::PasswordOnly {
+        password: SECRET.to_string(),
+        refetch: Some(SecretRefetch {
+            source: source.clone(),
+            key: format!("test:{}", uuid::Uuid::new_v4()),
+        }),
+    };
+    let h = Harness::new(&pki, auth, vec![Rds::Scram("rotated-password"), Rds::Scram("rotated-password")]);
+    let mut client = h.client();
+    full_session(&mut client).await;
+    assert_eq!(source.fetches.load(Ordering::SeqCst), 1);
+    assert_eq!(h.dials(), 2);
+    assert_eq!(h.tokens_issued(), 0);
 }
 
 #[tokio::test]

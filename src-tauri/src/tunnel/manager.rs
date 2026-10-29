@@ -5,7 +5,7 @@ use crate::aws::sso::{ensure_sso_session, TauriSsoHandler};
 use crate::config::local_passwords;
 use crate::config::preferences;
 use crate::config::projects::{
-    get_default_port_for_engine, get_local_port, load_project_configs, ProjectConfig,
+    get_default_port_for_engine, get_local_port, load_project_configs, AuthMode, ProjectConfig,
 };
 use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
@@ -664,16 +664,10 @@ impl TunnelManager {
         )
         .await?;
 
-        // Determine auth type (default to "secrets")
-        let auth_type = if project_config.auth_type.is_empty() {
-            "secrets"
-        } else {
-            project_config.auth_type.as_str()
-        };
-
         let use_proxy = project_config.uses_pg_auth_proxy();
-        let (username, password, proxy_settings) = match auth_type {
-            "iam" => {
+        let auth_mode = project_config.auth_mode();
+        let (username, password, proxy_settings) = match auth_mode {
+            AuthMode::IamOnly => {
                 self.emit_status("Generating IAM auth token...", Some(connection_id));
                 let iam_username = project_config.iam_username.as_deref().ok_or_else(|| {
                     AppError::Config(
@@ -711,7 +705,7 @@ impl TunnelManager {
                     (iam_username.to_string(), token, None)
                 }
             }
-            _ => {
+            AuthMode::Auto | AuthMode::PasswordOnly => {
                 // "secrets" auth type — get credentials from Secrets Manager
                 self.emit_status("Getting credentials...", Some(connection_id));
                 let credentials = operations::get_connection_credentials(
@@ -738,9 +732,9 @@ impl TunnelManager {
                     let settings = ProxySettings {
                         db_user: credentials.username.clone(),
                         local_password: local_password.clone(),
-                        auth: UpstreamAuth::Auto {
-                            password: credentials.password,
-                            refetch: Some(SecretRefetch {
+                        auth: {
+                            let password = credentials.password;
+                            let refetch = Some(SecretRefetch {
                                 source: Arc::new(operations::SecretLocator {
                                     profile: profile.to_string(),
                                     region: project_config.region.clone(),
@@ -752,7 +746,12 @@ impl TunnelManager {
                                     fallback_secret: Some(fallback_secret.clone()),
                                 }),
                                 key: format!("{}:{}", project_key, profile),
-                            }),
+                            });
+                            if auth_mode == AuthMode::PasswordOnly {
+                                UpstreamAuth::PasswordOnly { password, refetch }
+                            } else {
+                                UpstreamAuth::Auto { password, refetch }
+                            }
                         },
                         sdk_config: build_aws_config(profile, &project_config.region).await,
                     };
@@ -762,8 +761,8 @@ impl TunnelManager {
                 }
             }
         };
-        let auth_method = match (&proxy_settings, auth_type) {
-            (Some(_), "iam") => Some("IAM".to_string()),
+        let auth_method = match (&proxy_settings, auth_mode) {
+            (Some(_), AuthMode::IamOnly) => Some("IAM".to_string()),
             _ => None,
         };
 
