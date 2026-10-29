@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [3.7.10] - 2026-10-21
+## [Unreleased]
 
 ### Added
 - PostgreSQL RDS connections go through a local auth proxy on the same
@@ -40,11 +40,6 @@ All notable changes to this project will be documented in this file.
 - The CLI treats an unset `multiplexed` as on, like the desktop app.
 - MySQL projects and service tunnels (VNC/RDP/SSH) are unchanged and still
   use the raw tunnel.
-- Dependencies: all npm and Rust dependencies at their latest releases
-  (tauri 2.12, tauri plugins, aws-sdk 1.12, vite 8.3, svelte 5.57, biome
-  2.5.15, `dirs` 7); CI on `actions/setup-node` v7 and
-  `tauri-apps/tauri-action` v1. macOS updater archives are now named
-  `ConnectionApp_<version>_<arch>.app.tar.gz`.
 
 ### Fixed
 - Desktop: the sign-in check runs without holding the connection-manager
@@ -65,6 +60,42 @@ All notable changes to this project will be documented in this file.
   `sslnegotiation=direct` do not work against the local port; use
   `prefer`, `require` or `disable`. This supersedes the 3.7.9 note about
   IAM tokens expiring 15 minutes after Connect.
+## [3.7.10] - 2026-10-29
+
+Security release.
+
+### Security
+- The tunnel now checks the StreamUrl returned by `ssm:StartSession` before
+  connecting and sending it the session token. It must be a `wss://` URL on
+  an AWS `ssmmessages` host for that region (standard, FIPS, dual-stack or a
+  VPC interface endpoint). This matches the check AWS added in
+  session-manager-plugin 1.2.889.0, and protects setups where the SSM
+  endpoint is overridden or traffic passes through a proxy. Extra hosts (for
+  example LocalStack) can be trusted with
+  `AWS_SSM_PLUGIN_ADDITIONAL_STREAM_HOSTS=host1,host2`, the same variable the
+  official plugin reads.
+- `tokio` 1.54.0→1.54.1: RUSTSEC-2026-0384, a race in `tokio::time::Interval`,
+  which drives the tunnel's keepalive pings. 1.54.0 was also yanked.
+- `tauri-plugin-updater` 2.14.0→2.14.1, which moves `zip` 4.6.1→9.1.3:
+  RUSTSEC-2026-0367, -0368 and -0369 (unsafe permission and symlink handling
+  when extracting archives; the updater extracts downloaded updates).
+- `ctutils` 0.4.3→0.4.7: RUSTSEC-2026-0385 (non-constant-time comparisons).
+- `cargo audit` now reports no vulnerabilities. What remains are
+  informational warnings in Linux-only GTK/D-Bus crates pulled in by Tauri.
+- `npm audit` reports 2 low findings for `deepmerge` (GHSA-gcqx-w48m-w2h4)
+  with no fix released yet. It is used only at build time inside
+  `@sveltejs/vite-plugin-svelte` to merge local config, never sees untrusted
+  input, and is not shipped in the app.
+
+### Changed
+- Dependency maintenance: `aws-config` 1.13 and the `aws-sdk-*` crates,
+  `tauri` 2.12.5, `vite` 8.3.5, `@tauri-apps/api` and `@tauri-apps/cli`
+  2.12.4, `@biomejs/biome` 2.6.2, plus transitive updates.
+
+### Notes
+- The other session-manager-plugin 1.2.889.0 changes do not apply here.
+  ConnectionApp does not use the plugin: it speaks the SSM WebSocket protocol
+  natively and opens a fresh session on every auto-reconnect.
 
 ## [3.7.9] - 2026-10-20
 

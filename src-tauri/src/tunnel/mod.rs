@@ -4,4 +4,5 @@ pub mod native;
 pub mod pg_proxy;
 pub mod protocol;
 pub mod smux;
+pub mod stream_url;
 pub mod websocket;
