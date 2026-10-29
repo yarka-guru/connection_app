@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.10] - 2026-10-29
+
+Security release.
+
+### Security
+- The tunnel now checks the StreamUrl returned by `ssm:StartSession` before
+  connecting and sending it the session token. It must be a `wss://` URL on
+  an AWS `ssmmessages` host for that region (standard, FIPS, dual-stack or a
+  VPC interface endpoint). This matches the check AWS added in
+  session-manager-plugin 1.2.889.0, and protects setups where the SSM
+  endpoint is overridden or traffic passes through a proxy. Extra hosts (for
+  example LocalStack) can be trusted with
+  `AWS_SSM_PLUGIN_ADDITIONAL_STREAM_HOSTS=host1,host2`, the same variable the
+  official plugin reads.
+- `tokio` 1.54.0→1.54.1: RUSTSEC-2026-0384, a race in `tokio::time::Interval`,
+  which drives the tunnel's keepalive pings. 1.54.0 was also yanked.
+- `tauri-plugin-updater` 2.14.0→2.14.1, which moves `zip` 4.6.1→9.1.3:
+  RUSTSEC-2026-0367, -0368 and -0369 (unsafe permission and symlink handling
+  when extracting archives; the updater extracts downloaded updates).
+- `ctutils` 0.4.3→0.4.7: RUSTSEC-2026-0385 (non-constant-time comparisons).
+- `cargo audit` now reports no vulnerabilities. What remains are
+  informational warnings in Linux-only GTK/D-Bus crates pulled in by Tauri.
+- `npm audit` reports 2 low findings for `deepmerge` (GHSA-gcqx-w48m-w2h4)
+  with no fix released yet. It is used only at build time inside
+  `@sveltejs/vite-plugin-svelte` to merge local config, never sees untrusted
+  input, and is not shipped in the app.
+
+### Changed
+- Dependency maintenance: `aws-config` 1.13 and the `aws-sdk-*` crates,
+  `tauri` 2.12.5, `vite` 8.3.5, `@tauri-apps/api` and `@tauri-apps/cli`
+  2.12.4, `@biomejs/biome` 2.6.2, plus transitive updates.
+
+### Notes
+- The other session-manager-plugin 1.2.889.0 changes do not apply here.
+  ConnectionApp does not use the plugin: it speaks the SSM WebSocket protocol
+  natively and opens a fresh session on every auto-reconnect.
+
 ## [3.7.9] - 2026-10-20
 
 ### Added

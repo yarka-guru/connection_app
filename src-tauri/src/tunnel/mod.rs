@@ -3,4 +3,5 @@ pub mod manager;
 pub mod native;
 pub mod protocol;
 pub mod smux;
+pub mod stream_url;
 pub mod websocket;

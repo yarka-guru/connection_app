@@ -43,12 +43,15 @@ pub async fn open_data_channel_with_version(
     token_value: &str,
     client_version: &str,
 ) -> Result<SsmDataChannel, String> {
-    // Step 1: Connect WebSocket
+    // Step 1: Make sure the StreamUrl is an AWS endpoint before sending it the token
+    crate::tunnel::stream_url::validate_stream_url(stream_url).await?;
+
+    // Step 2: Connect WebSocket
     let (mut ws, _response) = connect_async(stream_url)
         .await
         .map_err(|e| format!("WebSocket connection failed: {}", e))?;
 
-    // Step 2: Send OpenDataChannelInput as text message
+    // Step 3: Send OpenDataChannelInput as text message
     let open_msg = OpenDataChannelInput {
         message_schema_version: "1.0".to_string(),
         request_id: Uuid::new_v4().to_string(),
@@ -62,7 +65,7 @@ pub async fn open_data_channel_with_version(
         .await
         .map_err(|e| format!("Failed to send OpenDataChannelInput: {}", e))?;
 
-    // Step 3: Handshake — wait for HandshakeRequest from agent
+    // Step 4: Handshake — wait for HandshakeRequest from agent
     // Track sequence numbers: the agent uses a single counter for all outgoing messages,
     // and the client uses a single counter for all outgoing messages. These continue
     // from the handshake into data forwarding (they are NOT reset).
