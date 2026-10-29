@@ -59,7 +59,7 @@ pub async fn save_project_config(
     if !result.valid {
         return Err(AppError::Config(format!(
             "Validation failed: {}",
-            result.errors.join(", ")
+            result.messages().join(", ")
         )));
     }
 

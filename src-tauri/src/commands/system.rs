@@ -488,7 +488,7 @@ pub async fn import_projects_file(app_handle: AppHandle) -> Result<usize, AppErr
             return Err(AppError::Config(format!(
                 "Invalid project \"{}\": {}",
                 key,
-                result.errors.join(", ")
+                result.messages().join(", ")
             )));
         }
         projects::save_project_config(&key, config).await?;

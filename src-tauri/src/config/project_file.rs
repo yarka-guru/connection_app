@@ -4,7 +4,7 @@
 //! so one malformed project never hides the others. Loading never writes.
 
 use crate::config::projects::{ProjectConfig, get_config_path};
-use crate::config::validation::FieldError;
+use crate::config::validation::{FieldError, validate_project_config};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -190,10 +190,10 @@ fn load_entry(key: &str, raw: Box<RawValue>) -> ProjectEntry {
         log::debug!("projects.json: {key}: {fix}");
     }
     match ProjectConfig::deserialize(&value) {
-        Ok(config) => ProjectEntry::Valid {
-            config,
-            problems: Vec::new(),
-        },
+        Ok(config) => {
+            let problems = validate_project_config(&config).errors;
+            ProjectEntry::Valid { config, problems }
+        }
         Err(e) => ProjectEntry::Broken {
             error: describe_error(&value, e),
             raw,
@@ -228,13 +228,9 @@ impl ProjectFile {
     }
 
     pub fn upsert(&mut self, key: &str, config: ProjectConfig) {
-        self.entries.insert(
-            key.to_string(),
-            ProjectEntry::Valid {
-                config,
-                problems: Vec::new(),
-            },
-        );
+        let problems = validate_project_config(&config).errors;
+        self.entries
+            .insert(key.to_string(), ProjectEntry::Valid { config, problems });
     }
 
     /// Replace one project with raw JSON, which must be a JSON object. It is
@@ -438,7 +434,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const GOOD: &str = r#"{"name":"Good","region":"us-east-1","profileFilter":null,"envPortMapping":{},"defaultPort":"5432"}"#;
+    const GOOD: &str = r#"{"name":"Good","region":"us-east-1","profileFilter":null,"envPortMapping":{},"defaultPort":"5432","database":"db","secretPrefix":"rds!","rdsType":"cluster","rdsPattern":"c"}"#;
 
     /// A fresh, empty directory under the system temp dir, unique per call.
     fn temp_dir(test: &str) -> PathBuf {
@@ -469,6 +465,25 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[tokio::test]
+    async fn valid_project_with_field_problems_is_loaded_with_them() {
+        let dir = temp_dir("problems");
+        let path = dir.join("projects.json");
+        write(
+            &path,
+            r#"{"p": {"name":"P","region":"nope","profileFilter":null,"envPortMapping":{},"defaultPort":"5432","database":"db","secretPrefix":"rds!","rdsType":"cluster","rdsPattern":"c"}}"#,
+        );
+        let file = load_project_file_at(&path).await.unwrap();
+        match &file.entries["p"] {
+            ProjectEntry::Valid { problems, .. } => {
+                assert_eq!(problems.len(), 1);
+                assert_eq!(problems[0].field, "region");
+            }
+            other => panic!("expected Valid, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
