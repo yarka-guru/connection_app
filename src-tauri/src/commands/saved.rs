@@ -48,34 +48,44 @@ pub struct SavedConnectionDto {
     pub needs_attention: bool,
 }
 
+/// The only item, or `None` when there are none or several.
+fn single<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
+    let first = items.next()?;
+    items.next().is_none().then_some(first)
+}
+
 /// The environment a saved profile reaches: the one listing it as a
-/// candidate, else the one in the profile's account.
+/// candidate, else the one in the profile's account. Only a unique match
+/// counts; environments of one project may share an account.
 fn environment_for_profile(
     profile: &str,
     envs: &[ResolvedEnvironment],
     accounts: &[ProfileAccount],
 ) -> Option<String> {
-    let by_candidate = envs
+    let by_candidate: Vec<&ResolvedEnvironment> = envs
         .iter()
-        .find(|e| e.candidates.iter().any(|c| c == profile));
-    let by_account = || {
-        let account = accounts
-            .iter()
-            .find(|a| a.profile == profile)
-            .and_then(|a| a.account_id.as_deref())?;
-        envs.iter().find(|e| e.environment.account_id == account)
+        .filter(|e| e.candidates.iter().any(|c| c == profile))
+        .collect();
+    let found = match by_candidate.len() {
+        0 => {
+            let account = accounts
+                .iter()
+                .find(|a| a.profile == profile)
+                .and_then(|a| a.account_id.as_deref())?;
+            single(envs.iter().filter(|e| e.environment.account_id == account))
+        }
+        1 => Some(by_candidate[0]),
+        _ => None,
     };
-    by_candidate
-        .or_else(by_account)
-        .map(|e| e.environment.name.clone())
+    found.map(|e| e.environment.name.clone())
 }
 
 /// Tie every saved connection to an environment of its project.
 ///
 /// An entry whose environment is missing, or no longer exists (a legacy
 /// profile-named environment after migration), is matched again by its
-/// profile. Entries that match nothing are kept unchanged and need
-/// attention. Returns the entries and whether any was changed.
+/// profile. Entries that match no environment, or more than one, are kept
+/// unchanged and need attention. Returns the entries and whether any was changed.
 pub(crate) fn link_saved_connections(
     connections: Vec<SavedConnection>,
     envs_by_project: &HashMap<String, Vec<ResolvedEnvironment>>,
@@ -576,6 +586,55 @@ mod tests {
         assert!(changed);
         assert_eq!(dtos[0].connection.environment.as_deref(), Some("prod"));
         assert!(!dtos[0].needs_attention);
+    }
+
+    /// Two environments in one account, told apart by their RDS pattern.
+    fn shared_account_envs(names: &[&str]) -> HashMap<String, Vec<ResolvedEnvironment>> {
+        HashMap::from([(
+            "covered".to_string(),
+            names
+                .iter()
+                .map(|n| resolved(n, PROD, &["covered"]))
+                .collect(),
+        )])
+    }
+
+    #[test]
+    fn saved_connection_with_two_matching_environments_needs_attention() {
+        let envs = shared_account_envs(&["prod", "prod-reporting"]);
+        // By candidate: both list "covered".
+        let conns = vec![saved("a", "covered", None)];
+        let (dtos, changed) = link_saved_connections(conns, &envs, &accounts());
+        assert!(!changed);
+        assert!(dtos[0].needs_attention);
+        assert_eq!(dtos[0].connection.environment, None);
+
+        // By account: neither lists the profile, both are in its account.
+        let envs = HashMap::from([(
+            "covered".to_string(),
+            vec![
+                resolved("prod", PROD, &[]),
+                resolved("prod-reporting", PROD, &[]),
+            ],
+        )]);
+        let conns = vec![saved("b", "covered", None)];
+        let (dtos, changed) = link_saved_connections(conns, &envs, &accounts());
+        assert!(!changed);
+        assert!(dtos[0].needs_attention);
+    }
+
+    #[test]
+    fn saved_connection_to_a_renamed_environment_with_two_candidates_is_not_relinked() {
+        // "prod-reporting" was renamed to "reporting"; "prod" shares its account.
+        let envs = shared_account_envs(&["prod", "reporting"]);
+        let conns = vec![saved("a", "covered", Some("prod-reporting"))];
+        let (dtos, changed) = link_saved_connections(conns, &envs, &accounts());
+        assert!(!changed);
+        assert!(dtos[0].needs_attention);
+        assert_eq!(
+            dtos[0].connection.environment.as_deref(),
+            Some("prod-reporting")
+        );
     }
 
     #[test]

@@ -76,10 +76,11 @@ pub async fn restore_project_backup(path: String) -> Result<(), AppError> {
 
 /// Apply the confirmed migration to `file` and `prefs` in memory.
 ///
-/// Choices for projects that are not legacy (any more) are ignored. Every
-/// migrated project must pass validation, otherwise nothing should be
-/// written and the error lists the problems. Returns whether any project
-/// was migrated.
+/// Choices for projects that are not legacy (any more) are ignored. A
+/// migrated project with an error in its new `environments` refuses the
+/// whole migration (nothing should be written) and the error lists them;
+/// problems the project already had do not block it. Returns whether any
+/// project was migrated.
 fn migrate(
     file: &mut ProjectFile,
     choices: &[MigrationChoice],
@@ -104,8 +105,15 @@ fn migrate(
             && !config.is_legacy()
         {
             migrated = true;
-            for message in validate_project_config(config).messages() {
-                problems.push(format!("{}: {}", choice.project_key, message));
+            // Only what the migration added can block it; problems the
+            // project already had are still listed in Settings.
+            for e in validate_project_config(config).errors {
+                if e.field.starts_with("environments") {
+                    problems.push(format!(
+                        "{}: {}: {}",
+                        choice.project_key, e.field, e.message
+                    ));
+                }
             }
         }
     }
@@ -132,16 +140,27 @@ pub async fn get_migration_proposal() -> Result<Vec<ProjectProposal>, AppError> 
 /// is written when a migrated project would be invalid.
 #[tauri::command]
 pub async fn apply_migration(choices: Vec<MigrationChoice>) -> Result<(), AppError> {
-    let path = get_config_path();
-    let mut file = load_project_file_at(&path).await?;
     let mut prefs = preferences::load_preferences().await;
-    if !migrate(&mut file, &choices, &mut prefs)? {
-        return Ok(());
+    if migrate_file_at(&get_config_path(), &choices, &mut prefs).await? {
+        preferences::save_preferences(&prefs).await;
     }
-    backup_project_file_at(&path).await?;
-    write_project_file_at(&path, &file).await?;
-    preferences::save_preferences(&prefs).await;
     Ok(())
+}
+
+/// Migrate the file at `path`: backup, then write. Nothing is written when
+/// the migration is refused or migrates nothing. Returns whether it wrote.
+async fn migrate_file_at(
+    path: &Path,
+    choices: &[MigrationChoice],
+    prefs: &mut Preferences,
+) -> Result<bool, AppError> {
+    let mut file = load_project_file_at(path).await?;
+    if !migrate(&mut file, choices, prefs)? {
+        return Ok(false);
+    }
+    backup_project_file_at(path).await?;
+    write_project_file_at(path, &file).await?;
+    Ok(true)
 }
 
 // --- import ---
@@ -471,6 +490,73 @@ mod tests {
             .to_string();
         assert!(err.contains("covered"), "{err}");
         assert!(err.contains("environments[1].accountId"), "{err}");
+    }
+
+    #[test]
+    fn migration_is_not_blocked_by_a_problem_the_project_already_had() {
+        let mut file = ProjectFile::default();
+        let mut c = legacy("Covered");
+        c.secret_prefix = String::new();
+        assert!(!validate_project_config(&c).valid);
+        file.upsert("covered", c);
+        let mut prefs = Preferences::default();
+        let choices = vec![MigrationChoice {
+            project_key: "covered".to_string(),
+            environments: vec![proposed("prod", PROD, "5460", &["covered"])],
+        }];
+        assert!(migrate(&mut file, &choices, &mut prefs).unwrap());
+        assert!(!config(&file, "covered").is_legacy());
+    }
+
+    #[tokio::test]
+    async fn migration_with_a_duplicate_environment_name_writes_nothing() {
+        let dir = temp_dir("migrate-duplicate");
+        let path = dir.join("projects.json");
+        let mut file = ProjectFile::default();
+        file.upsert("covered", legacy("Covered"));
+        let original = file.to_json();
+        std::fs::write(&path, &original).unwrap();
+
+        let mut prefs = Preferences::default();
+        let choices = vec![MigrationChoice {
+            project_key: "covered".to_string(),
+            environments: vec![
+                proposed("prod", PROD, "5460", &["covered-admin", "covered"]),
+                proposed("prod", DEV, "5461", &["covered-staging"]),
+            ],
+        }];
+        let err = migrate_file_at(&path, &choices, &mut prefs)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("environments[1].name"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(file_names(&dir), vec!["projects.json"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn migration_writes_the_file_after_a_backup() {
+        let dir = temp_dir("migrate-write");
+        let path = dir.join("projects.json");
+        let mut file = ProjectFile::default();
+        file.upsert("covered", legacy("Covered"));
+        std::fs::write(&path, file.to_json()).unwrap();
+
+        let mut prefs = Preferences::default();
+        let choices = vec![MigrationChoice {
+            project_key: "covered".to_string(),
+            environments: vec![proposed("prod", PROD, "5460", &["covered"])],
+        }];
+        assert!(migrate_file_at(&path, &choices, &mut prefs).await.unwrap());
+        let names = file_names(&dir);
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"environments\"")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- import ---
