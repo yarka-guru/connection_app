@@ -492,6 +492,14 @@ async function openMigration() {
   }
 }
 
+// "Detect account" in the migration dialog: ask AWS, then propose again
+async function detectAccountForMigration(profile) {
+  await invoke('detect_profile_account', { profile })
+  refreshProjects()
+  settingsVersion++
+  return await invoke('get_migration_proposal')
+}
+
 async function applyMigration(choices) {
   // A rejection stays in the dialog, which shows it
   await invoke('apply_migration', { choices })
@@ -1179,6 +1187,7 @@ const isAlreadySaved = $derived(
     <MigrationDialog
       proposals={migrationProposals}
       onApply={applyMigration}
+      onDetectAccount={detectAccountForMigration}
       onLater={() => { migrationProposals = null }}
     />
   {/if}

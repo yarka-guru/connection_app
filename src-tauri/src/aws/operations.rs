@@ -189,22 +189,29 @@ pub fn ensure_account(expected: &str, actual: &str, environment: &str) -> Result
 }
 
 /// Ask AWS which account `profile` belongs to and remember the answer in the
-/// detected-account cache, keyed to the profile's current config.
+/// detected-account cache, keyed to the profile's current config. Caching is
+/// best-effort: the account is returned even when it cannot be remembered.
 pub async fn detect_profile_account(profile: &str, region: &str) -> Result<String, AppError> {
     let clients = crate::aws::credentials::create_aws_clients(profile, region).await;
     let account_id = caller_account_id(&clients).await?;
 
-    let profiles = crate::config::aws_config::read_aws_config().await?;
-    if let Some(p) = profiles.iter().find(|p| p.name == profile) {
-        let mut cache = crate::config::accounts::load_account_cache().await;
-        cache.entries.insert(
-            profile.to_string(),
-            crate::config::accounts::CachedAccount {
-                account_id: account_id.clone(),
-                fingerprint: crate::config::accounts::profile_fingerprint(p),
-            },
-        );
-        crate::config::accounts::save_account_cache(&cache).await;
+    match crate::config::aws_config::read_aws_config().await {
+        Ok(profiles) => {
+            if let Some(p) = profiles.iter().find(|p| p.name == profile) {
+                let mut cache = crate::config::accounts::load_account_cache().await;
+                cache.entries.insert(
+                    profile.to_string(),
+                    crate::config::accounts::CachedAccount {
+                        account_id: account_id.clone(),
+                        fingerprint: crate::config::accounts::profile_fingerprint(p),
+                    },
+                );
+                crate::config::accounts::save_account_cache(&cache).await;
+            } else {
+                log::warn!("Detected the account of '{}' but it is no longer in the AWS config; not cached", profile);
+            }
+        }
+        Err(e) => log::warn!("Detected the account of '{}' but could not cache it: {}", profile, e),
     }
     Ok(account_id)
 }

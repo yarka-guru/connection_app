@@ -209,6 +209,25 @@ function showSuccess(msg) {
 
 // ---- AWS Profile functions ----
 
+// profile name -> account ID (null when the config does not name it)
+const accountByProfile = $derived(new Map(accounts.map((a) => [a.profile, a.accountId])))
+let detectingProfile = $state(null)
+let detectErrors = $state({})
+
+// Ask AWS which account a profile signs in to (static keys, credential_process, ...)
+async function detectAccount(profileName) {
+  detectingProfile = profileName
+  detectErrors = Object.fromEntries(Object.entries(detectErrors).filter(([name]) => name !== profileName))
+  try {
+    const accountId = await invoke('detect_profile_account', { profile: profileName })
+    await afterSave(`${profileName} signs in to account ${accountId}`)
+  } catch (err) {
+    detectErrors = { ...detectErrors, [profileName]: String(err) }
+  } finally {
+    detectingProfile = null
+  }
+}
+
 function openAddProfile() {
   editingProfile = { isNew: true }
   editName = ''
@@ -972,7 +991,23 @@ onDestroy(() => {
                       {#if profile.ssoStartUrl}
                         <span class="detail">SSO</span>
                       {/if}
+                      {#if accountByProfile.get(profile.name)}
+                        <span class="detail">Account: {accountByProfile.get(profile.name)}</span>
+                      {:else}
+                        <span class="detail detail-unknown">Account unknown</span>
+                        <button
+                          type="button"
+                          class="btn-add-small"
+                          onclick={() => detectAccount(profile.name)}
+                          disabled={detectingProfile !== null}
+                        >
+                          {detectingProfile === profile.name ? 'Detecting…' : 'Detect account'}
+                        </button>
+                      {/if}
                     </div>
+                    {#if detectErrors[profile.name]}
+                      <span class="field-error" role="alert">{detectErrors[profile.name]}</span>
+                    {/if}
                   {/if}
                 </div>
               {/each}
@@ -1971,6 +2006,15 @@ onDestroy(() => {
     background: rgba(var(--glass-rgb), 0.05);
     padding: 4px 8px;
     border-radius: 4px;
+  }
+
+  .detail-unknown {
+    color: #9e9ea7;
+  }
+
+  .profile-details .btn-add-small:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .raw-tab {

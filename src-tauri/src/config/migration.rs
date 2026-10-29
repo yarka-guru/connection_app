@@ -23,6 +23,9 @@ pub struct ProposedEnvironment {
 pub struct SkippedProfile {
     pub profile: String,
     pub reason: String,
+    /// The profile's account is not known; "Detect account" can find it.
+    #[serde(default)]
+    pub account_unknown: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -79,6 +82,7 @@ fn propose_project(
             None => skipped.push(SkippedProfile {
                 profile,
                 reason: "account unknown".to_string(),
+                account_unknown: true,
             }),
             Some(id) => match groups.iter_mut().find(|(a, _)| *a == id) {
                 Some((_, list)) => list.push(profile),
@@ -106,6 +110,7 @@ fn propose_project(
                         "same account as {}; its port {} is not kept",
                         preferred, other_port
                     ),
+                    account_unknown: false,
                 });
             }
         }
@@ -311,7 +316,8 @@ mod tests {
             out[0].skipped,
             vec![SkippedProfile {
                 profile: "covered-x".into(),
-                reason: "account unknown".into()
+                reason: "account unknown".into(),
+                account_unknown: true,
             }]
         );
     }
@@ -414,7 +420,8 @@ mod tests {
             out[0].skipped,
             vec![SkippedProfile {
                 profile: "covered-admin".into(),
-                reason: "same account as covered; its port 5470 is not kept".into()
+                reason: "same account as covered; its port 5470 is not kept".into(),
+                account_unknown: false,
             }]
         );
     }

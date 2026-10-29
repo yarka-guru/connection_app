@@ -2,19 +2,45 @@
 import { trapFocus } from './utils.js'
 
 // onApply(choices) returns a promise; a rejection is shown here and the dialog stays open.
-const { proposals = [], onApply, onLater } = $props()
+// onDetectAccount(profile) asks AWS for the profile's account and resolves to a fresh proposal.
+const { proposals = [], onApply, onLater, onDetectAccount } = $props()
 
-// Editable copy of the proposal
-const projects = $state(
-  proposals.map((p) => ({
-    projectKey: p.projectKey,
-    projectName: p.projectName,
-    skipped: p.skipped || [],
-    environments: p.environments.map((e) => ({ ...e })),
-  })),
-)
+// Editable copy of a proposal. Rows the user already saw keep their edits
+// (matched by project and account).
+function editable(list, previous = []) {
+  return list.map((p) => {
+    const before = previous.find((q) => q.projectKey === p.projectKey)
+    return {
+      projectKey: p.projectKey,
+      projectName: p.projectName,
+      skipped: p.skipped || [],
+      environments: p.environments.map((e) => {
+        const old = before?.environments.find((o) => o.accountId === e.accountId)
+        return old ? { ...e, name: old.name, port: old.port, selected: old.selected } : { ...e }
+      }),
+    }
+  })
+}
+
+let projects = $state(editable(proposals))
 let applying = $state(false)
 let error = $state('')
+let detecting = $state(null)
+let detectErrors = $state({})
+
+async function detect(profile) {
+  if (detecting || !onDetectAccount) return
+  detecting = profile
+  detectErrors = Object.fromEntries(Object.entries(detectErrors).filter(([name]) => name !== profile))
+  try {
+    const fresh = await onDetectAccount(profile)
+    projects = editable(fresh, projects)
+  } catch (err) {
+    detectErrors = { ...detectErrors, [profile]: `${err}` }
+  } finally {
+    detecting = null
+  }
+}
 
 const selectedCount = $derived(
   projects.reduce((n, p) => n + p.environments.filter((e) => e.selected).length, 0),
@@ -92,7 +118,22 @@ function handleKeydown(e) {
               <span class="skipped-title">Skipped</span>
               <ul>
                 {#each project.skipped as s (s.profile)}
-                  <li><code>{s.profile}</code>: {s.reason}</li>
+                  <li>
+                    <code>{s.profile}</code>: {s.reason}
+                    {#if s.accountUnknown && onDetectAccount}
+                      <button
+                        type="button"
+                        class="btn-detect"
+                        onclick={() => detect(s.profile)}
+                        disabled={detecting !== null || applying}
+                      >
+                        {detecting === s.profile ? 'Detecting…' : 'Detect account'}
+                      </button>
+                    {/if}
+                    {#if detectErrors[s.profile]}
+                      <span class="detect-error" role="alert">{detectErrors[s.profile]}</span>
+                    {/if}
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -242,6 +283,39 @@ function handleKeydown(e) {
   .skipped ul {
     margin: 4px 0 0;
     padding-left: 18px;
+  }
+
+  .skipped li {
+    margin-bottom: 4px;
+  }
+
+  .btn-detect {
+    margin-left: 6px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--accent-primary-light);
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .btn-detect:hover:not(:disabled) {
+    background: rgba(var(--accent-primary-rgb), 0.15);
+  }
+
+  .btn-detect:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .detect-error {
+    display: block;
+    margin-top: 2px;
+    color: var(--color-error-soft);
+    overflow-wrap: anywhere;
   }
 
   .error {
