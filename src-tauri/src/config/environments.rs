@@ -103,6 +103,17 @@ pub fn effective_project_config(
     }
 }
 
+/// The account the caller must be signed in to before connecting, if it is
+/// checked: legacy environments are named after profiles and carry no
+/// authoritative account.
+pub fn account_to_verify(resolved: &ResolvedEnvironment) -> Option<&str> {
+    if resolved.legacy {
+        None
+    } else {
+        Some(resolved.environment.account_id.as_str())
+    }
+}
+
 /// The profile to connect with: `profile_override` when it reaches the
 /// environment's account, otherwise the resolved profile.
 pub fn pick_profile(
@@ -313,5 +324,19 @@ mod tests {
                 .contains("No AWS profile for account 000000000000 (environment 'prod')"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn account_to_verify_is_none_for_legacy() {
+        let p = project(json!({}));
+        let r = resolve(&p, &[pa("dev", Some(ACCT))], &Preferences::default());
+        assert!(r[0].legacy);
+        assert_eq!(account_to_verify(&r[0]), None);
+    }
+
+    #[test]
+    fn account_to_verify_is_the_environment_account() {
+        let r = resolve(&one_env(ACCT), &[pa("covered", Some(ACCT))], &Preferences::default());
+        assert_eq!(account_to_verify(&r[0]), Some(ACCT));
     }
 }

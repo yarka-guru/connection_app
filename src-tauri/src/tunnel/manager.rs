@@ -5,7 +5,7 @@ use crate::aws::sso::{ensure_sso_session, TauriSsoHandler};
 use crate::config::accounts;
 use crate::config::aws_config::read_aws_config;
 use crate::config::environments::{
-    effective_project_config, find_environment, pick_profile, resolve_environments,
+    account_to_verify, effective_project_config, find_environment, pick_profile, resolve_environments,
     ResolvedEnvironment,
 };
 use crate::config::local_passwords;
@@ -421,14 +421,10 @@ impl TunnelManager {
         let clients = create_aws_clients(profile, &project_config.region).await;
 
         // The profile must sign in to the environment's account
-        if !resolved.legacy {
+        if let Some(expected) = account_to_verify(&resolved) {
             self.emit_status("Checking AWS account...", Some(&connection_id));
             let actual = operations::caller_account_id(&clients).await?;
-            operations::ensure_account(
-                &resolved.environment.account_id,
-                &actual,
-                &resolved.environment.name,
-            )?;
+            operations::ensure_account(expected, &actual, &resolved.environment.name)?;
         }
 
         // Dispatch based on connection type

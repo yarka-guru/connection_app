@@ -3,10 +3,15 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use connection_app_lib::aws::credentials::create_aws_clients;
 use connection_app_lib::aws::operations;
 use connection_app_lib::aws::sso::{ensure_sso_session, CliSsoHandler};
-use connection_app_lib::config::aws_config::read_aws_profile_names;
+use connection_app_lib::config::accounts::{load_account_cache, profile_accounts, ProfileAccount};
+use connection_app_lib::config::aws_config::{read_aws_config, read_aws_profile_names};
+use connection_app_lib::config::environments::{
+    account_to_verify, effective_project_config, find_environment, pick_profile,
+    resolve_environments, ResolvedEnvironment,
+};
+use connection_app_lib::config::preferences::{load_preferences, Preferences};
 use connection_app_lib::config::projects::{
-    get_default_port_for_engine, get_local_port, get_profiles_for_project, load_project_configs,
-    AuthMode, ProjectConfig,
+    get_default_port_for_engine, load_project_configs, AuthMode, ProjectConfig,
 };
 use connection_app_lib::tunnel::native::{
     bind_local_listeners, start_multiplexed_port_forwarding, start_native_port_forwarding,
@@ -31,7 +36,11 @@ struct Cli {
     #[arg(short, long)]
     project: Option<String>,
 
-    /// AWS profile name (skip interactive selection)
+    /// Environment name (skip interactive selection)
+    #[arg(short, long)]
+    env: Option<String>,
+
+    /// AWS profile name; must reach the environment's account
     #[arg(long)]
     profile: Option<String>,
 
@@ -90,30 +99,83 @@ async fn main() {
     }
 }
 
+const LEGACY_NOTE: &str =
+    "Note: projects.json uses the old profile-name format. Open ConnectionApp to update it.";
+
+/// Everything environment resolution needs, read once.
+struct Context {
+    configs: HashMap<String, ProjectConfig>,
+    profiles: Vec<ProfileAccount>,
+    prefs: Preferences,
+}
+
+impl Context {
+    fn resolve(&self, project: &ProjectConfig) -> Vec<ResolvedEnvironment> {
+        resolve_environments(project, &self.configs, &self.profiles, &self.prefs)
+    }
+}
+
+async fn load_context() -> Result<Context, String> {
+    let configs = load_project_configs()
+        .await
+        .map_err(|e| format!("Failed to load project configs: {}", e))?;
+    let aws_profiles = read_aws_config()
+        .await
+        .map_err(|e| format!("Failed to read AWS config: {}", e))?;
+    let profiles = profile_accounts(&aws_profiles, &load_account_cache().await);
+    Ok(Context {
+        configs,
+        profiles,
+        prefs: load_preferences().await,
+    })
+}
+
+/// Legacy projects keep resolving through the profile-name path; nothing is written.
+fn print_legacy_note(configs: &HashMap<String, ProjectConfig>) {
+    if configs.values().any(|c| c.is_legacy()) {
+        eprintln!("{}", LEGACY_NOTE);
+    }
+}
+
+fn account_suffix(account_id: &str) -> String {
+    if account_id.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", account_id)
+    }
+}
+
 async fn run_list_projects() {
-    let configs = match load_project_configs().await {
+    let ctx = match load_context().await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to load projects: {}", e);
+            eprintln!("{}", e);
             return;
         }
     };
 
-    if configs.is_empty() {
+    if ctx.configs.is_empty() {
         eprintln!("No projects configured.");
         eprintln!("Add projects in ~/.connection-app/projects.json");
         return;
     }
 
+    print_legacy_note(&ctx.configs);
     println!("\nConfigured projects:\n");
-    let mut keys: Vec<&String> = configs.keys().collect();
+    let mut keys: Vec<&String> = ctx.configs.keys().collect();
     keys.sort();
     for key in keys {
-        let config = &configs[key];
-        println!(
-            "  {} — {} ({})",
-            key, config.name, config.region
-        );
+        let config = &ctx.configs[key];
+        println!("  {} — {} ({})", key, config.name, config.region);
+        for r in ctx.resolve(config) {
+            println!(
+                "    {}{}  port {}  {}",
+                r.environment.name,
+                account_suffix(&r.environment.account_id),
+                r.environment.port,
+                r.profile.as_deref().map_or("no profile".to_string(), |p| format!("profile {}", p)),
+            );
+        }
     }
     println!();
 }
@@ -134,48 +196,37 @@ async fn run_list_profiles() {
 }
 
 async fn run_connect(cli: Cli) -> Result<(), String> {
-    // Load project configs
-    let configs = load_project_configs()
-        .await
-        .map_err(|e| format!("Failed to load project configs: {}", e))?;
+    let ctx = load_context().await?;
 
-    if configs.is_empty() {
+    if ctx.configs.is_empty() {
         return Err(
             "No projects configured.\nAdd projects in ~/.connection-app/projects.json".to_string(),
         );
     }
-
-    // Load AWS profiles
-    let all_profiles = read_aws_profile_names().await;
-    if all_profiles.is_empty() {
+    if ctx.profiles.is_empty() {
         return Err("No AWS profiles found in ~/.aws/config".to_string());
     }
+    print_legacy_note(&ctx.configs);
 
     // Select project
-    let (project_key, project_config) = select_project(&cli, &configs, &all_profiles)?;
+    let (project_key, base_config) = select_project(&cli, &ctx)?;
 
-    // Get matching profiles for this project
-    let matching_profiles =
-        get_profiles_for_project(&all_profiles, &project_config, &configs);
-
-    if matching_profiles.is_empty() {
-        return Err(format!(
-            "No matching AWS profiles found for project '{}'",
-            project_key
-        ));
-    }
-
-    // Select profile
-    let profile = select_profile(&cli, &matching_profiles)?;
+    // Select environment
+    let resolved_all = ctx.resolve(&base_config);
+    let resolved = choose_environment(&cli, &base_config, &project_key, &resolved_all)?;
+    let env_name = resolved.environment.name.clone();
+    let profile = pick_profile(resolved, cli.profile.as_deref()).map_err(|e| e.to_string())?;
+    let project_config = effective_project_config(&base_config, resolved);
 
     // Determine local port
     let local_port = cli
         .port
-        .unwrap_or_else(|| get_local_port(&profile, &project_config));
+        .clone()
+        .unwrap_or_else(|| resolved.environment.port.clone());
 
     eprintln!(
-        "\n  \u{1F680} Connecting to {} via profile {}...\n",
-        project_config.name, profile
+        "\n  \u{1F680} Connecting to {} ({}) via profile {}...\n",
+        project_config.name, env_name, profile
     );
 
     // SSO pre-flight
@@ -186,6 +237,15 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     // Create AWS clients
     let clients = create_aws_clients(&profile, &project_config.region).await;
+
+    // The profile must sign in to the environment's account
+    if let Some(expected) = account_to_verify(resolved) {
+        eprintln!("  \u{1F50E} Checking AWS account...");
+        let actual = operations::caller_account_id(&clients)
+            .await
+            .map_err(|e| format!("Failed to check AWS account: {}", e))?;
+        operations::ensure_account(expected, &actual, &env_name).map_err(|e| e.to_string())?;
+    }
 
     // Check credentials
     eprintln!("  \u{1F511} Checking credentials...");
@@ -225,13 +285,14 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
             None
         };
 
-        run_rds_connect(&clients, &project_key, &profile, &project_config, &local_port, selected_database.as_deref()).await
+        run_rds_connect(&clients, &project_key, resolved, &profile, &project_config, &local_port, selected_database.as_deref()).await
     }
 }
 
 async fn run_rds_connect(
     clients: &connection_app_lib::aws::credentials::AwsClients,
     project_key: &str,
+    resolved: &ResolvedEnvironment,
     profile: &str,
     project_config: &ProjectConfig,
     local_port: &str,
@@ -300,7 +361,7 @@ async fn run_rds_connect(
             // the proxy mints its own on demand.
             let settings = ProxySettings {
                 db_user: iam_username.to_string(),
-                local_password: local_proxy_password(project_key, profile).await?,
+                local_password: local_proxy_password(project_key, resolved).await?,
                 auth: UpstreamAuth::IamOnly,
                 sdk_config,
             };
@@ -331,7 +392,7 @@ async fn run_rds_connect(
         if use_proxy {
             let settings = ProxySettings {
                 db_user: db_creds.username.clone(),
-                local_password: local_proxy_password(project_key, profile).await?,
+                local_password: local_proxy_password(project_key, resolved).await?,
                 auth: {
                     let password = db_creds.password;
                     let refetch = Some(SecretRefetch {
@@ -456,14 +517,17 @@ async fn run_rds_connect(
     Ok(())
 }
 
-async fn local_proxy_password(project_key: &str, profile: &str) -> Result<String, String> {
+async fn local_proxy_password(
+    project_key: &str,
+    resolved: &ResolvedEnvironment,
+) -> Result<String, String> {
     connection_app_lib::config::local_passwords::local_proxy_password(
         project_key,
-        profile,
-        &[profile.to_string()],
+        &resolved.environment.name,
+        &resolved.candidates,
     )
-        .await
-        .map_err(|e| format!("Failed to load the local proxy password: {}", e))
+    .await
+    .map_err(|e| format!("Failed to load the local proxy password: {}", e))
 }
 
 async fn run_service_connect(
@@ -716,11 +780,8 @@ fn run_command_reader<R: std::io::BufRead, W: std::io::Write>(
     }
 }
 
-fn select_project(
-    cli: &Cli,
-    configs: &HashMap<String, ProjectConfig>,
-    all_profiles: &[String],
-) -> Result<(String, ProjectConfig), String> {
+fn select_project(cli: &Cli, ctx: &Context) -> Result<(String, ProjectConfig), String> {
+    let configs = &ctx.configs;
     if let Some(ref project_name) = cli.project {
         // Direct project selection by key
         if let Some(config) = configs.get(project_name) {
@@ -735,12 +796,10 @@ fn select_project(
         return Err(format!("Project '{}' not found", project_name));
     }
 
-    // Filter to projects that have at least one matching profile
+    // Filter to projects that can be reached with at least one profile
     let mut available: Vec<(String, &ProjectConfig)> = configs
         .iter()
-        .filter(|(_key, config)| {
-            !get_profiles_for_project(all_profiles, config, configs).is_empty()
-        })
+        .filter(|(_key, config)| ctx.resolve(config).iter().any(|r| r.profile.is_some()))
         .map(|(key, config)| (key.clone(), config))
         .collect();
 
@@ -777,29 +836,92 @@ fn select_project(
     Ok((key, config.clone()))
 }
 
-fn select_profile(cli: &Cli, matching_profiles: &[String]) -> Result<String, String> {
-    if let Some(ref profile) = cli.profile {
-        if matching_profiles.contains(profile) {
-            return Ok(profile.clone());
+/// Pick the environment named by `--env` / `--profile`.
+///
+/// `--env` is an exact, case-sensitive match. `--profile` must be a candidate
+/// of the chosen environment; without `--env` it selects the first
+/// environment whose candidates contain it.
+fn select_environment<'a>(
+    project: &str,
+    resolved: &'a [ResolvedEnvironment],
+    env: Option<&str>,
+    profile: Option<&str>,
+) -> Result<&'a ResolvedEnvironment, String> {
+    if let Some(name) = env {
+        let found = find_environment(resolved, name).ok_or_else(|| {
+            let names: Vec<&str> = resolved.iter().map(|r| r.environment.name.as_str()).collect();
+            format!(
+                "Unknown environment '{}' for {}. Available: {}",
+                name,
+                project,
+                names.join(", ")
+            )
+        })?;
+        if let Some(p) = profile
+            && !found.candidates.iter().any(|c| c == p)
+        {
+            return Err(format!(
+                "Profile '{}' is not a profile for environment '{}'",
+                p, name
+            ));
         }
-        return Err(format!(
-            "Profile '{}' not found among matching profiles",
-            profile
-        ));
+        return Ok(found);
+    }
+    match profile {
+        Some(p) => resolved
+            .iter()
+            .find(|r| r.candidates.iter().any(|c| c == p))
+            .ok_or_else(|| format!("Profile '{}' does not belong to any environment of {}", p, project)),
+        None => Err("No --env or --profile given".to_string()),
+    }
+}
+
+/// Apply the flags, or ask. Environments with no profile are listed as
+/// disabled, with the reason.
+fn choose_environment<'a>(
+    cli: &Cli,
+    project: &ProjectConfig,
+    project_key: &str,
+    resolved: &'a [ResolvedEnvironment],
+) -> Result<&'a ResolvedEnvironment, String> {
+    if cli.env.is_some() || cli.profile.is_some() {
+        return select_environment(project_key, resolved, cli.env.as_deref(), cli.profile.as_deref());
     }
 
-    if matching_profiles.len() == 1 {
-        return Ok(matching_profiles[0].clone());
+    let label = |r: &ResolvedEnvironment| {
+        format!(
+            "{} — {}{}",
+            r.environment.name,
+            project.name,
+            account_suffix(&r.environment.account_id)
+        )
+    };
+    for r in resolved.iter().filter(|r| r.profile.is_none()) {
+        eprintln!(
+            "  {} (disabled: no AWS profile for account {})",
+            label(r),
+            r.environment.account_id
+        );
     }
-
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select environment (AWS profile)")
-        .items(matching_profiles)
-        .default(0)
-        .interact()
-        .map_err(|e| format!("Selection cancelled: {}", e))?;
-
-    Ok(matching_profiles[selection].clone())
+    let selectable: Vec<&ResolvedEnvironment> =
+        resolved.iter().filter(|r| r.profile.is_some()).collect();
+    match selectable.as_slice() {
+        [] => Err(format!(
+            "No matching AWS profiles found for project '{}'",
+            project_key
+        )),
+        [only] => Ok(only),
+        _ => {
+            let items: Vec<String> = selectable.iter().map(|r| label(r)).collect();
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select environment")
+                .items(&items)
+                .default(0)
+                .interact()
+                .map_err(|e| format!("Selection cancelled: {}", e))?;
+            Ok(selectable[selection])
+        }
+    }
 }
 
 fn mask_password(password: &str) -> String {
@@ -866,6 +988,7 @@ fn try_copy_to_clipboard(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use connection_app_lib::config::projects::Environment;
 
     /// Regression test: the command reader must terminate at EOF.
     ///
@@ -887,5 +1010,65 @@ mod tests {
             .expect("command reader did not terminate at EOF (busy-loop)");
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("s3cret"), "expected password output, got: {text}");
+    }
+
+    fn resolved(name: &str, profile: Option<&str>, candidates: &[&str]) -> ResolvedEnvironment {
+        ResolvedEnvironment {
+            environment: Environment {
+                name: name.into(),
+                account_id: "231030592327".into(),
+                port: "5460".into(),
+                rds_pattern: None,
+                region: None,
+                target_pattern: None,
+                ecs_cluster: None,
+                ecs_service: None,
+                bastion_pattern: None,
+            },
+            legacy: false,
+            profile: profile.map(String::from),
+            candidates: candidates.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    fn envs() -> Vec<ResolvedEnvironment> {
+        vec![
+            resolved("prod", Some("p1"), &["p1", "p2"]),
+            resolved("staging", Some("s1"), &["s1"]),
+            resolved("dev", None, &[]),
+        ]
+    }
+
+    #[test]
+    fn env_flag_exact_match() {
+        let e = envs();
+        let r = select_environment("covered", &e, Some("staging"), None).unwrap();
+        assert_eq!(r.environment.name, "staging");
+    }
+
+    #[test]
+    fn unknown_env_lists_available_names() {
+        let e = envs();
+        let err = select_environment("covered", &e, Some("Prod"), None).unwrap_err();
+        assert_eq!(
+            err,
+            "Unknown environment 'Prod' for covered. Available: prod, staging, dev"
+        );
+    }
+
+    #[test]
+    fn profile_flag_selects_its_environment() {
+        let e = envs();
+        let r = select_environment("covered", &e, None, Some("s1")).unwrap();
+        assert_eq!(r.environment.name, "staging");
+    }
+
+    #[test]
+    fn profile_not_in_env_is_error() {
+        let e = envs();
+        assert!(select_environment("covered", &e, Some("prod"), Some("s1")).is_err());
+        assert!(select_environment("covered", &e, None, Some("nope")).is_err());
+        let r = select_environment("covered", &e, Some("prod"), Some("p2")).unwrap();
+        assert_eq!(r.environment.name, "prod");
     }
 }
