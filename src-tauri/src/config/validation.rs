@@ -393,6 +393,8 @@ mod tests {
             multiplexed: None,
             ssh_username: None,
             ssh_key_path: None,
+            environments: None,
+            password_only: None,
         }
     }
 
@@ -528,6 +530,8 @@ mod tests {
             multiplexed: None,
             ssh_username: None,
             ssh_key_path: None,
+            environments: None,
+            password_only: None,
         }
     }
 
@@ -789,6 +793,8 @@ mod tests {
             multiplexed: None,
             ssh_username: Some("ubuntu".to_string()),
             ssh_key_path: Some("~/.ssh/id_rsa".to_string()),
+            environments: None,
+            password_only: None,
         }
     }
 
