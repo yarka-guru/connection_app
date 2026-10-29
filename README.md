@@ -114,7 +114,7 @@ connection-app-cli
 
 1. On first run with no projects configured, create one in `~/.connection-app/projects.json`
 2. Select a project
-3. Select an environment (resolved to an AWS profile by account ID)
+3. Select an environment (resolved to an AWS profile by account ID; the list shows `prod — <profile> (<account>)`, or `no profile`)
 4. SSO session is validated automatically (opens browser if needed)
 5. The tool retrieves credentials from Secrets Manager, finds a bastion instance, and starts native WebSocket port forwarding
 6. Use the displayed connection details with your database client (`psql`, `mysql`, pgAdmin, DBeaver, etc.)
@@ -139,6 +139,9 @@ Commands:
   projects    List configured projects
   profiles    List AWS profiles
 ```
+
+`--profile` without `--env` picks the environment whose account the profile
+reaches; if it reaches several environments of the project, pass `--env`.
 
 ## How It Works
 
@@ -250,21 +253,32 @@ works for everyone whatever their profiles are called.
 | `targetPattern`, `ecsCluster`, `ecsService`, `bastionPattern` | Optional overrides for service projects | `null` |
 
 The app finds the profile for an account in `~/.aws/config` (`sso_account_id`,
-or the account in `role_arn`; an account resolved by an STS lookup is
-cached in `~/.connection-app/profile-accounts.json`). With one match it is
+or the account in `role_arn`). For a profile whose config does not name its
+account (static keys, `credential_process`, a `source_profile` chain without
+`role_arn`), click **Detect account** on the profile in Settings → AWS
+Profiles, or on its "account unknown" row in the "Config needs updating"
+dialog: the app calls `sts:GetCallerIdentity` with that profile and caches the
+account in `~/.connection-app/profile-accounts.json` until the profile's
+section changes. With one match it is
 used. With several, the first is used until you pick one in the connection
 form; the choice is stored per account in `~/.connection-app/preferences.json`.
 With none, the environment is greyed out and offers "Create profile". Before
 the tunnel opens, the account of the credentials must equal `accountId`,
-otherwise the connection is refused. `preferences.json` and
-`profile-accounts.json` are local and never exported.
+otherwise the connection is refused. This check is skipped for legacy
+(unmigrated) projects, whose environments are profile names with no
+authoritative account; it applies once the project is migrated.
+`preferences.json` and `profile-accounts.json` are local and never exported.
 
 ### Authentication
 
 For PostgreSQL the project form offers three choices:
 
-- **Automatic** (default for new projects): the local auth proxy uses an IAM
-  token or the secret's password, whichever the database asks for.
+- **Automatic** (default for new projects): the DB user is the secret's
+  username, and the local auth proxy uses an IAM token or the secret's
+  password, whichever the database asks for. With no secret configured
+  (empty `secretPrefix` and no `secretPath`), it signs in as **IAM DB User**
+  (`iamUsername`) with an IAM token, exactly like IAM only. A configured secret
+  that is not found fails the connect; it never falls back to `iamUsername`.
 - **IAM only**: `authType: "iam"`.
 - **Password only**: `authType: "secrets"` with `passwordOnly: true`.
 

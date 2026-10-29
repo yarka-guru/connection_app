@@ -12,7 +12,13 @@ All notable changes to this project will be documented in this file.
   per account in `~/.connection-app/preferences.json`; with none the
   environment is greyed out with a "Create profile" action. Before the tunnel
   opens, the account of the credentials must equal the environment's
-  `accountId`.
+  `accountId`. The check is skipped for legacy (unmigrated) projects, whose
+  environments are profile names with no account.
+- "Detect account" (Settings → AWS Profiles, and "account unknown" rows in the
+  migration dialog) finds the account of a profile whose config does not name
+  it (static keys, `credential_process`, `source_profile` without `role_arn`)
+  with `sts:GetCallerIdentity` and caches it in
+  `~/.connection-app/profile-accounts.json`.
 - Per-project loading of `projects.json`: a broken project is shown with its
   errors and Edit / Edit JSON / Delete actions and does not hide the others.
   A file that is not valid JSON shows the line and column, a raw editor and
@@ -25,9 +31,13 @@ All notable changes to this project will be documented in this file.
   editor, Copy environments from another project, Duplicate project and inline
   validation.
 - Authentication choice for PostgreSQL: Automatic (default), IAM only,
-  Password only (`passwordOnly: true`).
+  Password only (`passwordOnly: true`). Automatic with no secret configured
+  (empty `secretPrefix`, no `secretPath`) signs in as the IAM DB User
+  (`iamUsername`) with an IAM token; a configured secret that is missing still
+  fails the connect.
 - CLI: `--env <NAME>`; `projects` prints environments, accounts, ports and
-  resolved profiles.
+  resolved profiles. `--profile` alone fails when the profile reaches several
+  environments of the project; pass `--env` then.
 
 ### Changed
 - The connection form, saved connections and `connect` use environment names
@@ -42,6 +52,9 @@ All notable changes to this project will be documented in this file.
 - One malformed project no longer hides every project.
 - Environments whose profile names do not match `profileFilter` (for example
   `aws configure sso` default names) are found by account.
+- Saving the form over a broken project, saving its JSON and deleting it back
+  up `projects.json` first. Edit JSON refuses JSON that is still not a valid
+  project and writes nothing.
 
 ### Notes
 - A migrated file still works in 3.7.x: the legacy `profileFilter`,
