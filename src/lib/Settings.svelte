@@ -557,6 +557,16 @@ const localErrors = $derived.by(() => {
   if (projectConnectionType === 'service' && projectRemotePort.trim() && parseRemotePort(projectRemotePort) === null) {
     errors.push({ field: 'remotePort', message: 'Remote port must be a number from 1 to 65535' })
   }
+  // MySQL "Password" is stored like Automatic, which signs in with IAM when no secret is set
+  if (
+    projectConnectionType === 'rds' &&
+    projectEngine === 'mysql' &&
+    projectAuthMode === 'password' &&
+    !projectSecretPrefix.trim() &&
+    !projectSecretPath.trim()
+  ) {
+    errors.push({ field: 'secretPrefix', message: 'Password needs Secret Prefix or Secret Path' })
+  }
   // Without environments a non-legacy project matches no profile and can never connect
   if (!projectIsLegacy && projectEnvironments.length === 0) {
     errors.push({ field: 'environments', message: 'Add at least one environment' })
