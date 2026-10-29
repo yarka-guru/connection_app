@@ -213,7 +213,7 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
 
     // Select environment
     let resolved_all = ctx.resolve(&base_config);
-    let resolved = choose_environment(&cli, &base_config, &project_key, &resolved_all)?;
+    let resolved = choose_environment(&cli, &project_key, &resolved_all)?;
     let env_name = resolved.environment.name.clone();
     let profile = pick_profile(resolved, cli.profile.as_deref()).map_err(|e| e.to_string())?;
     let project_config = effective_project_config(&base_config, resolved);
@@ -330,7 +330,8 @@ async fn run_rds_connect(
     .await
     .map_err(|e| format!("Failed to get RDS port: {}", e))?;
 
-    let auth_mode = project_config.auth_mode();
+    // Automatic with no secret configured signs in as iamUsername, like IAM only.
+    let auth_mode = project_config.connect_auth_mode();
 
     let use_proxy = project_config.uses_pg_auth_proxy();
     let rds_port_num: u16 = rds_port
@@ -406,7 +407,7 @@ async fn run_rds_connect(
                             password_field: project_config.secret_password_field.clone(),
                             fallback_secret: Some(fallback_secret.clone()),
                         }),
-                        key: format!("{}:{}", project_key, profile),
+                        key: format!("{}:{}", project_key, resolved.environment.name),
                     });
                     if auth_mode == AuthMode::PasswordOnly {
                         UpstreamAuth::PasswordOnly { password, refetch }
@@ -867,20 +868,46 @@ fn select_environment<'a>(
         }
         return Ok(found);
     }
-    match profile {
-        Some(p) => resolved
-            .iter()
-            .find(|r| r.candidates.iter().any(|c| c == p))
-            .ok_or_else(|| format!("Profile '{}' does not belong to any environment of {}", p, project)),
-        None => Err("No --env or --profile given".to_string()),
+    let Some(p) = profile else {
+        return Err("No --env or --profile given".to_string());
+    };
+    let matching: Vec<&ResolvedEnvironment> = resolved
+        .iter()
+        .filter(|r| r.candidates.iter().any(|c| c == p))
+        .collect();
+    match matching.as_slice() {
+        [] => Err(format!("Profile '{}' does not belong to any environment of {}", p, project)),
+        [only] => Ok(only),
+        several => {
+            let names: Vec<&str> = several.iter().map(|r| r.environment.name.as_str()).collect();
+            Err(format!(
+                "Profile '{}' reaches several environments of {} ({}); pass --env",
+                p,
+                project,
+                names.join(", ")
+            ))
+        }
     }
+}
+
+/// `prod — covered-prod (231030592327)`, or `dev — no profile (073813807522)`.
+/// A legacy environment is named after its profile, so the name is enough.
+fn environment_label(r: &ResolvedEnvironment) -> String {
+    if r.legacy {
+        return format!("{}{}", r.environment.name, account_suffix(&r.environment.account_id));
+    }
+    format!(
+        "{} — {}{}",
+        r.environment.name,
+        r.profile.as_deref().unwrap_or("no profile"),
+        account_suffix(&r.environment.account_id)
+    )
 }
 
 /// Apply the flags, or ask. Environments with no profile are listed as
 /// disabled, with the reason.
 fn choose_environment<'a>(
     cli: &Cli,
-    project: &ProjectConfig,
     project_key: &str,
     resolved: &'a [ResolvedEnvironment],
 ) -> Result<&'a ResolvedEnvironment, String> {
@@ -888,18 +915,10 @@ fn choose_environment<'a>(
         return select_environment(project_key, resolved, cli.env.as_deref(), cli.profile.as_deref());
     }
 
-    let label = |r: &ResolvedEnvironment| {
-        format!(
-            "{} — {}{}",
-            r.environment.name,
-            project.name,
-            account_suffix(&r.environment.account_id)
-        )
-    };
     for r in resolved.iter().filter(|r| r.profile.is_none()) {
         eprintln!(
             "  {} (disabled: no AWS profile for account {})",
-            label(r),
+            environment_label(r),
             r.environment.account_id
         );
     }
@@ -912,7 +931,7 @@ fn choose_environment<'a>(
         )),
         [only] => Ok(only),
         _ => {
-            let items: Vec<String> = selectable.iter().map(|r| label(r)).collect();
+            let items: Vec<String> = selectable.iter().map(|r| environment_label(r)).collect();
             let selection = Select::with_theme(&ColorfulTheme::default())
                 .with_prompt("Select environment")
                 .items(&items)
@@ -1061,6 +1080,36 @@ mod tests {
         let e = envs();
         let r = select_environment("covered", &e, None, Some("s1")).unwrap();
         assert_eq!(r.environment.name, "staging");
+    }
+
+    #[test]
+    fn profile_reaching_several_environments_needs_env() {
+        let e = vec![
+            resolved("prod", Some("admin"), &["admin", "p1"]),
+            resolved("prod-replica", Some("admin"), &["admin"]),
+            resolved("staging", Some("s1"), &["s1"]),
+        ];
+        let err = select_environment("covered", &e, None, Some("admin")).unwrap_err();
+        assert_eq!(
+            err,
+            "Profile 'admin' reaches several environments of covered (prod, prod-replica); pass --env"
+        );
+        let r = select_environment("covered", &e, Some("prod-replica"), Some("admin")).unwrap();
+        assert_eq!(r.environment.name, "prod-replica");
+        let r = select_environment("covered", &e, None, Some("p1")).unwrap();
+        assert_eq!(r.environment.name, "prod");
+    }
+
+    #[test]
+    fn environment_label_names_profile_and_account() {
+        assert_eq!(
+            environment_label(&resolved("prod", Some("p1"), &["p1"])),
+            "prod — p1 (231030592327)"
+        );
+        assert_eq!(
+            environment_label(&resolved("dev", None, &[])),
+            "dev — no profile (231030592327)"
+        );
     }
 
     #[test]
