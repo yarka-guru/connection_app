@@ -1,4 +1,5 @@
 use crate::config::aws_config::AwsProfile;
+use crate::config::project_file::write_atomic;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -68,19 +69,9 @@ pub async fn load_account_cache() -> AccountCache {
 }
 
 pub async fn save_account_cache(c: &AccountCache) {
-    let path = cache_path();
-
-    if let Some(parent) = path.parent()
-        && let Err(e) = tokio::fs::create_dir_all(parent).await
-    {
-        log::warn!("Failed to create account cache directory: {}", e);
-        return;
-    }
-
     match serde_json::to_string_pretty(c) {
         Ok(json) => {
-            // TODO(task4): use write_atomic
-            if let Err(e) = tokio::fs::write(&path, format!("{}\n", json)).await {
+            if let Err(e) = write_atomic(&cache_path(), &format!("{}\n", json)).await {
                 log::warn!("Failed to write account cache: {}", e);
             }
         }

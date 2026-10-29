@@ -1,5 +1,6 @@
 use crate::config::projects::ProjectConfig;
 use regex::Regex;
+use serde::Serialize;
 use std::sync::LazyLock;
 
 static REGION_PATTERN: LazyLock<Regex> =
@@ -37,6 +38,13 @@ const REQUIRED_FIELDS: &[&str] = &[
     "envPortMapping",
     "defaultPort",
 ];
+
+/// A problem with one field of a project.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FieldError {
+    pub field: String,
+    pub message: String,
+}
 
 pub struct ValidationResult {
     pub valid: bool,

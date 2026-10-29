@@ -1,3 +1,4 @@
+use crate::config::project_file;
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -204,7 +205,7 @@ fn get_config_dir() -> PathBuf {
         .join(CONFIG_DIR)
 }
 
-fn get_config_path() -> PathBuf {
+pub(crate) fn get_config_path() -> PathBuf {
     get_config_dir().join("projects.json")
 }
 
@@ -244,53 +245,26 @@ pub fn migrate_legacy_config() {
     );
 }
 
+/// Valid projects of `projects.json`. Broken projects are left out; a file
+/// that cannot be read as a whole is an error.
 pub async fn load_project_configs() -> Result<HashMap<String, ProjectConfig>, AppError> {
-    let path = get_config_path();
-
-    match tokio::fs::read_to_string(&path).await {
-        Ok(data) => {
-            let configs: HashMap<String, ProjectConfig> =
-                serde_json::from_str(&data).map_err(|e| AppError::Config(e.to_string()))?;
-            Ok(configs)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
-        Err(e) => Err(AppError::Config(format!(
-            "Failed to read project configs: {}",
-            e
-        ))),
-    }
+    Ok(project_file::load_project_file().await?.valid_configs())
 }
 
-async fn save_all_configs(configs: &HashMap<String, ProjectConfig>) -> Result<(), AppError> {
-    let path = get_config_path();
-
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            AppError::Config(format!("Failed to create config directory: {}", e))
-        })?;
-    }
-
-    let json = serde_json::to_string_pretty(configs)?;
-    tokio::fs::write(&path, format!("{}\n", json))
-        .await
-        .map_err(|e| AppError::Config(format!("Failed to write project configs: {}", e)))?;
-
-    Ok(())
-}
-
+/// Save one project. Broken projects in the file are written back unchanged.
 pub async fn save_project_config(
     key: &str,
     config: ProjectConfig,
 ) -> Result<(), AppError> {
-    let mut configs = load_project_configs().await?;
-    configs.insert(key.to_string(), config);
-    save_all_configs(&configs).await
+    let mut file = project_file::load_project_file().await?;
+    file.upsert(key, config);
+    project_file::write_project_file(&file).await
 }
 
 pub async fn delete_project_config(key: &str) -> Result<(), AppError> {
-    let mut configs = load_project_configs().await?;
-    configs.remove(key);
-    save_all_configs(&configs).await
+    let mut file = project_file::load_project_file().await?;
+    file.remove(key);
+    project_file::write_project_file(&file).await
 }
 
 /// Get profiles matching a project's filter from the full list of AWS profiles.
