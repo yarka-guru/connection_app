@@ -3,21 +3,48 @@ import { onMount, onDestroy } from 'svelte'
 import { trapFocus, safeTimeout } from './utils.js'
 import { themes, darkThemeNames, lightThemeNames } from './themes.js'
 import ThemeSwitcher from './ThemeSwitcher.svelte'
+import EnvironmentsEditor from './EnvironmentsEditor.svelte'
+import ProjectFileRepair from './ProjectFileRepair.svelte'
 
-const { onClose, invoke, onProjectsChanged, currentTheme = 'forest', onThemeChange, currentLightTheme = 'light', onLightThemeChange, scheme = 'dark', onSchemeChange, appVersion = '', initialProfileTemplate = null } = $props()
-// TODO(Task 13): when initialProfileTemplate is set, open the AWS profile editor prefilled with it.
+const {
+  onClose,
+  invoke,
+  onProjectsChanged,
+  onOpenMigration,
+  currentTheme = 'forest',
+  onThemeChange,
+  currentLightTheme = 'light',
+  onLightThemeChange,
+  scheme = 'dark',
+  onSchemeChange,
+  appVersion = '',
+  initialProfileTemplate = null,
+} = $props()
+
+// profileFilter written for new projects so 3.7.x lists no profiles for them
+const HIDE_FROM_LEGACY_FILTER = '__connection-app-3.8__'
+const NEW_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+const VALIDATE_DELAY_MS = 300
+
+const AUTH_HINTS = {
+  auto: 'Uses an IAM token or the password, whichever the database asks for',
+  iam: 'Signs in with an IAM token as the IAM DB user; never reads a secret',
+  password: 'Signs in with the password from the secret',
+}
 
 // Collapsible section state for project form
 let sectionGeneral = $state(true)
 let sectionDatabase = $state(true)
 let sectionService = $state(true)
-let sectionRouting = $state(false)
-let sectionPorts = $state(false)
+let sectionEnvironments = $state(true)
+let sectionAdvanced = $state(false)
 
 let activeTab = $state('projects')
 let awsProfiles = $state([])
 let rawConfig = $state('')
-let projectConfigs = $state({})
+let overview = $state({ projects: [], fileError: null, needsMigration: false, backups: [] })
+let entries = $state([])
+let accounts = $state([])
 let loading = $state(true)
 let saving = $state(false)
 let error = $state('')
@@ -36,16 +63,19 @@ let projectRegion = $state('us-east-1')
 let projectDatabase = $state('')
 let projectDatabases = $state([])
 let projectSecretPrefix = $state('')
-let projectAuthType = $state('secrets')
+let projectAuthMode = $state('auto')
 let projectIamUsername = $state('')
-let projectBaseConfig = {}
+let projectBaseConfig = $state.raw({})
 let projectRdsType = $state('cluster')
 let projectEngine = $state('postgres')
 let projectRdsPattern = $state('')
-let projectProfileFilter = $state('')
 let projectBastionPattern = $state('')
 let projectDefaultPort = $state('5432')
-let projectPortMappings = $state([])
+let projectEnvironments = $state([])
+let projectSecretPath = $state('')
+let projectSecretUsernameField = $state('')
+let projectSecretPasswordField = $state('')
+let projectMultiplexed = $state(true)
 
 // Service-specific state
 let projectConnectionType = $state('rds')
@@ -58,6 +88,15 @@ let projectEcsService = $state('')
 let projectSshUsername = $state('')
 let projectSshKeyPath = $state('')
 
+// Backend validation of the project form
+let validationErrors = $state([])
+let validationSeq = 0
+
+// Single-project JSON editor (for broken projects)
+let jsonEditKey = $state(null)
+let jsonEditText = $state('')
+let jsonEditError = $state('')
+
 // Delete confirmation state
 let deleteConfirmProfile = $state(null)
 let deleteConfirmProjectKey = $state(null)
@@ -65,27 +104,66 @@ let deleteConfirmProjectKey = $state(null)
 // Timeout cleanup
 let cancelSuccessTimeout = null
 
+const summaryByKey = $derived(new Map(overview.projects.map((p) => [p.key, p])))
+
+// accountId -> the profile the app resolves it to, for accounts with several
+const chosenProfiles = $derived.by(() => {
+  const chosen = {}
+  for (const p of overview.projects) {
+    for (const env of p.environments) {
+      if (env.profile && env.candidates.length > 1) chosen[env.environment.accountId] = env.profile
+    }
+  }
+  return chosen
+})
+
+// Other projects whose environments can be copied into the form
+const copySources = $derived(
+  entries
+    .filter((e) => e.config?.environments?.length > 0 && e.key !== editingProject?.key)
+    .map((e) => ({ key: e.key, name: e.config.name || e.key, environments: e.config.environments })),
+)
+
+// The project being edited was stored without environments (profile-name based)
+const projectIsLegacy = $derived(
+  !!editingProject && !editingProject.isNew && !(projectBaseConfig.environments?.length > 0),
+)
+
 onMount(() => {
   loadData()
+  if (initialProfileTemplate) {
+    activeTab = 'profiles'
+    openProfileFromTemplate(initialProfileTemplate)
+  }
 })
 
 async function loadData() {
   loading = true
   error = ''
   try {
-    const [profiles, config, configs] = await Promise.all([
+    const [profiles, config, projectsOverview, profileAccounts] = await Promise.all([
       invoke('read_aws_config'),
       invoke('get_raw_aws_config'),
-      invoke('list_project_configs'),
+      invoke('list_projects'),
+      invoke('list_aws_accounts'),
     ])
     awsProfiles = profiles
     rawConfig = config
-    projectConfigs = configs
+    overview = projectsOverview
+    accounts = profileAccounts
+    entries = projectsOverview.fileError ? [] : await invoke('list_project_entries')
   } catch (err) {
     error = `Failed to load settings: ${err}`
   } finally {
     loading = false
   }
+}
+
+// Reload this screen and the connection form after anything was saved
+async function afterSave(message) {
+  showSuccess(message)
+  await loadData()
+  onProjectsChanged?.()
 }
 
 function showSuccess(msg) {
@@ -106,6 +184,41 @@ function openEditProfile(profile) {
   editingProfile = profile
   editName = profile.name
   editContent = profile.rawContent
+}
+
+// The profile editor, pre-filled from an aws_profile_template result
+function openProfileFromTemplate(template) {
+  const lines = [
+    ['sso_start_url', template.ssoStartUrl],
+    ['sso_region', template.ssoRegion],
+    ['sso_account_id', template.ssoAccountId],
+    ['sso_role_name', template.ssoRoleName],
+    ['region', template.region],
+  ]
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key} = ${value}`)
+  editingProfile = { isNew: true, accountId: template.ssoAccountId }
+  editName = template.name || ''
+  editContent = `${lines.join('\n')}\n`
+}
+
+async function createProfileForAccount(accountId) {
+  error = ''
+  try {
+    openProfileFromTemplate(await invoke('aws_profile_template', { accountId }))
+  } catch (err) {
+    error = `Failed to prepare AWS profile: ${err}`
+  }
+}
+
+async function pickProfile(accountId, profile) {
+  error = ''
+  try {
+    await invoke('set_account_profile', { accountId, profile })
+    await afterSave(`Using ${profile} for account ${accountId}`)
+  } catch (err) {
+    error = `Failed to select profile: ${err}`
+  }
 }
 
 function closeEditModal() {
@@ -137,9 +250,8 @@ async function saveProfile() {
         ssoRoleName: null,
       },
     })
-    showSuccess('Profile saved successfully')
     closeEditModal()
-    await loadData()
+    await afterSave('Profile saved successfully')
   } catch (err) {
     error = `Failed to save profile: ${err}`
   } finally {
@@ -164,8 +276,7 @@ async function confirmDeleteProfile() {
   error = ''
   try {
     await invoke('delete_aws_profile', { profileName })
-    showSuccess('Profile deleted')
-    await loadData()
+    await afterSave('Profile deleted')
   } catch (err) {
     error = `Failed to delete profile: ${err}`
   } finally {
@@ -178,8 +289,7 @@ async function saveRawConfig() {
   error = ''
   try {
     await invoke('save_raw_aws_config', { content: rawConfig })
-    showSuccess('Config saved successfully')
-    await loadData()
+    await afterSave('Config saved successfully')
   } catch (err) {
     error = `Failed to save config: ${err}`
   } finally {
@@ -192,56 +302,45 @@ async function saveRawConfig() {
 function handleEngineChange(e) {
   projectEngine = e.target.value
   projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432'
+  // MySQL has no Automatic mode; PostgreSQL defaults to it
+  if (projectEngine === 'mysql' && projectAuthMode === 'auto') projectAuthMode = 'password'
+  if (projectEngine !== 'mysql' && projectAuthMode === 'password') projectAuthMode = 'auto'
 }
 
-function openAddProject() {
-  editingProject = { isNew: true }
-  projectKey = ''
-  projectName = ''
-  projectRegion = 'us-east-1'
-  projectDatabase = ''
-  projectDatabases = []
-  projectSecretPrefix = 'rds!cluster'
-  projectAuthType = 'secrets'
-  projectIamUsername = ''
-  projectBaseConfig = {}
-  projectRdsType = 'cluster'
-  projectEngine = 'postgres'
-  projectRdsPattern = ''
-  projectProfileFilter = ''
-  projectBastionPattern = ''
-  projectDefaultPort = '5432'
-  projectPortMappings = [{ suffix: '', port: '' }]
-  projectConnectionType = 'rds'
-  projectServiceType = 'vnc'
-  projectRemotePort = ''
-  projectTargetType = 'ec2-direct'
-  projectTargetPattern = ''
-  projectEcsCluster = ''
-  projectEcsService = ''
-  projectSshUsername = ''
-  projectSshKeyPath = ''
+function authModeOf(config) {
+  if (config.authType === 'iam') return 'iam'
+  if (config.passwordOnly === true || config.engine === 'mysql') return 'password'
+  return 'auto'
 }
 
-function openEditProject(key, config) {
-  editingProject = { isNew: false, key }
-  projectKey = key
-  projectName = config.name
-  projectRegion = config.region
+// Open the project form. mode: 'new' | 'edit' | 'duplicate'
+function openProjectForm(mode, key = '', source = null) {
+  const config = source ? $state.snapshot(source) : {}
+  const isNew = mode !== 'edit'
+  editingProject = { isNew, key: isNew ? null : key }
+  validationErrors = []
+  error = ''
+  sectionAdvanced = false
+
+  projectKey = mode === 'duplicate' ? `${key}-copy` : key
+  projectName = mode === 'duplicate' ? `${config.name} (copy)` : config.name || ''
+  projectBaseConfig = { ...config }
+  projectRegion = config.region || 'us-east-1'
   projectDatabase = config.database || ''
   projectDatabases = config.databases ? [...config.databases] : []
-  projectSecretPrefix = config.secretPrefix || ''
-  projectAuthType = config.authType || 'secrets'
+  projectSecretPrefix = source ? config.secretPrefix || '' : 'rds!cluster'
+  projectAuthMode = authModeOf(config)
   projectIamUsername = config.iamUsername || ''
-  projectBaseConfig = { ...config }
   projectRdsType = config.rdsType || 'cluster'
   projectEngine = config.engine || 'postgres'
   projectRdsPattern = config.rdsPattern || ''
-  projectProfileFilter = config.profileFilter || ''
   projectBastionPattern = config.bastionPattern || ''
-  projectDefaultPort = config.defaultPort
-  const mappings = Object.entries(config.envPortMapping || {}).map(([suffix, port]) => ({ suffix, port }))
-  projectPortMappings = mappings.length > 0 ? mappings : [{ suffix: '', port: '' }]
+  projectDefaultPort = config.defaultPort ? String(config.defaultPort) : '5432'
+  projectEnvironments = (config.environments || []).map((e) => ({ ...e, port: e.port == null ? '' : String(e.port) }))
+  projectSecretPath = config.secretPath || ''
+  projectSecretUsernameField = config.secretUsernameField || ''
+  projectSecretPasswordField = config.secretPasswordField || ''
+  projectMultiplexed = config.multiplexed !== false
   projectConnectionType = config.connectionType || 'rds'
   projectServiceType = config.serviceType || 'vnc'
   projectRemotePort = config.remotePort ? String(config.remotePort) : ''
@@ -255,14 +354,7 @@ function openEditProject(key, config) {
 
 function closeProjectModal() {
   editingProject = null
-}
-
-function addPortMapping() {
-  projectPortMappings = [...projectPortMappings, { suffix: '', port: '' }]
-}
-
-function removePortMapping(index) {
-  projectPortMappings = projectPortMappings.filter((_, i) => i !== index)
+  validationErrors = []
 }
 
 function addDatabase() {
@@ -277,59 +369,175 @@ function updateDatabase(index, value) {
   projectDatabases = projectDatabases.map((d, i) => i === index ? value : d)
 }
 
-async function saveProject() {
-  if (!projectKey.trim()) {
-    error = 'Project key is required'
-    return
-  }
-  if (!projectName.trim()) {
-    error = 'Project name is required'
-    return
-  }
+const OVERRIDE_KEYS = ['rdsPattern', 'region', 'targetPattern', 'ecsCluster', 'ecsService', 'bastionPattern']
 
-  const envPortMapping = {}
-  for (const m of projectPortMappings) {
-    if (m.suffix.trim() && m.port.trim()) {
-      envPortMapping[m.suffix.trim()] = m.port.trim()
-    }
-  }
+function optional(value) {
+  return value.trim() || null
+}
 
-  const isIam = projectConnectionType === 'rds' && projectAuthType === 'iam'
-  const config = {
-    ...projectBaseConfig,
+// An environment as saved: trimmed, empty overrides left out
+function cleanEnvironment(env) {
+  const out = { ...$state.snapshot(env) }
+  out.name = (out.name ?? '').trim()
+  out.accountId = (out.accountId ?? '').trim()
+  out.port = String(out.port ?? '').trim()
+  for (const key of OVERRIDE_KEYS) {
+    const value = typeof out[key] === 'string' ? out[key].trim() : out[key]
+    if (value) out[key] = value
+    else delete out[key]
+  }
+  return out
+}
+
+function parseRemotePort(value) {
+  const v = value.trim()
+  if (!/^\d+$/.test(v)) return null
+  const port = Number.parseInt(v, 10)
+  return port >= 1 && port <= 65535 ? port : null
+}
+
+// The project as the form would save it
+function buildConfig() {
+  const rds = projectConnectionType === 'rds'
+  const service = !rds
+  const base = projectBaseConfig
+  let authType = 'secrets'
+  let passwordOnly = null
+  if (rds && projectAuthMode === 'iam') authType = 'iam'
+  else if (rds && projectAuthMode === 'password' && projectEngine !== 'mysql') passwordOnly = true
+
+  const isNew = editingProject?.isNew
+  return {
+    ...base,
     name: projectName.trim(),
     region: projectRegion.trim(),
     connectionType: projectConnectionType,
-    database: projectConnectionType === 'rds' ? projectDatabase.trim() : '',
-    databases: projectConnectionType === 'rds' && projectDatabases.length > 0 ? projectDatabases.filter(d => d.trim()) : null,
-    secretPrefix: projectConnectionType === 'rds' ? projectSecretPrefix.trim() : '',
-    authType: isIam ? 'iam' : 'secrets',
-    iamUsername: isIam ? projectIamUsername.trim() || null : null,
-    rdsType: projectConnectionType === 'rds' ? projectRdsType : '',
-    engine: projectConnectionType === 'rds' ? projectEngine : null,
-    rdsPattern: projectConnectionType === 'rds' ? projectRdsPattern.trim() : '',
-    profileFilter: projectProfileFilter.trim() || null,
-    bastionPattern: projectBastionPattern.trim() || null,
-    envPortMapping,
+    database: rds ? projectDatabase.trim() : '',
+    databases: rds && projectDatabases.length > 0 ? projectDatabases.filter((d) => d.trim()) : null,
+    secretPrefix: rds ? projectSecretPrefix.trim() : '',
+    authType,
+    passwordOnly,
+    iamUsername: rds ? optional(projectIamUsername) : null,
+    rdsType: rds ? projectRdsType : '',
+    engine: rds ? projectEngine : null,
+    rdsPattern: rds ? projectRdsPattern.trim() : '',
+    secretPath: rds ? optional(projectSecretPath) : null,
+    secretUsernameField: rds ? optional(projectSecretUsernameField) : null,
+    secretPasswordField: rds ? optional(projectSecretPasswordField) : null,
+    // Absent means on; keep an explicit true as it was written
+    multiplexed: projectMultiplexed ? (base.multiplexed === true ? true : null) : false,
+    bastionPattern: optional(projectBastionPattern),
+    // Legacy profile matching: fixed for new projects, kept as stored otherwise
+    profileFilter: isNew ? HIDE_FROM_LEGACY_FILTER : (base.profileFilter ?? null),
+    envPortMapping: isNew ? {} : (base.envPortMapping ?? {}),
     defaultPort: projectDefaultPort.trim(),
-    serviceType: projectConnectionType === 'service' ? projectServiceType : null,
-    remotePort: projectConnectionType === 'service' && projectRemotePort.trim() ? parseInt(projectRemotePort.trim(), 10) : null,
-    targetType: projectConnectionType === 'service' ? projectTargetType : null,
-    targetPattern: projectConnectionType === 'service' && projectTargetType !== 'ecs-bastion' ? projectTargetPattern.trim() || null : null,
-    ecsCluster: projectConnectionType === 'service' && projectTargetType === 'ecs-bastion' ? projectEcsCluster.trim() || null : null,
-    ecsService: projectConnectionType === 'service' && projectTargetType === 'ecs-bastion' ? projectEcsService.trim() || null : null,
-    sshUsername: projectConnectionType === 'service' && projectServiceType === 'ssh' ? projectSshUsername.trim() || null : null,
-    sshKeyPath: projectConnectionType === 'service' && projectServiceType === 'ssh' ? projectSshKeyPath.trim() || null : null,
+    environments: projectEnvironments.length > 0 ? projectEnvironments.map(cleanEnvironment) : null,
+    serviceType: service ? projectServiceType : null,
+    remotePort: service ? parseRemotePort(projectRemotePort) : null,
+    targetType: service ? projectTargetType : null,
+    targetPattern: service && projectTargetType !== 'ecs-bastion' ? optional(projectTargetPattern) : null,
+    ecsCluster: service && projectTargetType === 'ecs-bastion' ? optional(projectEcsCluster) : null,
+    ecsService: service && projectTargetType === 'ecs-bastion' ? optional(projectEcsService) : null,
+    sshUsername: service && projectServiceType === 'ssh' ? optional(projectSshUsername) : null,
+    sshKeyPath: service && projectServiceType === 'ssh' ? optional(projectSshKeyPath) : null,
   }
+}
+
+// Checks the backend validator cannot make (the key is not part of the config)
+const localErrors = $derived.by(() => {
+  if (!editingProject) return []
+  const errors = []
+  if (editingProject.isNew) {
+    const key = projectKey.trim()
+    if (!key) errors.push({ field: 'key', message: 'Project key is required' })
+    else if (!NEW_KEY_PATTERN.test(key)) errors.push({ field: 'key', message: 'Use lowercase letters, digits and hyphens' })
+    else if (entries.some((e) => e.key === key)) errors.push({ field: 'key', message: 'A project with this key already exists' })
+  }
+  if (projectConnectionType === 'service' && projectRemotePort.trim() && parseRemotePort(projectRemotePort) === null) {
+    errors.push({ field: 'remotePort', message: 'Remote port must be a number from 1 to 65535' })
+  }
+  return errors
+})
+
+const formErrors = $derived.by(() => {
+  const local = new Set(localErrors.map((e) => e.field))
+  return [...localErrors, ...validationErrors.filter((e) => !local.has(e.field))]
+})
+
+const environmentErrors = $derived(formErrors.filter((e) => e.field.startsWith('environments[')))
+
+// Fields the form currently shows an input for
+const visibleFields = $derived.by(() => {
+  const fields = new Set(['key', 'name', 'region', 'defaultPort', 'connectionType'])
+  const add = (...names) => { for (const n of names) fields.add(n) }
+  if (projectConnectionType === 'rds') {
+    add('database', 'databases', 'rdsType', 'engine', 'rdsPattern', 'authType', 'passwordOnly')
+    add('secretPath', 'secretUsernameField', 'secretPasswordField')
+    if (projectAuthMode !== 'iam') add('secretPrefix')
+    if (projectAuthMode !== 'password') add('iamUsername')
+  } else {
+    add('serviceType', 'remotePort', 'targetType')
+    if (projectTargetType === 'ecs-bastion') add('ecsCluster', 'ecsService')
+    else add('targetPattern')
+    if (projectServiceType === 'ssh') add('sshUsername', 'sshKeyPath')
+  }
+  if (projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct') add('bastionPattern')
+  return fields
+})
+
+function isPlaced(field) {
+  return visibleFields.has(field)
+    || field.startsWith('environments[')
+    || (projectConnectionType === 'rds' && field.startsWith('databases['))
+    || (projectIsLegacy && field.startsWith('envPortMapping.'))
+}
+
+// Errors with no input to show them next to
+const unplacedErrors = $derived(formErrors.filter((e) => !isPlaced(e.field)))
+
+function fieldError(field) {
+  return formErrors.filter((e) => e.field === field).map((e) => e.message).join('; ')
+}
+
+function hasErrorIn(fields) {
+  return formErrors.some((e) => fields.some((f) => e.field === f || e.field.startsWith(`${f}[`) || e.field.startsWith(`${f}.`)))
+}
+
+const GENERAL_FIELDS = ['key', 'name', 'region', 'defaultPort', 'connectionType']
+const DATABASE_FIELDS = ['database', 'databases', 'authType', 'passwordOnly', 'iamUsername', 'secretPrefix', 'rdsType', 'engine', 'rdsPattern']
+const SERVICE_FIELDS = ['serviceType', 'remotePort', 'targetType', 'targetPattern', 'ecsCluster', 'ecsService', 'sshUsername', 'sshKeyPath']
+const ADVANCED_FIELDS = ['secretPath', 'secretUsernameField', 'secretPasswordField', 'bastionPattern']
+
+// A section with an error stays open so the error is visible
+const environmentsOpen = $derived(sectionEnvironments || environmentErrors.length > 0)
+const advancedOpen = $derived(sectionAdvanced || hasErrorIn(ADVANCED_FIELDS))
+
+// Validate 300 ms after the last change to the form
+$effect(() => {
+  if (!editingProject) return
+  const config = buildConfig()
+  const seq = ++validationSeq
+  return safeTimeout(async () => {
+    try {
+      const errors = await invoke('validate_project', { config })
+      if (seq === validationSeq) validationErrors = errors
+    } catch (err) {
+      if (seq === validationSeq) validationErrors = [{ field: '', message: `${err}` }]
+    }
+  }, VALIDATE_DELAY_MS)
+})
+
+async function saveProject() {
+  if (localErrors.length > 0) return
+  const key = editingProject.isNew ? projectKey.trim() : editingProject.key
+  const config = buildConfig()
 
   saving = true
   error = ''
   try {
-    await invoke('save_project_config', { key: projectKey.trim(), config })
-    showSuccess('Project saved')
+    await invoke('save_project_config', { key, config })
     closeProjectModal()
-    await loadData()
-    onProjectsChanged?.()
+    await afterSave('Project saved')
   } catch (err) {
     error = `Failed to save project: ${err}`
   } finally {
@@ -354,9 +562,7 @@ async function confirmDeleteProject() {
   error = ''
   try {
     await invoke('delete_project_config', { key })
-    showSuccess('Project deleted')
-    await loadData()
-    onProjectsChanged?.()
+    await afterSave('Project deleted')
   } catch (err) {
     error = `Failed to delete project: ${err}`
   } finally {
@@ -364,25 +570,76 @@ async function confirmDeleteProject() {
   }
 }
 
+// ---- Single-project JSON editor ----
+
+function openJsonEditor(entry) {
+  jsonEditKey = entry.key
+  jsonEditError = ''
+  try {
+    jsonEditText = JSON.stringify(JSON.parse(entry.raw), null, 2)
+  } catch {
+    jsonEditText = entry.raw ?? ''
+  }
+}
+
+function closeJsonEditor() {
+  jsonEditKey = null
+  jsonEditText = ''
+  jsonEditError = ''
+}
+
+async function saveProjectJson() {
+  try {
+    JSON.parse(jsonEditText)
+  } catch (err) {
+    jsonEditError = `Not valid JSON: ${err.message}`
+    return
+  }
+
+  const key = jsonEditKey
+  saving = true
+  jsonEditError = ''
+  try {
+    await invoke('save_project_raw', { key, json: jsonEditText })
+    await afterSave('Project saved')
+    const entry = entries.find((e) => e.key === key)
+    if (entry?.error) {
+      jsonEditError = `Saved, but the project still can't be read: ${entry.error}`
+    } else {
+      closeJsonEditor()
+    }
+  } catch (err) {
+    jsonEditError = `Failed to save project: ${err}`
+  } finally {
+    saving = false
+  }
+}
+
 // ---- Keyboard handlers ----
 
+// Escape closes the topmost dialog, then Settings itself
+function closeTopmost() {
+  if (editingProfile) closeEditModal()
+  else if (jsonEditKey) closeJsonEditor()
+  else if (editingProject) closeProjectModal()
+  else return false
+  return true
+}
+
 function handleOverlayKeydown(e) {
-  if (e.key === 'Escape') {
-    if (editingProfile || editingProject) {
-      closeEditModal()
-      closeProjectModal()
-    } else {
-      onClose()
-    }
-  }
+  if (e.key === 'Escape' && !closeTopmost()) onClose()
 }
 
 function handleEditOverlayKeydown(e) {
   if (e.key === 'Escape') {
     e.stopPropagation()
-    closeEditModal()
-    closeProjectModal()
+    closeTopmost()
   }
+}
+
+function handleDialogKeydown(e) {
+  e.stopPropagation()
+  if (e.key === 'Escape') closeTopmost()
 }
 
 onDestroy(() => {
@@ -454,7 +711,7 @@ onDestroy(() => {
         <div class="profiles-tab">
           <div class="profiles-header">
             <span class="profiles-path">~/.connection-app/projects.json</span>
-            <button class="btn-add" onclick={openAddProject}>
+            <button class="btn-add" onclick={() => openProjectForm('new')} disabled={!!overview.fileError}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
@@ -462,57 +719,109 @@ onDestroy(() => {
             </button>
           </div>
 
-          {#if Object.keys(projectConfigs).length === 0}
+          {#if overview.fileError}
+            <ProjectFileRepair
+              fileError={overview.fileError}
+              backups={overview.backups}
+              {invoke}
+              onRepaired={afterSave}
+            />
+          {:else if entries.length === 0}
             <div class="empty-state">
               <p>No projects configured</p>
               <p class="hint">Click "Add Project" to get started</p>
             </div>
           {:else}
             <div class="profiles-list">
-              {#each Object.entries(projectConfigs) as [key, config]}
-                <div class="profile-card">
+              {#each entries as entry (entry.key)}
+                {@const config = entry.config}
+                {@const summary = summaryByKey.get(entry.key)}
+                {@const name = config?.name || entry.key}
+                <div class="profile-card" class:broken={!!entry.error}>
                   <div class="profile-header">
-                    <span class="profile-name">{config.name}</span>
+                    <div class="project-title">
+                      <span class="profile-name">{name}</span>
+                      {#if entry.error}
+                        <span class="badge badge-broken">Broken</span>
+                      {:else if entry.problems.length > 0}
+                        <span class="badge badge-invalid">{entry.problems.length} {entry.problems.length === 1 ? 'problem' : 'problems'}</span>
+                      {/if}
+                      {#if summary && !summary.reachable && !entry.error}
+                        <span class="badge badge-no-access">No AWS access</span>
+                      {/if}
+                    </div>
                     <div class="profile-actions">
-                      <button class="btn-icon" onclick={() => openEditProject(key, config)} aria-label="Edit {config.name}">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                          <path d="M10.5 1.5l2 2-8 8H2.5v-2l8-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                      </button>
-                      <button class="btn-icon delete" onclick={() => requestDeleteProject(key)} aria-label="Delete {config.name}">
+                      {#if config}
+                        <button class="btn-icon" onclick={() => openProjectForm('edit', entry.key, config)} aria-label="Edit {name}" title="Edit">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M10.5 1.5l2 2-8 8H2.5v-2l8-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </button>
+                      {/if}
+                      {#if entry.error}
+                        <button class="btn-icon" onclick={() => openJsonEditor(entry)} aria-label="Edit JSON of {name}" title="Edit JSON">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M5 2.5C3.5 2.5 3.5 3.5 3.5 5S2 7 2 7s1.5 0 1.5 2 0 2 1.5 2M9 2.5c1.5 0 1.5 1 1.5 2.5S12 7 12 7s-1.5 0-1.5 2 0 2-1.5 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </button>
+                      {:else if config}
+                        <button class="btn-icon" onclick={() => openProjectForm('duplicate', entry.key, config)} aria-label="Duplicate {name}" title="Duplicate">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
+                            <path d="M9.5 4.5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v5.5a1 1 0 001 1h1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                          </svg>
+                        </button>
+                      {/if}
+                      <button class="btn-icon delete" onclick={() => requestDeleteProject(entry.key)} aria-label="Delete {name}" title="Delete">
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                           <path d="M2 4h10M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M11 4v8a1 1 0 01-1 1H4a1 1 0 01-1-1V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                       </button>
                     </div>
                   </div>
-                  {#if deleteConfirmProjectKey === key}
+                  {#if deleteConfirmProjectKey === entry.key}
                     <div class="inline-confirm">
-                      <span>Delete "{config.name}"?</span>
+                      <span>Delete "{name}"?</span>
                       <div class="inline-confirm-actions">
                         <button class="btn-inline-confirm" onclick={confirmDeleteProject}>Delete</button>
                         <button class="btn-inline-cancel" onclick={cancelDeleteProject}>Cancel</button>
                       </div>
                     </div>
                   {:else}
-                    <div class="profile-details">
-                      <span class="detail">{config.region}</span>
-                      {#if (config.connectionType || 'rds') === 'rds'}
-                        <span class="detail">{config.rdsType}</span>
-                        <span class="detail">{config.engine || 'postgres'}</span>
-                        <span class="detail">{config.database}</span>
-                      {:else}
-                        <span class="detail">{(config.serviceType || 'custom').toUpperCase()}</span>
-                        <span class="detail">{config.targetType || 'ec2-direct'}</span>
-                        {#if config.serviceType === 'ssh' && config.sshUsername}
-                          <span class="detail">{config.sshUsername}@</span>
+                    {#if entry.error}
+                      <p class="entry-error">{entry.error}</p>
+                    {/if}
+                    {#if entry.problems.length > 0}
+                      <ul class="problem-list">
+                        {#each entry.problems as problem}
+                          <li><span class="problem-field">{problem.field}</span> {problem.message}</li>
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if config}
+                      <div class="profile-details">
+                        <span class="detail">{config.region}</span>
+                        {#if (config.connectionType || 'rds') === 'rds'}
+                          <span class="detail">{config.rdsType}</span>
+                          <span class="detail">{config.engine || 'postgres'}</span>
+                          <span class="detail">{config.database}</span>
+                        {:else}
+                          <span class="detail">{(config.serviceType || 'custom').toUpperCase()}</span>
+                          <span class="detail">{config.targetType || 'ec2-direct'}</span>
+                          {#if config.serviceType === 'ssh' && config.sshUsername}
+                            <span class="detail">{config.sshUsername}@</span>
+                          {/if}
+                          {#if config.remotePort}
+                            <span class="detail">port {config.remotePort}</span>
+                          {/if}
                         {/if}
-                        {#if config.remotePort}
-                          <span class="detail">port {config.remotePort}</span>
+                        {#if config.environments?.length > 0}
+                          <span class="detail">{config.environments.map((e) => e.name).join(' · ')}</span>
+                        {:else}
+                          <span class="detail">legacy: AWS profile names</span>
                         {/if}
-                      {/if}
-                      <span class="detail">{Object.keys(config.envPortMapping || {}).length} port mappings</span>
-                    </div>
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               {/each}
@@ -703,13 +1012,453 @@ onDestroy(() => {
     </div>
   </div>
 
-  <!-- Edit AWS Profile Modal -->
+  {#snippet fieldErrorText(field)}
+    {@const message = fieldError(field)}
+    {#if message}<span class="field-error">{message}</span>{/if}
+  {/snippet}
+
+  <!-- Edit Project Modal -->
+  {#if editingProject}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="edit-modal-overlay" onclick={closeProjectModal} onkeydown={handleEditOverlayKeydown}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="edit-modal project-modal" onclick={(e) => e.stopPropagation()} onkeydown={handleDialogKeydown} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProject.isNew ? 'Add project' : 'Edit project'}>
+        <h3>{editingProject.isNew ? 'Add Project' : 'Edit Project'}</h3>
+
+        {#if error}
+          <div class="message error">{error}</div>
+        {/if}
+
+        <div class="project-form-scroll">
+          <!-- General Section -->
+          <div class="form-section">
+            <button type="button" class="section-header" onclick={() => sectionGeneral = !sectionGeneral} aria-expanded={sectionGeneral || hasErrorIn(GENERAL_FIELDS)}>
+              <svg class="section-chevron" class:open={sectionGeneral || hasErrorIn(GENERAL_FIELDS)} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="section-title">General</span>
+            </button>
+            {#if sectionGeneral || hasErrorIn(GENERAL_FIELDS)}
+              <div class="section-body">
+                <div class="form-group">
+                  <label for="project-key">Project Key</label>
+                  <input
+                    id="project-key"
+                    type="text"
+                    bind:value={projectKey}
+                    placeholder="my-project"
+                    disabled={!editingProject.isNew}
+                  />
+                  {#if editingProject.isNew}
+                    <span class="field-hint">Lowercase letters, digits, and hyphens</span>
+                  {/if}
+                  {@render fieldErrorText('key')}
+                </div>
+
+                <div class="form-group">
+                  <label for="project-name">Name</label>
+                  <input id="project-name" type="text" bind:value={projectName} placeholder="My Project" />
+                  {@render fieldErrorText('name')}
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="project-region">Region</label>
+                    <input id="project-region" type="text" bind:value={projectRegion} placeholder="us-east-1" />
+                    {@render fieldErrorText('region')}
+                  </div>
+                  <div class="form-group">
+                    <label for="project-default-port">Default Port</label>
+                    <input id="project-default-port" type="text" inputmode="numeric" bind:value={projectDefaultPort} placeholder={projectConnectionType === 'rds' ? '5432' : '5900'} />
+                    <span class="field-hint">First port suggested for a new environment</span>
+                    {@render fieldErrorText('defaultPort')}
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <span class="group-label" id="project-connection-type-label">Connection Type</span>
+                  <div class="type-toggle" role="group" aria-labelledby="project-connection-type-label">
+                    <button
+                      type="button"
+                      class="type-btn"
+                      class:active={projectConnectionType === 'rds'}
+                      aria-pressed={projectConnectionType === 'rds'}
+                      onclick={() => { projectConnectionType = 'rds'; if (projectDefaultPort === '5900' || projectDefaultPort === '3389') { projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432' } }}
+                    >RDS Database</button>
+                    <button
+                      type="button"
+                      class="type-btn"
+                      class:active={projectConnectionType === 'service'}
+                      aria-pressed={projectConnectionType === 'service'}
+                      onclick={() => { projectConnectionType = 'service'; if (projectDefaultPort === '5432' || projectDefaultPort === '3306') { projectDefaultPort = '5900' } }}
+                    >VNC/RDP Service</button>
+                  </div>
+                  {@render fieldErrorText('connectionType')}
+                </div>
+              </div>
+            {/if}
+          </div>
+
+          <!-- Database Section (RDS only) -->
+          {#if projectConnectionType === 'rds'}
+            {@const databaseOpen = sectionDatabase || hasErrorIn(DATABASE_FIELDS)}
+            <div class="form-section">
+              <button type="button" class="section-header" onclick={() => sectionDatabase = !sectionDatabase} aria-expanded={databaseOpen}>
+                <svg class="section-chevron" class:open={databaseOpen} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="section-title">Database</span>
+                <span class="section-badge">RDS</span>
+              </button>
+              {#if databaseOpen}
+                <div class="section-body">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="project-rds-type">RDS Type</label>
+                      <select id="project-rds-type" bind:value={projectRdsType}>
+                        <option value="cluster">Cluster (Aurora)</option>
+                        <option value="instance">Instance</option>
+                      </select>
+                      {@render fieldErrorText('rdsType')}
+                    </div>
+                    <div class="form-group">
+                      <label for="project-engine">Engine</label>
+                      <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
+                        <option value="postgres">PostgreSQL</option>
+                        <option value="mysql">MySQL</option>
+                      </select>
+                      {@render fieldErrorText('engine')}
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="project-rds-pattern">RDS Pattern</label>
+                    <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
+                    <span class="field-hint">Substring to match in cluster/instance name</span>
+                    {@render fieldErrorText('rdsPattern')}
+                  </div>
+
+                  <div class="form-group">
+                    <label for="project-database">Database</label>
+                    <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
+                    {@render fieldErrorText('database')}
+                  </div>
+
+                  <div class="form-group databases-group">
+                    <span class="group-label">
+                      Databases
+                      <span class="label-hint">(optional, for multi-database selection)</span>
+                    </span>
+                    {#if projectDatabases.length > 0}
+                      <div class="databases-list">
+                        {#each projectDatabases as db, i}
+                          <div class="database-entry">
+                            <input
+                              type="text"
+                              value={db}
+                              oninput={(e) => updateDatabase(i, e.target.value)}
+                              placeholder="database name"
+                              aria-label="Database {i + 1}"
+                            />
+                            <button type="button" class="btn-icon-remove" onclick={() => removeDatabase(i)} title="Remove database" aria-label="Remove database {i + 1}">
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            </button>
+                          </div>
+                          {@render fieldErrorText(`databases[${i}]`)}
+                        {/each}
+                      </div>
+                    {/if}
+                    {@render fieldErrorText('databases')}
+                    <button type="button" class="btn-add-item" onclick={addDatabase}>+ Add Database</button>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="project-auth-mode">Authentication</label>
+                    <select id="project-auth-mode" bind:value={projectAuthMode}>
+                      {#if projectEngine === 'mysql'}
+                        <option value="iam">IAM</option>
+                        <option value="password">Password</option>
+                      {:else}
+                        <option value="auto">Automatic</option>
+                        <option value="iam">IAM only</option>
+                        <option value="password">Password only</option>
+                      {/if}
+                    </select>
+                    {#if projectEngine !== 'mysql'}
+                      <span class="field-hint">{AUTH_HINTS[projectAuthMode]}</span>
+                    {/if}
+                    {@render fieldErrorText('authType')}
+                    {@render fieldErrorText('passwordOnly')}
+                  </div>
+
+                  <div class="form-row">
+                    {#if projectAuthMode !== 'iam'}
+                      <div class="form-group">
+                        <label for="project-secret-prefix">Secret Prefix</label>
+                        <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
+                        <span class="field-hint">Prefix to find credentials in Secrets Manager</span>
+                        {@render fieldErrorText('secretPrefix')}
+                      </div>
+                    {/if}
+                    {#if projectAuthMode !== 'password'}
+                      <div class="form-group">
+                        <label for="project-iam-username">IAM DB User</label>
+                        <input id="project-iam-username" type="text" bind:value={projectIamUsername} placeholder="db_user" />
+                        <span class="field-hint">
+                          {projectAuthMode === 'auto' ? 'Used only when no secret is configured' : 'Database role granted rds_iam; the token is valid for 15 minutes'}
+                        </span>
+                        {@render fieldErrorText('iamUsername')}
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Service Section (Service only) -->
+          {#if projectConnectionType === 'service'}
+            {@const serviceOpen = sectionService || hasErrorIn(SERVICE_FIELDS)}
+            <div class="form-section">
+              <button type="button" class="section-header" onclick={() => sectionService = !sectionService} aria-expanded={serviceOpen}>
+                <svg class="section-chevron" class:open={serviceOpen} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="section-title">Service</span>
+                <span class="section-badge">{(projectServiceType || 'vnc').toUpperCase()}</span>
+              </button>
+              {#if serviceOpen}
+                <div class="section-body">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="project-service-type">Service Type</label>
+                      <select id="project-service-type" bind:value={projectServiceType}>
+                        <option value="vnc">VNC</option>
+                        <option value="rdp">RDP</option>
+                        <option value="ssh">SSH</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                      {@render fieldErrorText('serviceType')}
+                    </div>
+                    <div class="form-group">
+                      <label for="project-remote-port">Remote Port</label>
+                      <input id="project-remote-port" type="text" inputmode="numeric" bind:value={projectRemotePort} placeholder={projectServiceType === 'rdp' ? '3389' : '5900'} />
+                      {@render fieldErrorText('remotePort')}
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="project-target-type">Target Type</label>
+                    <select id="project-target-type" bind:value={projectTargetType}>
+                      <option value="ec2-direct">EC2 Direct (SSM Agent)</option>
+                      <option value="ec2-bastion">EC2 via Bastion</option>
+                      <option value="ecs-bastion">ECS via Bastion</option>
+                    </select>
+                    <span class="field-hint">
+                      {#if projectTargetType === 'ec2-direct'}
+                        Connects directly to EC2 instance (requires SSM Agent)
+                      {:else if projectTargetType === 'ec2-bastion'}
+                        Tunnels through bastion to EC2 instance private IP
+                      {:else}
+                        Tunnels through bastion to ECS task private IP
+                      {/if}
+                    </span>
+                    {@render fieldErrorText('targetType')}
+                  </div>
+
+                  {#if projectTargetType === 'ec2-direct' || projectTargetType === 'ec2-bastion'}
+                    <div class="form-group">
+                      <label for="project-target-pattern">EC2 Name Pattern</label>
+                      <input id="project-target-pattern" type="text" bind:value={projectTargetPattern} placeholder="*my-server*" />
+                      <span class="field-hint">EC2 Name tag filter (supports * and ? wildcards)</span>
+                      {@render fieldErrorText('targetPattern')}
+                    </div>
+                  {:else}
+                    <div class="form-row">
+                      <div class="form-group">
+                        <label for="project-ecs-cluster">ECS Cluster</label>
+                        <input id="project-ecs-cluster" type="text" bind:value={projectEcsCluster} placeholder="my-cluster" />
+                        {@render fieldErrorText('ecsCluster')}
+                      </div>
+                      <div class="form-group">
+                        <label for="project-ecs-service">ECS Service</label>
+                        <input id="project-ecs-service" type="text" bind:value={projectEcsService} placeholder="my-service" />
+                        {@render fieldErrorText('ecsService')}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if projectServiceType === 'ssh'}
+                    <div class="form-row">
+                      <div class="form-group">
+                        <label for="project-ssh-username">SSH Username</label>
+                        <input id="project-ssh-username" type="text" bind:value={projectSshUsername} placeholder="ec2-user (default)" />
+                        <span class="field-hint">Remote SSH username (defaults to ec2-user)</span>
+                        {@render fieldErrorText('sshUsername')}
+                      </div>
+                      <div class="form-group">
+                        <label for="project-ssh-key-path">SSH Key Path</label>
+                        <input id="project-ssh-key-path" type="text" bind:value={projectSshKeyPath} placeholder="~/.ssh/id_rsa (optional)" />
+                        <span class="field-hint">Path to private key (uses SSH agent if empty)</span>
+                        {@render fieldErrorText('sshKeyPath')}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Environments Section -->
+          <div class="form-section">
+            <button type="button" class="section-header" onclick={() => sectionEnvironments = !sectionEnvironments} aria-expanded={environmentsOpen}>
+              <svg class="section-chevron" class:open={environmentsOpen} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="section-title">Environments</span>
+              {#if projectEnvironments.length > 0}
+                <span class="section-badge">{projectEnvironments.length}</span>
+              {/if}
+            </button>
+            {#if environmentsOpen}
+              <div class="section-body">
+                {#if projectIsLegacy}
+                  <div class="legacy-notice">
+                    <p>
+                      This project still finds AWS profiles by name
+                      {#if projectBaseConfig.profileFilter}(profiles starting with <code>{projectBaseConfig.profileFilter}</code>){/if}.
+                      Environments pick the profile by AWS account instead.
+                    </p>
+                    {#each Object.entries(projectBaseConfig.envPortMapping || {}) as [suffix, port]}
+                      {@const mappingError = fieldError(`envPortMapping.${suffix}`)}
+                      {#if mappingError}<span class="field-error">{mappingError}</span>{/if}
+                    {/each}
+                    {#if onOpenMigration}
+                      <button type="button" class="btn-add-small" onclick={() => { closeProjectModal(); onOpenMigration() }}>Update to environments</button>
+                    {/if}
+                  </div>
+                {/if}
+                <EnvironmentsEditor
+                  bind:environments={projectEnvironments}
+                  {accounts}
+                  projects={copySources}
+                  connectionType={projectConnectionType}
+                  defaultPort={projectDefaultPort}
+                  errors={environmentErrors}
+                  {chosenProfiles}
+                  onCreateProfile={createProfileForAccount}
+                  onPickProfile={pickProfile}
+                />
+              </div>
+            {/if}
+          </div>
+
+          <!-- Advanced Section (collapsed by default) -->
+          <div class="form-section">
+            <button type="button" class="section-header" onclick={() => sectionAdvanced = !sectionAdvanced} aria-expanded={advancedOpen}>
+              <svg class="section-chevron" class:open={advancedOpen} width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="section-title">Advanced</span>
+            </button>
+            {#if advancedOpen}
+              <div class="section-body">
+                {#if projectConnectionType === 'rds'}
+                  <div class="form-group">
+                    <label for="project-secret-path">Secret Path</label>
+                    <input id="project-secret-path" type="text" bind:value={projectSecretPath} placeholder="(optional) exact secret name or ARN" />
+                    <span class="field-hint">Used instead of searching by Secret Prefix</span>
+                    {@render fieldErrorText('secretPath')}
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="project-secret-username-field">Username Field</label>
+                      <input id="project-secret-username-field" type="text" bind:value={projectSecretUsernameField} placeholder="username" />
+                      {@render fieldErrorText('secretUsernameField')}
+                    </div>
+                    <div class="form-group">
+                      <label for="project-secret-password-field">Password Field</label>
+                      <input id="project-secret-password-field" type="text" bind:value={projectSecretPasswordField} placeholder="password" />
+                      {@render fieldErrorText('secretPasswordField')}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct'}
+                  <div class="form-group">
+                    <label for="project-bastion-pattern">Bastion Name Pattern</label>
+                    <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
+                    <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
+                    {@render fieldErrorText('bastionPattern')}
+                  </div>
+                {/if}
+
+                <div class="form-group checkbox-group">
+                  <label class="checkbox-label">
+                    <input type="checkbox" bind:checked={projectMultiplexed} />
+                    Multiplexed tunnel
+                  </label>
+                  <span class="field-hint">Several connections share one tunnel. Turn off only if a client misbehaves.</span>
+                </div>
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        {#if unplacedErrors.length > 0}
+          <ul class="form-errors">
+            {#each unplacedErrors as e}
+              <li>{e.message}</li>
+            {/each}
+          </ul>
+        {/if}
+
+        <div class="edit-actions">
+          <button class="btn-cancel" onclick={closeProjectModal}>Cancel</button>
+          <button class="btn-save" onclick={saveProject} disabled={saving || formErrors.length > 0}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Single-project JSON editor -->
+  {#if jsonEditKey}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="edit-modal-overlay" onclick={closeJsonEditor} onkeydown={handleEditOverlayKeydown}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="edit-modal project-modal" onclick={(e) => e.stopPropagation()} onkeydown={handleDialogKeydown} use:trapFocus role="dialog" tabindex="-1" aria-label="Edit project JSON">
+        <h3>Edit JSON: {jsonEditKey}</h3>
+        <div class="form-group">
+          <label for="project-json">Project</label>
+          <textarea id="project-json" class="json-editor" bind:value={jsonEditText} spellcheck="false"></textarea>
+          {#if jsonEditError}<span class="field-error">{jsonEditError}</span>{/if}
+        </div>
+        <div class="edit-actions">
+          <button class="btn-cancel" onclick={closeJsonEditor}>Cancel</button>
+          <button class="btn-save" onclick={saveProjectJson} disabled={saving}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Edit AWS Profile Modal (last, so it stacks above the project form) -->
   {#if editingProfile}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="edit-modal-overlay" onclick={closeEditModal} onkeydown={handleEditOverlayKeydown}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="edit-modal" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProfile.isNew ? 'Add profile' : 'Edit profile'}>
+      <div class="edit-modal" onclick={(e) => e.stopPropagation()} onkeydown={handleDialogKeydown} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProfile.isNew ? 'Add profile' : 'Edit profile'}>
         <h3>{editingProfile.isNew ? 'Add Profile' : 'Edit Profile'}</h3>
+
+        {#if error}
+          <div class="message error">{error}</div>
+        {/if}
+        {#if editingProfile.accountId}
+          <p class="template-note">Pre-filled for account {editingProfile.accountId} from your existing SSO settings. Name the profile, check the settings, then save.</p>
+        {/if}
 
         <div class="form-group">
           <label for="profile-name">Profile Name</label>
@@ -735,331 +1484,6 @@ onDestroy(() => {
         <div class="edit-actions">
           <button class="btn-cancel" onclick={closeEditModal}>Cancel</button>
           <button class="btn-save" onclick={saveProfile} disabled={saving}>
-            {saving ? 'Saving...' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Edit Project Modal -->
-  {#if editingProject}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="edit-modal-overlay" onclick={closeProjectModal} onkeydown={handleEditOverlayKeydown}>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="edit-modal project-modal" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProject.isNew ? 'Add project' : 'Edit project'}>
-        <h3>{editingProject.isNew ? 'Add Project' : 'Edit Project'}</h3>
-
-        <div class="project-form-scroll">
-          <!-- General Section (always open) -->
-          <div class="form-section">
-            <button type="button" class="section-header" onclick={() => sectionGeneral = !sectionGeneral}>
-              <svg class="section-chevron" class:open={sectionGeneral} width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span class="section-title">General</span>
-            </button>
-            {#if sectionGeneral}
-              <div class="section-body">
-                <div class="form-group">
-                  <label for="project-key">Project Key</label>
-                  <input
-                    id="project-key"
-                    type="text"
-                    bind:value={projectKey}
-                    placeholder="my-project"
-                    disabled={!editingProject.isNew}
-                  />
-                  {#if editingProject.isNew}
-                    <span class="field-hint">Lowercase letters, digits, and hyphens</span>
-                  {/if}
-                </div>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="project-name">Name</label>
-                    <input id="project-name" type="text" bind:value={projectName} placeholder="My Project" />
-                  </div>
-                  <div class="form-group">
-                    <label for="project-region">Region</label>
-                    <input id="project-region" type="text" bind:value={projectRegion} placeholder="us-east-1" />
-                  </div>
-                </div>
-
-                <div class="form-group">
-                  <label for="project-connection-type">Connection Type</label>
-                  <div class="type-toggle">
-                    <button
-                      type="button"
-                      class="type-btn"
-                      class:active={projectConnectionType === 'rds'}
-                      onclick={() => { projectConnectionType = 'rds'; if (projectDefaultPort === '5900' || projectDefaultPort === '3389') { projectDefaultPort = projectEngine === 'mysql' ? '3306' : '5432' } }}
-                    >RDS Database</button>
-                    <button
-                      type="button"
-                      class="type-btn"
-                      class:active={projectConnectionType === 'service'}
-                      onclick={() => { projectConnectionType = 'service'; if (projectDefaultPort === '5432' || projectDefaultPort === '3306') { projectDefaultPort = '5900' } }}
-                    >VNC/RDP Service</button>
-                  </div>
-                </div>
-              </div>
-            {/if}
-          </div>
-
-          <!-- Database Section (RDS only) -->
-          {#if projectConnectionType === 'rds'}
-            <div class="form-section">
-              <button type="button" class="section-header" onclick={() => sectionDatabase = !sectionDatabase}>
-                <svg class="section-chevron" class:open={sectionDatabase} width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span class="section-title">Database</span>
-                <span class="section-badge">RDS</span>
-              </button>
-              {#if sectionDatabase}
-                <div class="section-body">
-                  <div class="form-row">
-                    <div class="form-group">
-                      <label for="project-database">Database</label>
-                      <input id="project-database" type="text" bind:value={projectDatabase} placeholder="mydb" />
-                    </div>
-                    <div class="form-group">
-                      <label for="project-auth-type">Authentication</label>
-                      <select id="project-auth-type" bind:value={projectAuthType}>
-                        <option value="secrets">Secrets Manager</option>
-                        <option value="iam">IAM database auth</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div class="form-row">
-                    {#if projectAuthType === 'iam'}
-                      <div class="form-group">
-                        <label for="project-iam-username">IAM DB User</label>
-                        <input id="project-iam-username" type="text" bind:value={projectIamUsername} placeholder="db_user" />
-                        <span class="field-hint">Database role granted rds_iam; the token is valid for 15 minutes</span>
-                      </div>
-                    {:else}
-                      <div class="form-group">
-                        <label for="project-secret-prefix">Secret Prefix</label>
-                        <input id="project-secret-prefix" type="text" bind:value={projectSecretPrefix} placeholder="rds!cluster" />
-                        <span class="field-hint">Prefix to find credentials in Secrets Manager</span>
-                      </div>
-                    {/if}
-                  </div>
-
-                  <div class="form-group databases-group">
-                    <label>
-                      Databases
-                      <span class="label-hint">(optional, for multi-database selection)</span>
-                    </label>
-                    {#if projectDatabases.length > 0}
-                      <div class="databases-list">
-                        {#each projectDatabases as db, i}
-                          <div class="database-entry">
-                            <input
-                              type="text"
-                              value={db}
-                              oninput={(e) => updateDatabase(i, e.target.value)}
-                              placeholder="database name"
-                            />
-                            <button type="button" class="btn-icon-remove" onclick={() => removeDatabase(i)} title="Remove database">
-                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                            </button>
-                          </div>
-                        {/each}
-                      </div>
-                    {/if}
-                    <button type="button" class="btn-add-item" onclick={addDatabase}>+ Add Database</button>
-                  </div>
-
-                  <div class="form-row">
-                    <div class="form-group">
-                      <label for="project-rds-type">RDS Type</label>
-                      <select id="project-rds-type" bind:value={projectRdsType}>
-                        <option value="cluster">Cluster (Aurora)</option>
-                        <option value="instance">Instance</option>
-                      </select>
-                    </div>
-                    <div class="form-group">
-                      <label for="project-engine">Engine</label>
-                      <select id="project-engine" value={projectEngine} onchange={handleEngineChange}>
-                        <option value="postgres">PostgreSQL</option>
-                        <option value="mysql">MySQL</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div class="form-group">
-                    <label for="project-rds-pattern">RDS Pattern</label>
-                    <input id="project-rds-pattern" type="text" bind:value={projectRdsPattern} placeholder="-rds-aurora" />
-                    <span class="field-hint">Substring to match in cluster/instance name</span>
-                  </div>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- Service Section (Service only) -->
-          {#if projectConnectionType === 'service'}
-            <div class="form-section">
-              <button type="button" class="section-header" onclick={() => sectionService = !sectionService}>
-                <svg class="section-chevron" class:open={sectionService} width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span class="section-title">Service</span>
-                <span class="section-badge">{(projectServiceType || 'vnc').toUpperCase()}</span>
-              </button>
-              {#if sectionService}
-                <div class="section-body">
-                  <div class="form-row">
-                    <div class="form-group">
-                      <label for="project-service-type">Service Type</label>
-                      <select id="project-service-type" bind:value={projectServiceType}>
-                        <option value="vnc">VNC</option>
-                        <option value="rdp">RDP</option>
-                        <option value="ssh">SSH</option>
-                        <option value="custom">Custom</option>
-                      </select>
-                    </div>
-                    <div class="form-group">
-                      <label for="project-remote-port">Remote Port</label>
-                      <input id="project-remote-port" type="text" bind:value={projectRemotePort} placeholder={projectServiceType === 'rdp' ? '3389' : '5900'} />
-                    </div>
-                  </div>
-
-                  <div class="form-group">
-                    <label for="project-target-type">Target Type</label>
-                    <select id="project-target-type" bind:value={projectTargetType}>
-                      <option value="ec2-direct">EC2 Direct (SSM Agent)</option>
-                      <option value="ec2-bastion">EC2 via Bastion</option>
-                      <option value="ecs-bastion">ECS via Bastion</option>
-                    </select>
-                    <span class="field-hint">
-                      {#if projectTargetType === 'ec2-direct'}
-                        Connects directly to EC2 instance (requires SSM Agent)
-                      {:else if projectTargetType === 'ec2-bastion'}
-                        Tunnels through bastion to EC2 instance private IP
-                      {:else}
-                        Tunnels through bastion to ECS task private IP
-                      {/if}
-                    </span>
-                  </div>
-
-                  {#if projectTargetType === 'ec2-direct' || projectTargetType === 'ec2-bastion'}
-                    <div class="form-group">
-                      <label for="project-target-pattern">EC2 Name Pattern</label>
-                      <input id="project-target-pattern" type="text" bind:value={projectTargetPattern} placeholder="*my-server*" />
-                      <span class="field-hint">EC2 Name tag filter (supports * and ? wildcards)</span>
-                    </div>
-                  {:else}
-                    <div class="form-row">
-                      <div class="form-group">
-                        <label for="project-ecs-cluster">ECS Cluster</label>
-                        <input id="project-ecs-cluster" type="text" bind:value={projectEcsCluster} placeholder="my-cluster" />
-                      </div>
-                      <div class="form-group">
-                        <label for="project-ecs-service">ECS Service</label>
-                        <input id="project-ecs-service" type="text" bind:value={projectEcsService} placeholder="my-service" />
-                      </div>
-                    </div>
-                  {/if}
-
-                  {#if projectServiceType === 'ssh'}
-                    <div class="form-row">
-                      <div class="form-group">
-                        <label for="project-ssh-username">SSH Username</label>
-                        <input id="project-ssh-username" type="text" bind:value={projectSshUsername} placeholder="ec2-user (default)" />
-                        <span class="field-hint">Remote SSH username (defaults to ec2-user)</span>
-                      </div>
-                      <div class="form-group">
-                        <label for="project-ssh-key-path">SSH Key Path</label>
-                        <input id="project-ssh-key-path" type="text" bind:value={projectSshKeyPath} placeholder="~/.ssh/id_rsa (optional)" />
-                        <span class="field-hint">Path to private key (uses SSH agent if empty)</span>
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- AWS Routing Section (collapsed by default) -->
-          <div class="form-section">
-            <button type="button" class="section-header" onclick={() => sectionRouting = !sectionRouting}>
-              <svg class="section-chevron" class:open={sectionRouting} width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span class="section-title">AWS Routing</span>
-            </button>
-            {#if sectionRouting}
-              <div class="section-body">
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="project-profile-filter">AWS Profile Filter</label>
-                    <input id="project-profile-filter" type="text" bind:value={projectProfileFilter} placeholder="(optional)" />
-                    <span class="field-hint">Only show profiles containing this text</span>
-                  </div>
-                  <div class="form-group">
-                    <label for="project-default-port">Default Port</label>
-                    <input id="project-default-port" type="text" bind:value={projectDefaultPort} placeholder={projectConnectionType === 'rds' ? '5432' : '5900'} />
-                  </div>
-                </div>
-
-                {#if projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct'}
-                  <div class="form-group">
-                    <label for="project-bastion-pattern">Bastion Name Pattern</label>
-                    <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
-                    <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
-                  </div>
-                {/if}
-              </div>
-            {/if}
-          </div>
-
-          <!-- Per-Environment Ports Section (collapsed by default) -->
-          <div class="form-section">
-            <button type="button" class="section-header" onclick={() => sectionPorts = !sectionPorts}>
-              <svg class="section-chevron" class:open={sectionPorts} width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span class="section-title">Per-Environment Ports</span>
-              {#if projectPortMappings.filter(m => m.suffix.trim() && m.port.trim()).length > 0}
-                <span class="section-badge">{projectPortMappings.filter(m => m.suffix.trim() && m.port.trim()).length}</span>
-              {/if}
-            </button>
-            {#if sectionPorts}
-              <div class="section-body">
-                <span class="field-hint" style="margin-bottom: 10px; display: block;">Override the default port per AWS profile. Suffix matches the end of profile name.</span>
-                <div class="port-mappings">
-                  <div class="port-mappings-header">
-                    <div class="port-column-headers">
-                      <span class="port-col-header">Profile Suffix</span>
-                      <span class="port-col-header">Local Port</span>
-                    </div>
-                    <button class="btn-add-small" onclick={addPortMapping} type="button">+ Add</button>
-                  </div>
-                  {#each projectPortMappings as mapping, i}
-                    <div class="port-mapping-row">
-                      <input type="text" bind:value={mapping.suffix} placeholder="profile-suffix" />
-                      <input type="text" bind:value={mapping.port} placeholder="port" />
-                      <button class="btn-remove" onclick={() => removePortMapping(i)} type="button" aria-label="Remove mapping">
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                          <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                        </svg>
-                      </button>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-        <div class="edit-actions">
-          <button class="btn-cancel" onclick={closeProjectModal}>Cancel</button>
-          <button class="btn-save" onclick={saveProject} disabled={saving}>
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -1228,8 +1652,13 @@ onDestroy(() => {
     background: rgba(var(--accent-primary-rgb), 0.15);
   }
 
-  .btn-add:active {
+  .btn-add:active:not(:disabled) {
     transform: var(--press-scale);
+  }
+
+  .btn-add:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .empty-state {
@@ -1270,6 +1699,61 @@ onDestroy(() => {
   .profile-name {
     font-weight: 500;
     color: var(--text-primary);
+  }
+
+  .profile-card.broken {
+    border-color: rgba(var(--color-error-rgb), 0.35);
+  }
+
+  .project-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .badge-broken {
+    color: var(--color-error-soft);
+    background: rgba(var(--color-error-rgb), 0.15);
+  }
+
+  .badge-invalid {
+    color: var(--color-warning, #e0a63a);
+    background: rgba(var(--color-warning-rgb, 228, 185, 88), 0.15);
+  }
+
+  .badge-no-access {
+    color: #9e9ea7;
+    background: rgba(var(--glass-rgb), 0.08);
+  }
+
+  .entry-error {
+    margin: 0 0 8px;
+    font-size: 0.75rem;
+    color: var(--color-error-soft);
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    word-break: break-word;
+  }
+
+  .problem-list {
+    margin: 0 0 8px;
+    padding-left: 18px;
+    font-size: 0.75rem;
+    color: var(--color-warning, #e0a63a);
+  }
+
+  .problem-field {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    color: #9e9ea7;
   }
 
   .profile-actions {
@@ -1441,7 +1925,7 @@ onDestroy(() => {
   }
 
   .edit-modal.project-modal {
-    width: 480px;
+    width: 560px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
@@ -1518,6 +2002,79 @@ onDestroy(() => {
     font-size: 0.7rem;
     color: var(--text-inactive);
     margin-top: 4px;
+  }
+
+  .field-error {
+    display: block;
+    font-size: 0.72rem;
+    color: var(--color-error-soft);
+    margin-top: 4px;
+  }
+
+  .group-label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-hover);
+    margin-bottom: 8px;
+  }
+
+  .form-group .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 0;
+    cursor: pointer;
+  }
+
+  .form-group .checkbox-label input {
+    width: auto;
+    margin: 0;
+    accent-color: var(--accent-primary);
+  }
+
+  .legacy-notice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border-radius: 8px;
+    background: rgba(var(--color-warning-rgb, 228, 185, 88), 0.08);
+    border: 1px solid rgba(var(--color-warning-rgb, 228, 185, 88), 0.25);
+  }
+
+  .legacy-notice p {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--text-primary);
+  }
+
+  .legacy-notice code {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.75rem;
+  }
+
+  .form-errors {
+    margin: 0 0 4px;
+    padding: 8px 12px 8px 28px;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    color: var(--color-error-soft);
+    background: rgba(var(--color-error-rgb), 0.08);
+  }
+
+  .json-editor {
+    min-height: 280px;
+  }
+
+  .template-note {
+    margin: 0 0 16px;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: #9e9ea7;
   }
 
   .type-toggle {
@@ -1618,32 +2175,6 @@ onDestroy(() => {
     border-top: 1px solid rgba(var(--glass-rgb), 0.06);
   }
 
-  .port-mappings {
-    margin-bottom: 0;
-  }
-
-  .port-mappings-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-
-  .port-column-headers {
-    display: flex;
-    gap: 8px;
-    flex: 1;
-  }
-
-  .port-col-header {
-    flex: 1;
-    font-size: 0.7rem;
-    font-weight: 500;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
   .btn-add-small {
     padding: 4px 10px;
     font-size: 0.75rem;
@@ -1658,44 +2189,6 @@ onDestroy(() => {
 
   .btn-add-small:hover {
     background: rgba(var(--accent-primary-rgb), 0.15);
-  }
-
-  .port-mapping-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 6px;
-    align-items: center;
-  }
-
-  .port-mapping-row input {
-    flex: 1;
-    background: var(--input-bg);
-    border: 1px solid rgba(var(--glass-rgb), 0.1);
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-size: 0.8rem;
-    color: var(--text-primary);
-    outline: none;
-  }
-
-  .port-mapping-row input:focus {
-    border-color: var(--accent-primary);
-  }
-
-  .btn-remove {
-    padding: 6px;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background-color 0.2s, color 0.2s;
-    flex-shrink: 0;
-  }
-
-  .btn-remove:hover {
-    background: rgba(var(--color-error-rgb), 0.1);
-    color: var(--color-error-soft);
   }
 
   .edit-actions {
