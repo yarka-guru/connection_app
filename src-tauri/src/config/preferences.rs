@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Preferences {
-    /// Map of "project_key:profile" → preferred bastion instance ID
+    /// Map of "project_key:environment" → preferred bastion instance ID
     #[serde(default)]
     pub bastion_preferences: HashMap<String, String>,
     /// Map of AWS account ID → profile chosen for it
@@ -53,19 +53,26 @@ pub async fn save_preferences(prefs: &Preferences) {
 pub fn get_preferred_bastion<'a>(
     prefs: &'a Preferences,
     project_key: &str,
-    profile: &str,
+    environment: &str,
+    legacy_profiles: &[String],
 ) -> Option<&'a str> {
-    let key = format!("{}:{}", project_key, profile);
-    prefs.bastion_preferences.get(&key).map(|s| s.as_str())
+    std::iter::once(environment)
+        .chain(legacy_profiles.iter().map(String::as_str))
+        .find_map(|name| {
+            prefs
+                .bastion_preferences
+                .get(&format!("{}:{}", project_key, name))
+        })
+        .map(|s| s.as_str())
 }
 
 pub fn set_preferred_bastion(
     prefs: &mut Preferences,
     project_key: &str,
-    profile: &str,
+    environment: &str,
     instance_id: &str,
 ) {
-    let key = format!("{}:{}", project_key, profile);
+    let key = format!("{}:{}", project_key, environment);
     prefs
         .bastion_preferences
         .insert(key, instance_id.to_string());
@@ -91,6 +98,28 @@ mod tests {
         set_account_profile(&mut p, "111111111111", "a");
         set_account_profile(&mut p, "111111111111", "b");
         assert_eq!(get_account_profile(&p, "111111111111"), Some("b"));
+    }
+
+    #[test]
+    fn bastion_preference_falls_back_to_profile_key() {
+        let mut p = Preferences::default();
+        set_preferred_bastion(&mut p, "covered", "covered-dev", "i-old");
+        let legacy = vec!["covered-dev".to_string()];
+        assert_eq!(
+            get_preferred_bastion(&p, "covered", "dev", &legacy),
+            Some("i-old")
+        );
+        assert_eq!(get_preferred_bastion(&p, "covered", "dev", &[]), None);
+        // The environment key wins once written, and the old key is untouched.
+        set_preferred_bastion(&mut p, "covered", "dev", "i-new");
+        assert_eq!(
+            get_preferred_bastion(&p, "covered", "dev", &legacy),
+            Some("i-new")
+        );
+        assert_eq!(
+            get_preferred_bastion(&p, "covered", "covered-dev", &legacy),
+            Some("i-old")
+        );
     }
 
     #[test]

@@ -608,7 +608,12 @@ impl TunnelManager {
 
         self.emit_status("Finding bastion instance...", Some(connection_id));
         let prefs = preferences::load_preferences().await;
-        let preferred = preferences::get_preferred_bastion(&prefs, project_key, profile)
+        let preferred = preferences::get_preferred_bastion(
+            &prefs,
+            project_key,
+            profile,
+            &[profile.to_string()],
+        )
             .map(|s| s.to_string());
         let instance_id = operations::find_bastion_instance(
             clients,
@@ -694,7 +699,7 @@ impl TunnelManager {
                     // The token above only proves the credential chain works;
                     // the proxy mints its own on demand.
                     let local_password =
-                        local_passwords::local_proxy_password(project_key, profile).await?;
+                        local_passwords::local_proxy_password(project_key, profile, &[profile.to_string()]).await?;
                     let settings = ProxySettings {
                         db_user: iam_username.to_string(),
                         local_password: local_password.clone(),
@@ -729,7 +734,7 @@ impl TunnelManager {
                 }
                 if use_proxy {
                     let local_password =
-                        local_passwords::local_proxy_password(project_key, profile).await?;
+                        local_passwords::local_proxy_password(project_key, profile, &[profile.to_string()]).await?;
                     let settings = ProxySettings {
                         db_user: credentials.username.clone(),
                         local_password: local_password.clone(),
@@ -840,7 +845,12 @@ impl TunnelManager {
             "ec2-bastion" => {
                 self.emit_status("Finding bastion instance...", Some(connection_id));
                 let prefs = preferences::load_preferences().await;
-                let preferred = preferences::get_preferred_bastion(&prefs, project_key, profile)
+                let preferred = preferences::get_preferred_bastion(
+            &prefs,
+            project_key,
+            profile,
+            &[profile.to_string()],
+        )
                     .map(|s| s.to_string());
                 let bastion_id = operations::find_bastion_instance(
                     clients,
@@ -887,7 +897,12 @@ impl TunnelManager {
 
                 self.emit_status("Finding bastion instance...", Some(connection_id));
                 let prefs = preferences::load_preferences().await;
-                let preferred = preferences::get_preferred_bastion(&prefs, project_key, profile)
+                let preferred = preferences::get_preferred_bastion(
+            &prefs,
+            project_key,
+            profile,
+            &[profile.to_string()],
+        )
                     .map(|s| s.to_string());
                 let bastion_id = operations::find_bastion_instance(
                     clients,

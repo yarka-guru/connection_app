@@ -457,7 +457,11 @@ async fn run_rds_connect(
 }
 
 async fn local_proxy_password(project_key: &str, profile: &str) -> Result<String, String> {
-    connection_app_lib::config::local_passwords::local_proxy_password(project_key, profile)
+    connection_app_lib::config::local_passwords::local_proxy_password(
+        project_key,
+        profile,
+        &[profile.to_string()],
+    )
         .await
         .map_err(|e| format!("Failed to load the local proxy password: {}", e))
 }
