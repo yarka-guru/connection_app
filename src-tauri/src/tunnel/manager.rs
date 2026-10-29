@@ -54,6 +54,9 @@ pub struct ConnectionInfo {
     pub port: String,
     #[serde(default)]
     pub environment: String,
+    /// The AWS profile the connection actually uses.
+    #[serde(default)]
+    pub profile: String,
     #[serde(rename = "connectionType", default)]
     pub connection_type: String,
     // RDS-specific fields (None for service connections)
@@ -430,7 +433,7 @@ impl TunnelManager {
         // Dispatch based on connection type
         let (connection_info, tunnel_target, proxy_settings) = match project_config.connection_type.as_str() {
             "service" => {
-                let (info, target) = self.resolve_service_target(&clients, &connection_id, project_key, &resolved, project_config, &port_to_use).await?;
+                let (info, target) = self.resolve_service_target(&clients, &connection_id, project_key, &resolved, profile, project_config, &port_to_use).await?;
                 (info, target, None)
             }
             _ => self.resolve_rds_target(&clients, &connection_id, project_key, &resolved, profile, project_config, &port_to_use, database).await?,
@@ -819,6 +822,7 @@ impl TunnelManager {
             host: "localhost".to_string(),
             port: local_port.to_string(),
             environment: environment.to_string(),
+            profile: profile.to_string(),
             connection_type: "rds".to_string(),
             username: Some(username),
             password: Some(password),
@@ -844,12 +848,14 @@ impl TunnelManager {
     }
 
     /// Resolve service target: find EC2/ECS target, optionally find bastion.
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_service_target(
         &self,
         clients: &AwsClients,
         connection_id: &str,
         project_key: &str,
         resolved: &ResolvedEnvironment,
+        profile: &str,
         project_config: &ProjectConfig,
         local_port: &str,
     ) -> Result<(ConnectionInfo, TunnelTarget), AppError> {
@@ -1016,6 +1022,7 @@ impl TunnelManager {
             host: "localhost".to_string(),
             port: local_port.to_string(),
             environment: environment.to_string(),
+            profile: profile.to_string(),
             connection_type: "service".to_string(),
             username: None,
             password: None,
@@ -1573,6 +1580,7 @@ mod tests {
                 host: "localhost".to_string(),
                 port: "5462".to_string(),
                 environment: "dev".to_string(),
+                profile: "covered-dev".to_string(),
                 connection_type: "rds".to_string(),
                 username: Some("covered_app".to_string()),
                 password: Some("local".to_string()),
