@@ -34,6 +34,7 @@ pub fn run() {
 
             let tunnel_manager = TunnelManager::new(app.handle().clone());
             app.manage(Arc::new(Mutex::new(tunnel_manager)));
+            app.manage(commands::repair::ImportSelection::default());
 
             // Activate AWS directory bookmark if sandboxed and bookmark exists
             let aws_access = if sandbox::is_sandboxed() && sandbox::has_stored_bookmark(app.handle()) {
@@ -75,9 +76,19 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Project config commands
             commands::projects::list_projects,
-            commands::projects::list_project_configs,
+            commands::projects::list_project_entries,
+            commands::projects::validate_project,
             commands::projects::save_project_config,
+            commands::projects::save_project_raw,
             commands::projects::delete_project_config,
+            // projects.json repair, migration and import
+            commands::repair::get_project_file_raw,
+            commands::repair::save_project_file_raw,
+            commands::repair::restore_project_backup,
+            commands::repair::get_migration_proposal,
+            commands::repair::apply_migration,
+            commands::repair::pick_import_file,
+            commands::repair::apply_import,
             // Connection commands
             commands::connection::connect,
             commands::connection::disconnect,
@@ -86,7 +97,10 @@ pub fn run() {
             commands::connection::get_used_ports,
             commands::connection::sso_login,
             // Profile commands
-            commands::profiles::list_profiles,
+            commands::profiles::list_aws_accounts,
+            commands::profiles::set_account_profile,
+            commands::profiles::detect_profile_account,
+            commands::profiles::aws_profile_template,
             commands::profiles::read_aws_config,
             commands::profiles::save_aws_profile,
             commands::profiles::delete_aws_profile,
@@ -113,7 +127,6 @@ pub fn run() {
             commands::system::get_sandbox_status,
             commands::system::grant_aws_access,
             commands::system::check_migration_available,
-            commands::system::import_projects_file,
             commands::system::export_projects_file,
             commands::system::export_saved_connections,
             commands::system::import_saved_connections,

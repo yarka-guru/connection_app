@@ -154,26 +154,51 @@ fn trim_strings(v: &mut Value, path: &str, fixes: &mut Vec<String>) {
     }
 }
 
+/// The smallest object that deserializes: the required fields, empty.
+fn probe_base() -> Map<String, Value> {
+    let mut base = Map::new();
+    base.insert("name".into(), Value::String(String::new()));
+    base.insert("region".into(), Value::String(String::new()));
+    base
+}
+
+/// Deserialize one field on its own, next to the required ones.
+fn probe_field(field: &str, v: &Value) -> Result<ProjectConfig, serde_json::Error> {
+    let mut probe = probe_base();
+    probe.insert(field.to_string(), v.clone());
+    ProjectConfig::deserialize(&Value::Object(probe))
+}
+
 /// serde_json does not say which field failed, so try each field on its own
-/// next to the required ones and name the first that fails.
+/// and name the first that fails.
 fn describe_error(value: &Value, err: serde_json::Error) -> String {
     let Some(obj) = value.as_object() else {
         return err.to_string();
     };
-    let mut base = Map::new();
-    base.insert("name".into(), Value::String(String::new()));
-    base.insert("region".into(), Value::String(String::new()));
-    if ProjectConfig::deserialize(&Value::Object(base.clone())).is_err() {
+    if ProjectConfig::deserialize(&Value::Object(probe_base())).is_err() {
         return err.to_string();
     }
     for (field, v) in obj {
-        let mut probe = base.clone();
-        probe.insert(field.clone(), v.clone());
-        if let Err(e) = ProjectConfig::deserialize(&Value::Object(probe)) {
+        if let Err(e) = probe_field(field, v) {
             return format!("{field}: {e}");
         }
     }
     err.to_string()
+}
+
+/// A broken project as far as it can be read: every field that deserializes
+/// on its own, with an empty `name` and `region` when those cannot be read.
+/// `None` when the project is not a JSON object.
+pub fn salvage_config(raw: &RawValue) -> Option<ProjectConfig> {
+    let mut value: Value = serde_json::from_str(raw.get()).ok()?;
+    normalize(&mut value);
+    let mut kept = probe_base();
+    for (field, v) in value.as_object()? {
+        if probe_field(field, v).is_ok() {
+            kept.insert(field.clone(), v.clone());
+        }
+    }
+    ProjectConfig::deserialize(&Value::Object(kept)).ok()
 }
 
 fn load_entry(key: &str, raw: Box<RawValue>) -> ProjectEntry {
@@ -352,23 +377,51 @@ pub async fn write_project_file(file: &ProjectFile) -> Result<(), AppError> {
 }
 
 /// Copy the file to `<name>.bak-YYYYMMDD-HHMMSS` (local time) next to it.
-/// `None` when there is no file to back up.
+/// `None` when there is no file to back up. An existing backup is never
+/// overwritten: a second backup within the same second keeps the first one
+/// and returns its path.
 pub async fn backup_project_file_at(path: &Path) -> Result<Option<PathBuf>, AppError> {
+    let stamp = chrono::DateTime::<chrono::Local>::from(std::time::SystemTime::now())
+        .format("%Y%m%d-%H%M%S")
+        .to_string();
+    backup_with_stamp(path, &stamp).await
+}
+
+async fn backup_with_stamp(path: &Path, stamp: &str) -> Result<Option<PathBuf>, AppError> {
     let name = path
         .file_name()
         .ok_or_else(|| AppError::Config(format!("Not a file path: {}", path.display())))?;
-    let stamp = chrono::DateTime::<chrono::Local>::from(std::time::SystemTime::now())
-        .format("%Y%m%d-%H%M%S");
     let backup = dir_of(path).join(format!("{}.bak-{}", name.to_string_lossy(), stamp));
-    match tokio::fs::copy(path, &backup).await {
-        Ok(_) => Ok(Some(backup)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(AppError::Config(format!(
-            "Failed to back up {}: {}",
-            path.display(),
-            e
-        ))),
+    let failed = |e: std::io::Error| {
+        AppError::Config(format!("Failed to back up {}: {}", path.display(), e))
+    };
+
+    let contents = match tokio::fs::read(path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(failed(e)),
+    };
+    let mut file = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup)
+        .await
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Some(backup)),
+        Err(e) => return Err(failed(e)),
+    };
+    let written = async {
+        file.write_all(&contents).await?;
+        file.sync_all().await
     }
+    .await;
+    if let Err(e) = written {
+        drop(file);
+        let _ = tokio::fs::remove_file(&backup).await;
+        return Err(failed(e));
+    }
+    Ok(Some(backup))
 }
 
 fn is_backup_stamp(s: &str) -> bool {
@@ -419,9 +472,14 @@ pub async fn read_raw_at(path: &Path) -> Result<String, AppError> {
     }
 }
 
+/// Ok when `text` is a JSON object, the only shape `projects.json` may have.
+pub fn check_raw_file(text: &str) -> Result<(), FileError> {
+    parse_object(text).map(|_| ())
+}
+
 /// Write the whole file from text, only if the text is a JSON object.
 pub async fn write_raw_at(path: &Path, text: &str) -> Result<(), FileError> {
-    parse_object(text)?;
+    check_raw_file(text)?;
     write_atomic(path, text).await.map_err(|e| FileError::Io {
         message: e.to_string(),
     })
@@ -763,5 +821,70 @@ mod tests {
         let json = file.to_json();
         assert!(json.contains(r#"{"name": 5}"#));
         assert!(json.ends_with('\n'));
+    }
+
+    #[tokio::test]
+    async fn a_second_backup_in_the_same_second_keeps_the_first() {
+        let dir = temp_dir("backup-same-second");
+        let path = dir.join("projects.json");
+        write(&path, "first");
+        let a = backup_with_stamp(&path, "20261029-101500")
+            .await
+            .unwrap()
+            .unwrap();
+        write(&path, "second");
+        let b = backup_with_stamp(&path, "20261029-101500")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(a, b);
+        assert_eq!(read(&a), "first");
+        assert_eq!(
+            file_names(&dir),
+            vec!["projects.json", "projects.json.bak-20261029-101500"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn backup_of_a_missing_file_is_none_and_creates_nothing() {
+        let dir = temp_dir("backup-missing");
+        let path = dir.join("projects.json");
+        assert!(
+            backup_with_stamp(&path, "20261029-101500")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(file_names(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_raw_file_accepts_only_an_object() {
+        assert!(check_raw_file("{}").is_ok());
+        assert!(matches!(check_raw_file("[]"), Err(FileError::NotAnObject)));
+        assert!(matches!(
+            check_raw_file("{ nope"),
+            Err(FileError::Syntax { .. })
+        ));
+    }
+
+    #[test]
+    fn salvage_keeps_every_field_that_reads() {
+        let raw = RawValue::from_string(
+            r#"{"name":"Half","region":7,"defaultPort":5432,"rdsPattern":"c","remotePort":"x"}"#
+                .to_string(),
+        )
+        .unwrap();
+        let c = salvage_config(&raw).unwrap();
+        assert_eq!(c.name, "Half");
+        assert_eq!(c.region, "");
+        assert_eq!(c.default_port, "5432");
+        assert_eq!(c.rds_pattern, "c");
+        assert_eq!(c.remote_port, None);
+
+        let not_object = RawValue::from_string("[1]".to_string()).unwrap();
+        assert!(salvage_config(&not_object).is_none());
     }
 }
