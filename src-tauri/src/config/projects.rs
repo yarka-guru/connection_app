@@ -304,23 +304,22 @@ pub fn get_profiles_for_project(
     filtered.into_iter().cloned().collect()
 }
 
-/// Get local port number based on environment suffix matching.
-pub fn get_local_port(profile: &str, project_config: &ProjectConfig) -> String {
+/// The `envPortMapping` port for a profile, if one of its suffixes matches
+/// (longest suffix first). `None` means `get_local_port` falls back to the
+/// project's default port.
+pub fn mapped_port(profile: &str, project_config: &ProjectConfig) -> Option<String> {
     let mut suffixes: Vec<&String> = project_config.env_port_mapping.keys().collect();
     suffixes.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
-    let matched = suffixes.iter().find(|suffix| {
-        profile.ends_with(suffix.as_str()) || profile == suffix.as_str()
-    });
+    suffixes
+        .iter()
+        .find(|suffix| profile.ends_with(suffix.as_str()) || profile == suffix.as_str())
+        .and_then(|suffix| project_config.env_port_mapping.get(suffix.as_str()).cloned())
+}
 
-    match matched {
-        Some(suffix) => project_config
-            .env_port_mapping
-            .get(suffix.as_str())
-            .cloned()
-            .unwrap_or_else(|| project_config.default_port.clone()),
-        None => project_config.default_port.clone(),
-    }
+/// Get local port number based on environment suffix matching.
+pub fn get_local_port(profile: &str, project_config: &ProjectConfig) -> String {
+    mapped_port(profile, project_config).unwrap_or_else(|| project_config.default_port.clone())
 }
 
 /// Get the default RDS port for the project's database engine.
