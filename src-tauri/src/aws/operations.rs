@@ -157,6 +157,46 @@ pub async fn check_credentials_valid(clients: &AwsClients) -> CredentialCheck {
     }
 }
 
+/// The AWS account the clients' credentials belong to (`sts:GetCallerIdentity`).
+pub async fn caller_account_id(clients: &AwsClients) -> Result<String, AppError> {
+    let timeout = tokio::time::Duration::from_secs(DEFAULT_CREDENTIAL_TIMEOUT_SECS);
+
+    match tokio::time::timeout(timeout, clients.sts.get_caller_identity().send()).await {
+        Ok(Ok(out)) => out
+            .account()
+            .map(str::to_string)
+            .ok_or_else(|| AppError::Aws("GetCallerIdentity returned no account".to_string())),
+        Ok(Err(e)) => Err(AppError::Aws(format!(
+            "Could not determine the AWS account: {}",
+            e
+        ))),
+        Err(_) => Err(AppError::Aws(
+            "Account lookup timed out after 15 seconds".to_string(),
+        )),
+    }
+}
+
+/// Ask AWS which account `profile` belongs to and remember the answer in the
+/// detected-account cache, keyed to the profile's current config.
+pub async fn detect_profile_account(profile: &str, region: &str) -> Result<String, AppError> {
+    let clients = crate::aws::credentials::create_aws_clients(profile, region).await;
+    let account_id = caller_account_id(&clients).await?;
+
+    let profiles = crate::config::aws_config::read_aws_config().await?;
+    if let Some(p) = profiles.iter().find(|p| p.name == profile) {
+        let mut cache = crate::config::accounts::load_account_cache().await;
+        cache.entries.insert(
+            profile.to_string(),
+            crate::config::accounts::CachedAccount {
+                account_id: account_id.clone(),
+                fingerprint: crate::config::accounts::profile_fingerprint(p),
+            },
+        );
+        crate::config::accounts::save_account_cache(&cache).await;
+    }
+    Ok(account_id)
+}
+
 /// Traverse a serde_json::Value using dot-notation field path.
 /// For example, "credentials.username" traverses into {"credentials": {"username": "foo"}}.
 fn get_nested_field<'a>(value: &'a serde_json::Value, field_path: &str) -> Option<&'a str> {
