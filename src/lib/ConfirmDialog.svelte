@@ -11,8 +11,10 @@ const {
   onCancel,
 } = $props()
 
+// Escape cancels this dialog only, not the dialogs underneath it
 function handleKeydown(e) {
   if (e.key === 'Escape') {
+    e.stopPropagation()
     onCancel?.()
   }
 }
@@ -21,7 +23,7 @@ function handleKeydown(e) {
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="confirm-overlay" onclick={onCancel} onkeydown={handleKeydown}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="confirm-dialog" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} use:trapFocus role="alertdialog" tabindex="-1" aria-label={title}>
+  <div class="confirm-dialog" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key !== 'Escape') e.stopPropagation() }} use:trapFocus role="alertdialog" tabindex="-1" aria-label={title}>
     <h3 class="confirm-title">{title}</h3>
     <p class="confirm-message">{message}</p>
     <div class="confirm-actions">

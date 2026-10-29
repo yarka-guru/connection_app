@@ -5,6 +5,7 @@ import { themes, darkThemeNames, lightThemeNames } from './themes.js'
 import ThemeSwitcher from './ThemeSwitcher.svelte'
 import EnvironmentsEditor from './EnvironmentsEditor.svelte'
 import ProjectFileRepair from './ProjectFileRepair.svelte'
+import ConfirmDialog from './ConfirmDialog.svelte'
 
 const {
   onClose,
@@ -434,11 +435,27 @@ function openProjectForm(mode, key = '', source = null, entry = null) {
   projectEcsService = config.ecsService || ''
   projectSshUsername = config.sshUsername || ''
   projectSshKeyPath = config.sshKeyPath || ''
+  projectFormInitial = projectFormState()
 }
 
 function closeProjectModal() {
   editingProject = null
   validationErrors = []
+  confirmDiscardProject = false
+}
+
+// The form as it was opened, to tell whether closing it would discard edits
+let projectFormInitial = ''
+let confirmDiscardProject = $state(false)
+
+function projectFormState() {
+  return JSON.stringify({ key: projectKey, config: buildConfig() })
+}
+
+// Escape and a click outside ask first when the form has unsaved edits
+function requestCloseProjectModal() {
+  if (editingProject && projectFormState() !== projectFormInitial) confirmDiscardProject = true
+  else closeProjectModal()
 }
 
 function addDatabase() {
@@ -708,11 +725,17 @@ async function saveProjectJson() {
 
 // Escape closes the topmost dialog, then Settings itself
 function closeTopmost() {
-  if (editingProfile) closeEditModal()
+  if (confirmDiscardProject) confirmDiscardProject = false
+  else if (editingProfile) closeEditModal()
   else if (jsonEditKey) closeJsonEditor()
-  else if (editingProject) closeProjectModal()
+  else if (editingProject) requestCloseProjectModal()
   else return false
   return true
+}
+
+// Escape in an input with a datalist only dismisses the suggestions
+function isDatalistEscape(e) {
+  return e.key === 'Escape' && e.target instanceof HTMLInputElement && e.target.hasAttribute('list')
 }
 
 function handleOverlayKeydown(e) {
@@ -722,13 +745,13 @@ function handleOverlayKeydown(e) {
 function handleEditOverlayKeydown(e) {
   if (e.key === 'Escape') {
     e.stopPropagation()
-    closeTopmost()
+    if (!isDatalistEscape(e)) closeTopmost()
   }
 }
 
 function handleDialogKeydown(e) {
   e.stopPropagation()
-  if (e.key === 'Escape') closeTopmost()
+  if (e.key === 'Escape' && !isDatalistEscape(e)) closeTopmost()
 }
 
 onDestroy(() => {
@@ -1137,7 +1160,7 @@ onDestroy(() => {
   <!-- Edit Project Modal -->
   {#if editingProject}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="edit-modal-overlay" onclick={closeProjectModal} onkeydown={handleEditOverlayKeydown}>
+    <div class="edit-modal-overlay" onclick={requestCloseProjectModal} onkeydown={handleEditOverlayKeydown}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="edit-modal project-modal" onclick={(e) => e.stopPropagation()} onkeydown={handleDialogKeydown} use:trapFocus role="dialog" tabindex="-1" aria-label={editingProject.isNew ? 'Add project' : 'Edit project'}>
         <h3>{editingProject.isNew ? 'Add Project' : 'Edit Project'}</h3>
@@ -1561,6 +1584,18 @@ onDestroy(() => {
         </div>
       </div>
     </div>
+  {/if}
+
+  {#if confirmDiscardProject}
+    <ConfirmDialog
+      title="Discard changes?"
+      message="This project has unsaved changes. Close the form and lose them?"
+      confirmLabel="Discard"
+      cancelLabel="Keep editing"
+      destructive
+      onConfirm={closeProjectModal}
+      onCancel={() => { confirmDiscardProject = false }}
+    />
   {/if}
 
   <!-- Single-project JSON editor -->
