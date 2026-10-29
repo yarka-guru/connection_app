@@ -11,6 +11,9 @@ const {
   invoke,
   onProjectsChanged,
   onOpenMigration,
+  onImport,
+  needsMigration = false,
+  settingsVersion = 0,
   currentTheme = 'forest',
   onThemeChange,
   currentLightTheme = 'light',
@@ -143,6 +146,27 @@ onMount(() => {
     openProfileFromTemplate(initialProfileTemplate)
   }
 })
+
+// Reload when App changed projects.json behind this screen (migration, import)
+let seenVersion = settingsVersion
+$effect(() => {
+  if (settingsVersion !== seenVersion) {
+    seenVersion = settingsVersion
+    loadData()
+  }
+})
+
+async function startImport() {
+  error = ''
+  try {
+    await onImport(async (count) => {
+      showSuccess(`Imported ${count} project${count !== 1 ? 's' : ''}`)
+      await loadData()
+    })
+  } catch (err) {
+    error = `Import failed: ${err}`
+  }
+}
 
 async function loadData() {
   loading = true
@@ -757,13 +781,25 @@ onDestroy(() => {
         <div class="profiles-tab">
           <div class="profiles-header">
             <span class="profiles-path">~/.connection-app/projects.json</span>
+            <div class="header-actions">
+              {#if onImport}
+                <button class="btn-add" onclick={startImport} disabled={!!overview.fileError}>Import...</button>
+              {/if}
             <button class="btn-add" onclick={() => openProjectForm('new')} disabled={!!overview.fileError}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
               Add Project
             </button>
+            </div>
           </div>
+
+          {#if needsMigration && onOpenMigration}
+            <div class="migration-banner" role="status">
+              <span>Config needs updating: some projects still use AWS profile names.</span>
+              <button type="button" class="btn-add-small" onclick={onOpenMigration}>Update to environments</button>
+            </div>
+          {/if}
 
           {#if overview.fileError}
             <ProjectFileRepair
@@ -1694,6 +1730,25 @@ onDestroy(() => {
     align-items: center;
     justify-content: space-between;
     margin-bottom: 16px;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .migration-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    font-size: 0.8rem;
+    color: var(--text-hover);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.2);
+    border-radius: 8px;
   }
 
   .profiles-path {

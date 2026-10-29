@@ -15,6 +15,8 @@ import SessionStatus from './lib/SessionStatus.svelte'
 import UpdateBanner from './lib/UpdateBanner.svelte'
 import Settings from './lib/Settings.svelte'
 import ConfirmDialog from './lib/ConfirmDialog.svelte'
+import MigrationDialog from './lib/MigrationDialog.svelte'
+import ImportDialog from './lib/ImportDialog.svelte'
 
 let projects = $state([])
 let selectedProject = $state('')
@@ -58,6 +60,14 @@ let isGrantingAccess = $state(false)
 let showMigrationOffer = $state(false)
 let isImporting = $state(false)
 let migrationResult = $state('')
+// Account-environments migration: set from list_projects, prompted at most once per launch
+let needsMigration = $state(false)
+let migrationPrompted = false
+let migrationProposals = $state(null)
+// Import conflict dialog: { preview, onDone } while open
+let importSession = $state(null)
+// Bumped after dialogs change projects.json so an open Settings reloads
+let settingsVersion = $state(0)
 // AWS profile template to prefill in Settings (set by "Create profile")
 let pendingProfileTemplate = $state(null)
 
@@ -285,10 +295,16 @@ async function setupListenersAndLoad() {
   try {
     const overview = await invoke('list_projects')
     projects = overview.projects
+    needsMigration = !!overview.needsMigration
   } catch (err) {
     errorMessage = `Failed to load projects: ${err}`
   } finally {
     loadingProjects = false
+  }
+
+  if (needsMigration && !migrationPrompted) {
+    migrationPrompted = true
+    await openMigration()
   }
 
   // Non-blocking update check
@@ -332,18 +348,27 @@ async function handleImportProjects() {
   migrationResult = ''
 
   try {
-    const count = await invoke('import_projects_file')
-    migrationResult = `Imported ${count} project${count !== 1 ? 's' : ''}`
-    await finishSetup()
+    const opened = await startImport(
+      async (count) => {
+        migrationResult = `Imported ${count} project${count !== 1 ? 's' : ''}`
+        isImporting = false
+        await finishSetup()
+      },
+      () => {
+        migrationResult = 'Import cancelled'
+        isImporting = false
+      },
+    )
+    if (opened) return // the dialog finishes the flow
+    migrationResult = 'Import cancelled'
   } catch (err) {
-    if (`${err}`.includes('cancelled')) {
-      migrationResult = 'Import cancelled'
-    } else {
-      migrationResult = `Import failed: ${err}`
-    }
-  } finally {
-    isImporting = false
+    migrationResult = `Import failed: ${err}`
   }
+  isImporting = false
+}
+
+async function handleSettingsImport(onDone) {
+  return startImport(onDone, null)
 }
 
 async function skipMigration() {
@@ -428,6 +453,7 @@ async function refreshProjects() {
   try {
     const overview = await invoke('list_projects')
     projects = overview.projects
+    needsMigration = !!overview.needsMigration
   } catch (err) {
     errorMessage = `Failed to refresh projects: ${err}`
     return
@@ -451,6 +477,56 @@ async function refreshProjects() {
   if (selectedDatabase && !(project.databases || []).includes(selectedDatabase)) {
     selectedDatabase = ''
   }
+}
+
+async function openMigration() {
+  try {
+    const proposals = await invoke('get_migration_proposal')
+    if (proposals.length === 0) {
+      errorMessage = 'No projects need updating'
+      return
+    }
+    migrationProposals = proposals
+  } catch (err) {
+    errorMessage = `Failed to prepare the update: ${err}`
+  }
+}
+
+async function applyMigration(choices) {
+  // A rejection stays in the dialog, which shows it
+  await invoke('apply_migration', { choices })
+  migrationProposals = null
+  await refreshProjects()
+  settingsVersion++
+}
+
+// Ask for a projects file and open the conflict dialog.
+// Resolves false when the file dialog was cancelled; onDone(count) runs after a successful import.
+async function startImport(onDone, onCancel) {
+  let preview
+  try {
+    preview = await invoke('pick_import_file')
+  } catch (err) {
+    if (`${err}`.includes('cancelled')) return false
+    throw err
+  }
+  importSession = { preview, onDone, onCancel }
+  return true
+}
+
+async function applyImport(choices) {
+  const { preview, onDone } = importSession
+  const count = await invoke('apply_import', { path: preview.path, choices })
+  importSession = null
+  await refreshProjects()
+  settingsVersion++
+  await onDone?.(count)
+}
+
+function cancelImport() {
+  const { onCancel } = importSession
+  importSession = null
+  onCancel?.()
 }
 
 async function reloadSavedConnections() {
@@ -1091,8 +1167,28 @@ const isAlreadySaved = $derived(
         {scheme}
         onSchemeChange={handleSchemeChange}
         appVersion={currentVersion}
+        {needsMigration}
+        {settingsVersion}
+        onOpenMigration={openMigration}
+        onImport={handleSettingsImport}
       />
     {/if}
+  {/if}
+
+  {#if migrationProposals}
+    <MigrationDialog
+      proposals={migrationProposals}
+      onApply={applyMigration}
+      onLater={() => { migrationProposals = null }}
+    />
+  {/if}
+
+  {#if importSession}
+    <ImportDialog
+      preview={importSession.preview}
+      onApply={applyImport}
+      onCancel={cancelImport}
+    />
   {/if}
 </main>
 
