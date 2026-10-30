@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [3.8.0] - 2026-10-29
+## [3.8.0] - 2026-10-30
 
 ### Added
 - Environments are identified by AWS account ID. Each project has an
@@ -38,33 +38,6 @@ All notable changes to this project will be documented in this file.
 - CLI: `--env <NAME>`; `projects` prints environments, accounts, ports and
   resolved profiles. `--profile` alone fails when the profile reaches several
   environments of the project; pass `--env` then.
-
-### Changed
-- The connection form, saved connections and `connect` use environment names
-  instead of AWS profile names. `--profile` must belong to one of the
-  project's environments.
-- Local passwords and bastion choices are keyed by environment.
-- After any save in Settings the main form reloads projects and environments.
-- The CLI never writes `projects.json`; legacy projects keep resolving by
-  profile name, and it prints a note to open the app to update them.
-
-### Fixed
-- One malformed project no longer hides every project.
-- Environments whose profile names do not match `profileFilter` (for example
-  `aws configure sso` default names) are found by account.
-- Saving the form over a broken project, saving its JSON and deleting it back
-  up `projects.json` first. Edit JSON refuses JSON that is still not a valid
-  project and writes nothing.
-
-### Notes
-- A migrated file still works in 3.7.x: the legacy `profileFilter`,
-  `envPortMapping`, `defaultPort` and `authType` are kept. Projects created
-  in 3.8 are hidden in 3.7.x (`profileFilter: "__connection-app-3.8__"`).
-- `preferences.json` and `profile-accounts.json` are local and never exported.
-
-## [Unreleased]
-
-### Added
 - PostgreSQL RDS connections go through a local auth proxy on the same
   port. Database clients sign in with a stable per-project/profile password
   (stored in `~/.connection-app/iam-proxy-passwords.json`, 0600, created on
@@ -89,6 +62,13 @@ All notable changes to this project will be documented in this file.
   work again now that the RDS-managed master secret is gone.
 
 ### Changed
+- The connection form, saved connections and `connect` use environment names
+  instead of AWS profile names. `--profile` must belong to one of the
+  project's environments.
+- Local passwords and bastion choices are keyed by environment.
+- After any save in Settings the main form reloads projects and environments.
+- The CLI never writes `projects.json`; legacy projects keep resolving by
+  profile name, and it prints a note to open the app to update them.
 - If RDS rejects the secret's password, the secret is re-read (at most once
   a minute, with the same fallback) and the sign-in retried.
 - Connect runs a one-time sign-in check and shows its result; it fails if
@@ -102,6 +82,12 @@ All notable changes to this project will be documented in this file.
   use the raw tunnel.
 
 ### Fixed
+- One malformed project no longer hides every project.
+- Environments whose profile names do not match `profileFilter` (for example
+  `aws configure sso` default names) are found by account.
+- Saving the form over a broken project, saving its JSON and deleting it back
+  up `projects.json` first. Edit JSON refuses JSON that is still not a valid
+  project and writes nothing.
 - Desktop: the sign-in check runs without holding the connection-manager
   lock, so other actions are not blocked while it runs.
 - An unreadable or non-UTF-8 local password file is moved aside as a
@@ -116,10 +102,15 @@ All notable changes to this project will be documented in this file.
   backs off after accept errors.
 
 ### Notes
+- A migrated file still works in 3.7.x: the legacy `profileFilter`,
+  `envPortMapping`, `defaultPort` and `authType` are kept. Projects created
+  in 3.8 are hidden in 3.7.x (`profileFilter: "__connection-app-3.8__"`).
+- `preferences.json` and `profile-accounts.json` are local and never exported.
 - `verify-ca`, `verify-full`, `channel_binding=require` and
   `sslnegotiation=direct` do not work against the local port; use
   `prefer`, `require` or `disable`. This supersedes the 3.7.9 note about
   IAM tokens expiring 15 minutes after Connect.
+
 ## [3.7.10] - 2026-10-29
 
 Security release.
