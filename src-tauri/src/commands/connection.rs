@@ -15,29 +15,43 @@ pub struct ConnectResult {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn connect(
     app_handle: AppHandle,
     tunnel_manager: State<'_, Arc<Mutex<TunnelManager>>>,
     project_key: String,
-    profile: String,
+    environment: String,
+    profile: Option<String>,
     local_port: Option<String>,
     database: Option<String>,
     saved_connection_id: Option<String>,
 ) -> Result<ConnectResult, AppError> {
-    let manager = tunnel_manager.lock().await;
+    let (connection_id, mut connection_info, auth_check) = {
+        let manager = tunnel_manager.lock().await;
 
-    // Get currently used ports
-    let used_ports = manager.get_used_ports().await;
+        // Get currently used ports
+        let used_ports = manager.get_used_ports().await;
 
-    let (connection_id, connection_info) = manager
-        .connect(
-            &project_key,
-            &profile,
-            local_port.as_deref(),
-            database.as_deref(),
-            &used_ports,
-        )
-        .await?;
+        manager
+            .connect(
+                &project_key,
+                &environment,
+                profile.as_deref(),
+                local_port.as_deref(),
+                database.as_deref(),
+                &used_ports,
+            )
+            .await?
+    };
+
+    // The database sign-in check can take seconds; run it without the
+    // manager lock so other commands are not blocked.
+    if let Some(check) = auth_check {
+        let label = check.run().await.ok_or_else(|| {
+            AppError::Tunnel("Disconnected during the database sign-in check".to_string())
+        })?;
+        connection_info.auth_method = Some(label);
+    }
 
     // Update last used time if this is from a saved connection
     if let Some(saved_id) = saved_connection_id {

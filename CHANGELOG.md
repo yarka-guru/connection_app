@@ -2,6 +2,115 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.8.0] - 2026-10-30
+
+### Added
+- Environments are identified by AWS account ID. Each project has an
+  `environments` list (name, `accountId`, port, optional `rdsPattern` /
+  `region` / service overrides). The app finds the AWS profile for an
+  account from `~/.aws/config`; with several matches the choice is remembered
+  per account in `~/.connection-app/preferences.json`; with none the
+  environment is greyed out with a "Create profile" action. Before the tunnel
+  opens, the account of the credentials must equal the environment's
+  `accountId`. The check is skipped for legacy (unmigrated) projects, whose
+  environments are profile names with no account.
+- "Detect account" (Settings → AWS Profiles, and "account unknown" rows in the
+  migration dialog) finds the account of a profile whose config does not name
+  it (static keys, `credential_process`, `source_profile` without `role_arn`)
+  with `sts:GetCallerIdentity` and caches it in
+  `~/.connection-app/profile-accounts.json`.
+- Per-project loading of `projects.json`: a broken project is shown with its
+  errors and Edit / Edit JSON / Delete actions and does not hide the others.
+  A file that is not valid JSON shows the line and column, a raw editor and
+  Restore backup.
+- A "Config needs updating" dialog converts existing projects to account
+  environments. It keeps each profile's current port and writes
+  `projects.json.bak-YYYYMMDD-HHMMSS` before applying. Import offers the same
+  per-project handling (Replace, Keep mine, Import as copy) and backs up first.
+- The Settings project form shows every project field, an environments
+  editor, Copy environments from another project, Duplicate project and inline
+  validation.
+- Authentication choice for PostgreSQL: Automatic (default), IAM only,
+  Password only (`passwordOnly: true`). Automatic with no secret configured
+  (empty `secretPrefix`, no `secretPath`) signs in as the IAM DB User
+  (`iamUsername`) with an IAM token; a configured secret that is missing still
+  fails the connect.
+- CLI: `--env <NAME>`; `projects` prints environments, accounts, ports and
+  resolved profiles. `--profile` alone fails when the profile reaches several
+  environments of the project; pass `--env` then.
+- PostgreSQL RDS connections go through a local auth proxy on the same
+  port. Database clients sign in with a stable per-project/profile password
+  (stored in `~/.connection-app/iam-proxy-passwords.json`, 0600, created on
+  first use); for `secrets` projects the secret's current password is
+  accepted too, so stored client passwords keep working. The proxy signs in
+  to RDS over verified TLS (bundled AWS RDS CA bundle) with an IAM token or
+  the secret's password, whichever the database user needs, and renews IAM
+  tokens in the background (a new token after 10 of its 15 minutes), so new
+  logins no longer fail 15 minutes after Connect. The connection card and
+  the CLI show the auth method in use. Details and the `sslmode`
+  before/after table: README, "PostgreSQL connections: the local auth
+  proxy".
+- TLS on the loopback hop for clients using `sslmode=prefer` or `require`
+  (in-memory self-signed certificate). `sslmode=disable` works as well.
+- Cancel requests (Ctrl+C in psql) are forwarded to RDS.
+- Secret fallback: when no secret matches a project's `secretPrefix`, the
+  secret named exactly `rds/<DBInstanceIdentifier>-credentials`
+  (`rds/<DBClusterIdentifier>-credentials` for clusters) of the instance or
+  cluster being connected to is used. The status line says so, and if both
+  lookups miss the error names both. `-master-credentials` and
+  `-local-credentials` secrets are never picked. Projects with `"rds!db"`
+  work again now that the RDS-managed master secret is gone.
+
+### Changed
+- The connection form, saved connections and `connect` use environment names
+  instead of AWS profile names. `--profile` must belong to one of the
+  project's environments.
+- Local passwords and bastion choices are keyed by environment.
+- After any save in Settings the main form reloads projects and environments.
+- The CLI never writes `projects.json`; legacy projects keep resolving by
+  profile name, and it prints a note to open the app to update them.
+- If RDS rejects the secret's password, the secret is re-read (at most once
+  a minute, with the same fallback) and the sign-in retried.
+- Connect runs a one-time sign-in check and shows its result; it fails if
+  the connection is closed while the check runs.
+- RDS discovery prefers an available instance or cluster whose identifier
+  equals `rdsPattern` exactly, and only otherwise the first identifier that
+  contains it. With `rdsPattern: "covered-db"` this pins prod to
+  `covered-db` rather than the read replica `covered-db-ro`.
+- The CLI treats an unset `multiplexed` as on, like the desktop app.
+- MySQL projects and service tunnels (VNC/RDP/SSH) are unchanged and still
+  use the raw tunnel.
+
+### Fixed
+- One malformed project no longer hides every project.
+- Environments whose profile names do not match `profileFilter` (for example
+  `aws configure sso` default names) are found by account.
+- Saving the form over a broken project, saving its JSON and deleting it back
+  up `projects.json` first. Edit JSON refuses JSON that is still not a valid
+  project and writes nothing.
+- Desktop: the sign-in check runs without holding the connection-manager
+  lock, so other actions are not blocked while it runs.
+- An unreadable or non-UTF-8 local password file is moved aside as a
+  `.bak` instead of failing Connect.
+
+### Security
+- Clients authenticate to the proxy with SCRAM-SHA-256. The proxy refuses
+  to send credentials to RDS without verified TLS, refuses `trust` and
+  unverified SCRAM finals, limits unauthenticated work (256 concurrent
+  sign-ins with a 5 s wait for a slot, 10 s for a client's first packet,
+  4 concurrent cancels, PostgreSQL's startup and message size caps) and
+  backs off after accept errors.
+
+### Notes
+- A migrated file still works in 3.7.x: the legacy `profileFilter`,
+  `envPortMapping`, `defaultPort` and `authType` are kept. Projects created
+  in 3.8 are hidden in 3.7.x (`profileFilter: "__connection-app-3.8__"`).
+- `preferences.json` and `profile-accounts.json` are local and never exported.
+- `verify-ca`, `verify-full`, `channel_binding=require` and
+  `sslnegotiation=direct` do not work against the local port; use
+  `prefer`, `require` or `disable`. This supersedes the 3.7.9 note about
+  IAM tokens expiring 15 minutes after Connect.
+
 ## [3.7.10] - 2026-10-29
 
 Security release.

@@ -1,10 +1,9 @@
-use crate::config::projects::{self, ProjectConfig};
+use crate::config::projects;
 use crate::error::AppError;
 use crate::history::{self, HistoryEntry};
 use crate::sandbox::{self, AwsDirAccess, SandboxStatus};
 use crate::tunnel::manager::TunnelManager;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
@@ -446,15 +445,18 @@ pub async fn check_migration_available() -> Result<bool, AppError> {
     Ok(configs.is_empty())
 }
 
-#[tauri::command]
-pub async fn import_projects_file(app_handle: AppHandle) -> Result<usize, AppError> {
+/// Ask the user for a JSON file to open.
+pub(crate) async fn pick_json_file(
+    app_handle: &AppHandle,
+    title: &str,
+) -> Result<std::path::PathBuf, AppError> {
     use tauri_plugin_dialog::DialogExt;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     app_handle
         .dialog()
         .file()
-        .set_title("Select your projects.json file")
+        .set_title(title)
         .add_filter("JSON", &["json"])
         .pick_file(move |file_path| {
             let _ = tx.send(file_path);
@@ -465,36 +467,10 @@ pub async fn import_projects_file(app_handle: AppHandle) -> Result<usize, AppErr
         .map_err(|_| AppError::General("Dialog channel closed".to_string()))?
         .ok_or_else(|| AppError::General("File selection cancelled".to_string()))?;
 
-    let path_buf: std::path::PathBuf = file_path
+    Ok(file_path
         .as_path()
         .ok_or_else(|| AppError::General("Invalid file path from dialog".to_string()))?
-        .to_path_buf();
-
-    let data = tokio::fs::read_to_string(&path_buf)
-        .await
-        .map_err(|e| AppError::Config(format!("Failed to read file: {}", e)))?;
-
-    let imported: HashMap<String, ProjectConfig> =
-        serde_json::from_str(&data).map_err(|e| AppError::Config(format!("Invalid projects.json: {}", e)))?;
-
-    if imported.is_empty() {
-        return Ok(0);
-    }
-
-    let count = imported.len();
-    for (key, config) in imported {
-        let result = crate::config::validation::validate_project_config(&config);
-        if !result.valid {
-            return Err(AppError::Config(format!(
-                "Invalid project \"{}\": {}",
-                key,
-                result.errors.join(", ")
-            )));
-        }
-        projects::save_project_config(&key, config).await?;
-    }
-
-    Ok(count)
+        .to_path_buf())
 }
 
 #[tauri::command]
@@ -534,10 +510,10 @@ pub async fn export_projects_file(app_handle: AppHandle) -> Result<String, AppEr
 
 #[tauri::command]
 pub async fn export_saved_connections(app_handle: AppHandle) -> Result<String, AppError> {
-    use crate::commands::saved::{load_saved_connections, SavedConnection};
+    use crate::commands::saved::read_saved_connections;
     use tauri_plugin_dialog::DialogExt;
 
-    let connections: Vec<SavedConnection> = load_saved_connections(app_handle.clone()).await?;
+    let connections = read_saved_connections(&app_handle)?;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     app_handle
@@ -571,28 +547,9 @@ pub async fn export_saved_connections(app_handle: AppHandle) -> Result<String, A
 #[tauri::command]
 pub async fn import_saved_connections(app_handle: AppHandle) -> Result<usize, AppError> {
     use crate::commands::saved::SavedConnection;
-    use tauri_plugin_dialog::DialogExt;
     use tauri_plugin_store::StoreExt;
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app_handle
-        .dialog()
-        .file()
-        .set_title("Select saved connections file")
-        .add_filter("JSON", &["json"])
-        .pick_file(move |file_path| {
-            let _ = tx.send(file_path);
-        });
-
-    let file_path = rx
-        .await
-        .map_err(|_| AppError::General("Dialog channel closed".to_string()))?
-        .ok_or_else(|| AppError::General("File selection cancelled".to_string()))?;
-
-    let path_buf: std::path::PathBuf = file_path
-        .as_path()
-        .ok_or_else(|| AppError::General("Invalid file path from dialog".to_string()))?
-        .to_path_buf();
+    let path_buf = pick_json_file(&app_handle, "Select saved connections file").await?;
 
     let data = tokio::fs::read_to_string(&path_buf)
         .await

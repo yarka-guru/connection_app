@@ -11,7 +11,9 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
@@ -99,46 +101,93 @@ impl RttEstimator {
     }
 }
 
-/// Native port forwarding session — replaces session-manager-plugin.
-pub async fn start_native_port_forwarding(
-    stream_url: String,
-    token_value: String,
-    local_port: u16,
-    cancel: tokio_util::sync::CancellationToken,
-    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
-) -> Result<(), String> {
-    // Open data channel (WebSocket + handshake)
-    let channel = open_data_channel(&stream_url, &token_value).await?;
-    log::info!(
-        "SSM data channel open, agent version: {}",
-        channel.agent_version
-    );
-    start_basic_port_forwarding(channel, local_port, cancel, ready_tx).await
+/// In-process connection from the auth proxy: the tunnel reads client bytes
+/// from `reader` and writes server bytes to `writer`. Dropping either side
+/// is seen as EOF by the other.
+pub struct TunnelPipe {
+    pub reader: DuplexStream,
+    pub writer: DuplexStream,
 }
 
-/// Basic (non-multiplexed) port forwarding using a pre-opened SSM data channel.
-/// Handles one TCP connection at a time serially.
-async fn start_basic_port_forwarding(
-    channel: SsmDataChannel,
-    local_port: u16,
-    cancel: tokio_util::sync::CancellationToken,
-    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
-) -> Result<(), String> {
+/// Queue of pipes from the auth proxy. One tunnel session drains it at a
+/// time, so queued connections survive a tunnel reconnect.
+pub type PipeInbox = Arc<Mutex<mpsc::Receiver<TunnelPipe>>>;
 
-    // Extract sequence numbers before moving ws
-    let initial_outgoing_seq = channel.outgoing_seq;
-    let initial_incoming_seq = channel.expected_incoming_seq;
+/// Where a tunnel session takes its local connections from.
+#[derive(Clone)]
+pub enum LocalSource {
+    /// Listen on 127.0.0.1 / [::1] at this port and relay raw bytes.
+    Listen(u16),
+    /// Connections handed over by the auth proxy, which owns the local port.
+    Pipes(PipeInbox),
+}
 
-    // Split the WebSocket into read/write halves
-    let (ws_write_half, ws_read_half) = channel.ws.split();
+pub(crate) enum LocalConn {
+    Tcp(TcpStream),
+    Pipe(TunnelPipe),
+}
 
-    // Wrap write half in Arc<Mutex> for shared access
-    let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write_half));
+pub(crate) type LocalReader = Box<dyn AsyncRead + Send + Unpin>;
+pub(crate) type LocalWriter = Box<dyn AsyncWrite + Send + Unpin>;
 
-    // Bind local TCP listeners with SO_REUSEADDR — critical on Linux where
-    // TIME_WAIT lasts 60s (vs ~15s on macOS), blocking reconnections.
-    // Listen on both IPv4 (127.0.0.1) and IPv6 (::1) so clients that resolve
-    // "localhost" to either address can connect (DataGrip on Linux uses IPv6).
+impl LocalConn {
+    pub(crate) fn into_halves(self) -> (LocalReader, LocalWriter) {
+        match self {
+            LocalConn::Tcp(tcp_stream) => {
+                let (read, write) = tcp_stream.into_split();
+                (Box::new(read), Box::new(write))
+            }
+            LocalConn::Pipe(pipe) => (Box::new(pipe.reader), Box::new(pipe.writer)),
+        }
+    }
+}
+
+/// Pause after a failed accept: errors such as EMFILE leave the listener
+/// ready, so retrying at once would spin.
+pub(crate) const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Accept on whichever listener is present (an absent one never fires).
+pub(crate) async fn accept_on(
+    listener: Option<&TcpListener>,
+) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+    match listener {
+        Some(l) => l.accept().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Next pipe from the auth proxy; never fires without one. `None` means the
+/// proxy has shut down.
+pub(crate) async fn next_pipe(
+    pipes: Option<&mut OwnedMutexGuard<mpsc::Receiver<TunnelPipe>>>,
+) -> Option<TunnelPipe> {
+    match pipes {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Socket options for every accepted local TCP connection.
+pub fn tune_local_socket(tcp_stream: &TcpStream) {
+    // Disable Nagle's algorithm — critical for database protocols that
+    // rely on prompt delivery of small packets (e.g. PostgreSQL 1-byte SSL response).
+    let _ = tcp_stream.set_nodelay(true);
+
+    // Enable TCP keepalive so the kernel detects dead connections.
+    // Without this, a silently dropped connection (e.g. laptop sleep, network change)
+    // leaves the tunnel stuck forever on Linux.
+    let sock_ref = socket2::SockRef::from(tcp_stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(std::time::Duration::from_secs(60))
+        .with_interval(std::time::Duration::from_secs(10));
+    let _ = sock_ref.set_tcp_keepalive(&keepalive);
+}
+
+/// Bind local TCP listeners with SO_REUSEADDR — critical on Linux where
+/// TIME_WAIT lasts 60s (vs ~15s on macOS), blocking reconnections.
+/// Listen on both IPv4 (127.0.0.1) and IPv6 (::1) so clients that resolve
+/// "localhost" to either address can connect (DataGrip on Linux uses IPv6).
+pub fn bind_local_listeners(local_port: u16) -> Result<(TcpListener, Option<TcpListener>), String> {
     let listener_v4 = {
         let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, local_port));
         let socket = socket2::Socket::new(
@@ -160,12 +209,12 @@ async fn start_basic_port_forwarding(
             .listen(128)
             .map_err(|e| format!("Failed to listen on port {}: {}", local_port, e))?;
         let std_listener: std::net::TcpListener = socket.into();
-        tokio::net::TcpListener::from_std(std_listener)
+        TcpListener::from_std(std_listener)
             .map_err(|e| format!("Failed to create async listener: {}", e))?
     };
 
     // IPv6 listener — best-effort (may fail if IPv6 is disabled on the system)
-    let listener_v6: Option<tokio::net::TcpListener> = {
+    let listener_v6: Option<TcpListener> = {
         let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, local_port));
         socket2::Socket::new(
             socket2::Domain::IPV6,
@@ -180,22 +229,72 @@ async fn start_basic_port_forwarding(
             socket.bind(&addr.into()).ok()?;
             socket.listen(128).ok()?;
             let std_listener: std::net::TcpListener = socket.into();
-            tokio::net::TcpListener::from_std(std_listener).ok()
+            TcpListener::from_std(std_listener).ok()
         })
     };
 
-    if listener_v6.is_some() {
-        log::info!(
-            "Listening on 127.0.0.1:{} and [::1]:{}",
-            local_port,
-            local_port
-        );
-    } else {
-        log::info!(
-            "Listening on 127.0.0.1:{} (IPv6 not available)",
-            local_port
-        );
-    }
+    Ok((listener_v4, listener_v6))
+}
+
+/// Native port forwarding session — replaces session-manager-plugin.
+pub async fn start_native_port_forwarding(
+    stream_url: String,
+    token_value: String,
+    local: LocalSource,
+    cancel: tokio_util::sync::CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
+    // Open data channel (WebSocket + handshake)
+    let channel = open_data_channel(&stream_url, &token_value).await?;
+    log::info!(
+        "SSM data channel open, agent version: {}",
+        channel.agent_version
+    );
+    start_basic_port_forwarding(channel, local, cancel, ready_tx).await
+}
+
+/// Basic (non-multiplexed) port forwarding using a pre-opened SSM data channel.
+/// Handles one TCP connection at a time serially.
+async fn start_basic_port_forwarding(
+    channel: SsmDataChannel,
+    local: LocalSource,
+    cancel: tokio_util::sync::CancellationToken,
+    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
+
+    // Extract sequence numbers before moving ws
+    let initial_outgoing_seq = channel.outgoing_seq;
+    let initial_incoming_seq = channel.expected_incoming_seq;
+
+    // Split the WebSocket into read/write halves
+    let (ws_write_half, ws_read_half) = channel.ws.split();
+
+    // Wrap write half in Arc<Mutex> for shared access
+    let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write_half));
+
+    let (listener_v4, listener_v6, mut pipes) = match &local {
+        LocalSource::Listen(local_port) => {
+            let local_port = *local_port;
+            let (listener_v4, listener_v6) = bind_local_listeners(local_port)?;
+            if listener_v6.is_some() {
+                log::info!(
+                    "Listening on 127.0.0.1:{} and [::1]:{}",
+                    local_port,
+                    local_port
+                );
+            } else {
+                log::info!(
+                    "Listening on 127.0.0.1:{} (IPv6 not available)",
+                    local_port
+                );
+            }
+            (Some(listener_v4), listener_v6, None)
+        }
+        LocalSource::Pipes(inbox) => {
+            log::info!("Serving local connections from the auth proxy");
+            (None, None, Some(inbox.clone().lock_owned().await))
+        }
+    };
 
     // Signal that the tunnel is ready for connections
     if let Some(tx) = ready_tx {
@@ -609,46 +708,42 @@ async fn start_basic_port_forwarding(
             break;
         }
 
-        let tcp_stream = tokio::select! {
-            result = listener_v4.accept() => {
+        let local_conn = tokio::select! {
+            result = accept_on(listener_v4.as_ref()) => {
                 match result {
-                    Ok((stream, _addr)) => stream,
+                    Ok((stream, _addr)) => {
+                        tune_local_socket(&stream);
+                        LocalConn::Tcp(stream)
+                    }
                     Err(e) => {
                         log::error!("TCP accept error (IPv4): {}", e);
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 }
             }
-            result = async {
-                match &listener_v6 {
-                    Some(l) => l.accept().await,
-                    None => std::future::pending().await,
-                }
-            } => {
+            result = accept_on(listener_v6.as_ref()) => {
                 match result {
-                    Ok((stream, _addr)) => stream,
+                    Ok((stream, _addr)) => {
+                        tune_local_socket(&stream);
+                        LocalConn::Tcp(stream)
+                    }
                     Err(e) => {
                         log::error!("TCP accept error (IPv6): {}", e);
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
+                }
+            }
+            pipe = next_pipe(pipes.as_mut()) => {
+                match pipe {
+                    Some(pipe) => LocalConn::Pipe(pipe),
+                    None => break,
                 }
             }
             _ = cancel.cancelled() => break,
             _ = session_cancel.cancelled() => break,
         };
-
-        // Disable Nagle's algorithm — critical for database protocols that
-        // rely on prompt delivery of small packets (e.g. PostgreSQL 1-byte SSL response).
-        let _ = tcp_stream.set_nodelay(true);
-
-        // Enable TCP keepalive so the kernel detects dead connections.
-        // Without this, a silently dropped connection (e.g. laptop sleep, network change)
-        // leaves the tunnel stuck forever on Linux.
-        let sock_ref = socket2::SockRef::from(&tcp_stream);
-        let keepalive = socket2::TcpKeepalive::new()
-            .with_time(std::time::Duration::from_secs(60))
-            .with_interval(std::time::Duration::from_secs(10));
-        let _ = sock_ref.set_tcp_keepalive(&keepalive);
 
         // Drain any stale data left in the channel from the previous TCP connection
         // (response data in-flight when the previous client disconnected).
@@ -688,7 +783,7 @@ async fn start_basic_port_forwarding(
 
         tcp_connected.store(true, Ordering::Relaxed);
 
-        let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+        let (mut tcp_read, mut tcp_write) = local_conn.into_halves();
 
         // Per-connection cancel token — used to stop the write task when the read side disconnects
         let tcp_conn_cancel = tokio_util::sync::CancellationToken::new();
@@ -827,6 +922,7 @@ async fn start_basic_port_forwarding(
     //    On Linux, delayed drop can block rebinding for up to 60s (TIME_WAIT).
     drop(listener_v4);
     drop(listener_v6);
+    drop(pipes);
 
     // 2. Signal all spawned tasks to stop, then abort to ensure they release
     //    their Arc<Mutex<ws_write>> clones before we try to send terminate.
@@ -862,7 +958,7 @@ async fn start_basic_port_forwarding(
 pub async fn start_multiplexed_port_forwarding(
     stream_url: String,
     token_value: String,
-    local_port: u16,
+    local: LocalSource,
     cancel: CancellationToken,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), String> {
@@ -884,7 +980,7 @@ pub async fn start_multiplexed_port_forwarding(
         // Reuse the existing channel — session tokens are single-use so we can't
         // open a new connection. The agent didn't enable smux framing (version too old),
         // so basic mode works directly on this channel.
-        return start_basic_port_forwarding(channel, local_port, cancel, ready_tx).await;
+        return start_basic_port_forwarding(channel, local, cancel, ready_tx).await;
     }
 
     let initial_outgoing_seq = channel.outgoing_seq;
@@ -895,62 +991,29 @@ pub async fn start_multiplexed_port_forwarding(
     let ws_write = Arc::new(tokio::sync::Mutex::new(ws_write_half));
 
     // Bind TCP listeners (same as basic mode)
-    let listener_v4 = {
-        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, local_port));
-        let socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )
-        .map_err(|e| format!("Failed to create socket: {}", e))?;
-        socket
-            .set_reuse_address(true)
-            .map_err(|e| format!("Failed to set SO_REUSEADDR: {}", e))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
-        socket
-            .bind(&addr.into())
-            .map_err(|e| format!("Failed to bind port {}: {}", local_port, e))?;
-        socket
-            .listen(128)
-            .map_err(|e| format!("Failed to listen on port {}: {}", local_port, e))?;
-        let std_listener: std::net::TcpListener = socket.into();
-        tokio::net::TcpListener::from_std(std_listener)
-            .map_err(|e| format!("Failed to create async listener: {}", e))?
+    let (listener_v4, listener_v6, pipes) = match &local {
+        LocalSource::Listen(local_port) => {
+            let local_port = *local_port;
+            let (listener_v4, listener_v6) = bind_local_listeners(local_port)?;
+            if listener_v6.is_some() {
+                log::info!(
+                    "Multiplexed: listening on 127.0.0.1:{} and [::1]:{}",
+                    local_port,
+                    local_port
+                );
+            } else {
+                log::info!(
+                    "Multiplexed: listening on 127.0.0.1:{} (IPv6 not available)",
+                    local_port
+                );
+            }
+            (Some(listener_v4), listener_v6, None)
+        }
+        LocalSource::Pipes(inbox) => {
+            log::info!("Multiplexed: serving local connections from the auth proxy");
+            (None, None, Some(inbox.clone().lock_owned().await))
+        }
     };
-
-    let listener_v6: Option<tokio::net::TcpListener> = {
-        let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, local_port));
-        socket2::Socket::new(
-            socket2::Domain::IPV6,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )
-        .ok()
-        .and_then(|socket| {
-            let _ = socket.set_only_v6(true);
-            let _ = socket.set_reuse_address(true);
-            let _ = socket.set_nonblocking(true);
-            socket.bind(&addr.into()).ok()?;
-            socket.listen(128).ok()?;
-            let std_listener: std::net::TcpListener = socket.into();
-            tokio::net::TcpListener::from_std(std_listener).ok()
-        })
-    };
-
-    if listener_v6.is_some() {
-        log::info!(
-            "Multiplexed: listening on 127.0.0.1:{} and [::1]:{}",
-            local_port,
-            local_port
-        );
-    } else {
-        log::info!(
-            "Multiplexed: listening on 127.0.0.1:{} (IPv6 not available)",
-            local_port
-        );
-    }
 
     // Signal tunnel ready
     if let Some(tx) = ready_tx {
@@ -1427,6 +1490,7 @@ pub async fn start_multiplexed_port_forwarding(
             smux_session_listener,
             listener_v4,
             listener_v6,
+            pipes,
             combined_cancel,
         )
         .await;

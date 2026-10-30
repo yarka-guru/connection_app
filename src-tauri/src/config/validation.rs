@@ -1,5 +1,6 @@
 use crate::config::projects::ProjectConfig;
 use regex::Regex;
+use serde::Serialize;
 use std::sync::LazyLock;
 
 static REGION_PATTERN: LazyLock<Regex> =
@@ -13,6 +14,12 @@ static SSH_USERNAME_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._-]+$").unwrap());
 static SSH_KEY_PATH_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._/~-]+$").unwrap());
+
+/// True for names safe to use in keys, labels and filters (the rule
+/// environment names are validated against).
+pub fn is_shell_safe(value: &str) -> bool {
+    SHELL_SAFE_PATTERN.is_match(value)
+}
 
 const VALID_RDS_TYPES: &[&str] = &["cluster", "instance"];
 const VALID_ENGINES: &[&str] = &["postgres", "mysql"];
@@ -38,9 +45,122 @@ const REQUIRED_FIELDS: &[&str] = &[
     "defaultPort",
 ];
 
+/// A problem with one field of a project.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FieldError {
+    pub field: String,
+    pub message: String,
+}
+
 pub struct ValidationResult {
     pub valid: bool,
-    pub errors: Vec<String>,
+    pub errors: Vec<FieldError>,
+}
+
+impl ValidationResult {
+    /// Errors as "<field>: <message>" lines (just the message for project-level errors).
+    pub fn messages(&self) -> Vec<String> {
+        self.errors
+            .iter()
+            .map(|e| {
+                if e.field.is_empty() {
+                    e.message.clone()
+                } else {
+                    format!("{}: {}", e.field, e.message)
+                }
+            })
+            .collect()
+    }
+}
+
+fn err(errors: &mut Vec<FieldError>, field: &str, message: impl Into<String>) {
+    errors.push(FieldError {
+        field: field.to_string(),
+        message: message.into(),
+    });
+}
+
+static ACCOUNT_ID_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{12}$").unwrap());
+
+fn validate_environments(
+    config: &ProjectConfig,
+    connection_type: &str,
+    errors: &mut Vec<FieldError>,
+) {
+    if config.password_only == Some(true) && config.auth_type == "iam" {
+        err(
+            errors,
+            "passwordOnly",
+            "passwordOnly cannot be combined with authType \"iam\"",
+        );
+    }
+
+    let Some(envs) = config.environments.as_ref() else {
+        return;
+    };
+    let mut names = std::collections::HashSet::new();
+    let mut ports = std::collections::HashSet::new();
+    for (i, env) in envs.iter().enumerate() {
+        let f = |name: &str| format!("environments[{}].{}", i, name);
+
+        if env.name.is_empty() {
+            err(errors, &f("name"), "Missing required field: name");
+        } else if !SHELL_SAFE_PATTERN.is_match(&env.name) {
+            err(
+                errors,
+                &f("name"),
+                "name contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, and ! allowed)",
+            );
+        } else if !names.insert(env.name.as_str()) {
+            err(errors, &f("name"), format!("duplicate environment name: {}", env.name));
+        }
+
+        if !ACCOUNT_ID_PATTERN.is_match(&env.account_id) {
+            err(errors, &f("accountId"), "accountId must be exactly 12 digits");
+        }
+
+        if !PORT_PATTERN.is_match(&env.port) {
+            err(errors, &f("port"), format!("port must be a numeric string: {}", env.port));
+        } else if !ports.insert(env.port.as_str()) {
+            err(errors, &f("port"), format!("duplicate port within project: {}", env.port));
+        }
+
+        if let Some(v) = env.rds_pattern.as_deref()
+            && !v.is_empty()
+            && connection_type == "rds"
+            && !SHELL_SAFE_PATTERN.is_match(v)
+        {
+            err(
+                errors,
+                &f("rdsPattern"),
+                "rdsPattern contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, and ! allowed)",
+            );
+        }
+        if let Some(v) = env.region.as_deref()
+            && !v.is_empty()
+            && !REGION_PATTERN.is_match(v)
+        {
+            err(errors, &f("region"), format!("Invalid region format: {}", v));
+        }
+        for (key, v) in [
+            ("targetPattern", env.target_pattern.as_deref()),
+            ("bastionPattern", env.bastion_pattern.as_deref()),
+        ] {
+            if let Some(v) = v
+                && !v.is_empty()
+            {
+                if v.len() > 256 {
+                    err(errors, &f(key), format!("{key} must be 256 characters or fewer"));
+                } else if !EC2_FILTER_PATTERN.is_match(v) {
+                    err(
+                        errors,
+                        &f(key),
+                        format!("{key} contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, !, * and ? allowed)"),
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
@@ -55,7 +175,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
 
     // Validate connectionType
     if !VALID_CONNECTION_TYPES.contains(&connection_type) {
-        errors.push(format!(
+        err(&mut errors, "connectionType", format!(
             "connectionType must be one of: {}",
             VALID_CONNECTION_TYPES.join(", ")
         ));
@@ -64,7 +184,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
     // Common required fields (all connection types)
     for (field, value) in [("name", &config.name), ("region", &config.region)] {
         if value.is_empty() {
-            errors.push(format!("Missing required field: {}", field));
+            err(&mut errors, field, format!("Missing required field: {}", field));
         }
     }
 
@@ -78,7 +198,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
 
         // Validate authType
         if !VALID_AUTH_TYPES.contains(&auth_type) {
-            errors.push(format!(
+            err(&mut errors, "authType", format!(
                 "authType must be one of: {}",
                 VALID_AUTH_TYPES.join(", ")
             ));
@@ -92,23 +212,29 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             ("defaultPort", &config.default_port),
         ] {
             if value.is_empty() {
-                errors.push(format!("Missing required field: {}", field));
+                err(&mut errors, field, format!("Missing required field: {}", field));
             }
         }
 
-        // secretPrefix is required only for "secrets" auth type (unless secretPath is set)
+        // A "secrets" project needs a secret (secretPrefix or secretPath).
+        // Automatic auth with no secret signs in as iamUsername instead;
+        // Password only always needs a secret.
         if auth_type == "secrets"
             && config.secret_prefix.is_empty()
             && config.secret_path.as_deref().is_none_or(|s| s.is_empty())
         {
-            errors.push("Missing required field: secretPrefix (required when authType is \"secrets\" and secretPath is not set)".to_string());
+            if config.password_only == Some(true) {
+                err(&mut errors, "secretPrefix", "Missing required field: secretPrefix (Password only needs secretPrefix or secretPath)".to_string());
+            } else if config.iam_username.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                err(&mut errors, "secretPrefix", "Set secretPrefix (or secretPath) to use a secret, or iamUsername to sign in as an IAM DB user".to_string());
+            }
         }
 
         // IAM-specific validation
         if auth_type == "iam"
             && config.iam_username.as_deref().is_none_or(|s| s.is_empty())
         {
-            errors.push(
+            err(&mut errors, "iamUsername",
                 "Missing required field: iamUsername (required when authType is \"iam\")"
                     .to_string(),
             );
@@ -116,7 +242,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
 
         // Validate rdsType
         if !config.rds_type.is_empty() && !VALID_RDS_TYPES.contains(&config.rds_type.as_str()) {
-            errors.push(format!(
+            err(&mut errors, "rdsType", format!(
                 "rdsType must be one of: {}",
                 VALID_RDS_TYPES.join(", ")
             ));
@@ -127,7 +253,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             && !engine.is_empty()
             && !VALID_ENGINES.contains(&engine.as_str())
         {
-            errors.push(format!(
+            err(&mut errors, "engine", format!(
                 "engine must be one of: {}",
                 VALID_ENGINES.join(", ")
             ));
@@ -140,7 +266,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             ("database", &config.database),
         ] {
             if !value.is_empty() && !SHELL_SAFE_PATTERN.is_match(value) {
-                errors.push(format!(
+                err(&mut errors, field, format!(
                     "{} contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, and ! allowed)",
                     field
                 ));
@@ -152,18 +278,18 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             let mut seen = std::collections::HashSet::new();
             for (i, db) in databases.iter().enumerate() {
                 if db.trim().is_empty() {
-                    errors.push(format!(
+                    err(&mut errors, &format!("databases[{}]", i), format!(
                         "databases[{}]: entries must not be empty",
                         i
                     ));
                 } else if !SHELL_SAFE_PATTERN.is_match(db) {
-                    errors.push(format!(
+                    err(&mut errors, &format!("databases[{}]", i), format!(
                         "databases[{}] contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, and ! allowed)",
                         i
                     ));
                 }
                 if !seen.insert(db) {
-                    errors.push(format!(
+                    err(&mut errors, "databases", format!(
                         "databases contains duplicate entry: {}",
                         db
                     ));
@@ -174,9 +300,9 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         // Validate secretPath (if provided, must be non-empty and safe)
         if let Some(ref secret_path) = config.secret_path {
             if secret_path.is_empty() {
-                errors.push("secretPath must be non-empty if provided".to_string());
+                err(&mut errors, "secretPath", "secretPath must be non-empty if provided".to_string());
             } else if !SECRET_PATH_PATTERN.is_match(secret_path) {
-                errors.push(
+                err(&mut errors, "secretPath",
                     "secretPath contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, colons, +, and ! allowed)".to_string(),
                 );
             }
@@ -185,9 +311,9 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         // Validate secretUsernameField (if provided, must be non-empty)
         if let Some(ref field) = config.secret_username_field {
             if field.is_empty() {
-                errors.push("secretUsernameField must be non-empty if provided".to_string());
+                err(&mut errors, "secretUsernameField", "secretUsernameField must be non-empty if provided".to_string());
             } else if !FIELD_NAME_PATTERN.is_match(field) {
-                errors.push(
+                err(&mut errors, "secretUsernameField",
                     "secretUsernameField contains invalid characters (only alphanumeric, dots, and underscores allowed)".to_string(),
                 );
             }
@@ -196,9 +322,9 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         // Validate secretPasswordField (if provided, must be non-empty)
         if let Some(ref field) = config.secret_password_field {
             if field.is_empty() {
-                errors.push("secretPasswordField must be non-empty if provided".to_string());
+                err(&mut errors, "secretPasswordField", "secretPasswordField must be non-empty if provided".to_string());
             } else if !FIELD_NAME_PATTERN.is_match(field) {
-                errors.push(
+                err(&mut errors, "secretPasswordField",
                     "secretPasswordField contains invalid characters (only alphanumeric, dots, and underscores allowed)".to_string(),
                 );
             }
@@ -208,14 +334,14 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         match config.service_type.as_deref() {
             Some(st) if !st.is_empty() => {
                 if !VALID_SERVICE_TYPES.contains(&st) {
-                    errors.push(format!(
+                    err(&mut errors, "serviceType", format!(
                         "serviceType must be one of: {}",
                         VALID_SERVICE_TYPES.join(", ")
                     ));
                 }
             }
             _ => {
-                errors.push("Missing required field: serviceType".to_string());
+                err(&mut errors, "serviceType", "Missing required field: serviceType".to_string());
             }
         }
 
@@ -223,7 +349,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         match config.remote_port {
             Some(port) if port > 0 => {}
             _ => {
-                errors.push("Missing required field: remotePort (must be > 0)".to_string());
+                err(&mut errors, "remotePort", "Missing required field: remotePort (must be > 0)".to_string());
             }
         }
 
@@ -231,7 +357,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         let target_type = match config.target_type.as_deref() {
             Some(tt) if !tt.is_empty() => {
                 if !VALID_TARGET_TYPES.contains(&tt) {
-                    errors.push(format!(
+                    err(&mut errors, "targetType", format!(
                         "targetType must be one of: {}",
                         VALID_TARGET_TYPES.join(", ")
                     ));
@@ -239,7 +365,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
                 Some(tt)
             }
             _ => {
-                errors.push("Missing required field: targetType".to_string());
+                err(&mut errors, "targetType", "Missing required field: targetType".to_string());
                 None
             }
         };
@@ -251,17 +377,17 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
                     match config.target_pattern.as_deref() {
                         Some(tp) if !tp.is_empty() => {
                             if tp.len() > 256 {
-                                errors.push(
+                                err(&mut errors, "targetPattern",
                                     "targetPattern must be 256 characters or fewer".to_string(),
                                 );
                             } else if !EC2_FILTER_PATTERN.is_match(tp) {
-                                errors.push(
+                                err(&mut errors, "targetPattern",
                                     "targetPattern contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, !, * and ? allowed)".to_string(),
                                 );
                             }
                         }
                         _ => {
-                            errors.push("Missing required field: targetPattern".to_string());
+                            err(&mut errors, "targetPattern", "Missing required field: targetPattern".to_string());
                         }
                     }
                 }
@@ -271,14 +397,14 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
                         .as_deref()
                         .is_none_or(|s| s.is_empty())
                     {
-                        errors.push("Missing required field: ecsCluster".to_string());
+                        err(&mut errors, "ecsCluster", "Missing required field: ecsCluster".to_string());
                     }
                     if config
                         .ecs_service
                         .as_deref()
                         .is_none_or(|s| s.is_empty())
                     {
-                        errors.push("Missing required field: ecsService".to_string());
+                        err(&mut errors, "ecsService", "Missing required field: ecsService".to_string());
                     }
                 }
                 _ => {}
@@ -290,7 +416,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             // sshUsername is optional but must be safe if provided
             if let Some(ref username) = config.ssh_username
                 && !username.is_empty() && !SSH_USERNAME_PATTERN.is_match(username) {
-                    errors.push(
+                    err(&mut errors, "sshUsername",
                         "sshUsername contains invalid characters (only alphanumeric, dots, underscores, and hyphens allowed)".to_string(),
                     );
                 }
@@ -298,14 +424,14 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
             // sshKeyPath is optional but must be a safe path if provided
             if let Some(ref key_path) = config.ssh_key_path
                 && !key_path.is_empty() && !SSH_KEY_PATH_PATTERN.is_match(key_path) {
-                    errors.push(
+                    err(&mut errors, "sshKeyPath",
                         "sshKeyPath contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, and ~ allowed)".to_string(),
                     );
                 }
 
             // remotePort should default to 22 for SSH; warn if not set
             if config.remote_port.is_none() {
-                errors.push("Missing required field: remotePort (use 22 for SSH)".to_string());
+                err(&mut errors, "remotePort", "Missing required field: remotePort (use 22 for SSH)".to_string());
             }
         }
     }
@@ -318,9 +444,9 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         && !pattern.is_empty()
     {
         if pattern.len() > 256 {
-            errors.push("bastionPattern must be 256 characters or fewer".to_string());
+            err(&mut errors, "bastionPattern", "bastionPattern must be 256 characters or fewer".to_string());
         } else if !EC2_FILTER_PATTERN.is_match(pattern) {
-            errors.push(
+            err(&mut errors, "bastionPattern",
                 "bastionPattern contains invalid characters (only alphanumeric, dots, underscores, hyphens, slashes, !, * and ? allowed)".to_string(),
             );
         }
@@ -328,26 +454,31 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
 
     // Validate region
     if !config.region.is_empty() && !REGION_PATTERN.is_match(&config.region) {
-        errors.push(format!("Invalid region format: {}", config.region));
+        err(&mut errors, "region", format!("Invalid region format: {}", config.region));
     }
 
     // Validate defaultPort (if provided)
     if !config.default_port.is_empty() && !PORT_PATTERN.is_match(&config.default_port) {
-        errors.push(format!(
+        err(&mut errors, "defaultPort", format!(
             "defaultPort must be a numeric string: {}",
             config.default_port
         ));
     }
 
-    // Validate envPortMapping values
-    for (key, value) in &config.env_port_mapping {
-        if !PORT_PATTERN.is_match(value) {
-            errors.push(format!(
-                "Port for \"{}\" must be a numeric string: {}",
-                key, value
-            ));
+    // Legacy projects only: account-based projects take ports from environments
+    if config.is_legacy() {
+        for (key, value) in &config.env_port_mapping {
+            if !PORT_PATTERN.is_match(value) {
+                err(
+                    &mut errors,
+                    &format!("envPortMapping.{}", key),
+                    format!("Port for \"{}\" must be a numeric string: {}", key, value),
+                );
+            }
         }
     }
+
+    validate_environments(config, connection_type, &mut errors);
 
     ValidationResult {
         valid: errors.is_empty(),
@@ -393,6 +524,8 @@ mod tests {
             multiplexed: None,
             ssh_username: None,
             ssh_key_path: None,
+            environments: None,
+            password_only: None,
         }
     }
 
@@ -409,7 +542,7 @@ mod tests {
         config.name = String::new();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("name")));
+        assert!(result.messages().iter().any(|e| e.contains("name")));
     }
 
     #[test]
@@ -418,7 +551,7 @@ mod tests {
         config.rds_type = "invalid".to_string();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("rdsType")));
+        assert!(result.messages().iter().any(|e| e.contains("rdsType")));
     }
 
     #[test]
@@ -427,7 +560,7 @@ mod tests {
         config.region = "invalid-region".to_string();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("region")));
+        assert!(result.messages().iter().any(|e| e.contains("region")));
     }
 
     #[test]
@@ -436,7 +569,7 @@ mod tests {
         config.default_port = "abc".to_string();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("defaultPort")));
+        assert!(result.messages().iter().any(|e| e.contains("defaultPort")));
     }
 
     #[test]
@@ -445,7 +578,7 @@ mod tests {
         config.secret_prefix = "bad;prefix".to_string();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretPrefix")));
+        assert!(result.messages().iter().any(|e| e.contains("secretPrefix")));
     }
 
     #[test]
@@ -456,7 +589,7 @@ mod tests {
             .insert("staging".to_string(), "notaport".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("staging")));
+        assert!(result.messages().iter().any(|e| e.contains("staging")));
     }
 
     #[test]
@@ -483,7 +616,7 @@ mod tests {
             config.bastion_pattern = Some(pattern.to_string());
             let result = validate_project_config(&config);
             assert!(!result.valid, "expected invalid for pattern: {}", pattern);
-            assert!(result.errors.iter().any(|e| e.contains("bastionPattern")));
+            assert!(result.messages().iter().any(|e| e.contains("bastionPattern")));
         }
     }
 
@@ -493,7 +626,7 @@ mod tests {
         config.bastion_pattern = Some("a".repeat(257));
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("256")));
+        assert!(result.messages().iter().any(|e| e.contains("256")));
     }
 
     fn valid_service_config_ec2() -> ProjectConfig {
@@ -528,6 +661,8 @@ mod tests {
             multiplexed: None,
             ssh_username: None,
             ssh_key_path: None,
+            environments: None,
+            password_only: None,
         }
     }
 
@@ -555,7 +690,7 @@ mod tests {
         config.target_type = None;
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("targetType")));
+        assert!(result.messages().iter().any(|e| e.contains("targetType")));
     }
 
     #[test]
@@ -564,7 +699,7 @@ mod tests {
         config.service_type = Some("ftp".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("serviceType")));
+        assert!(result.messages().iter().any(|e| e.contains("serviceType")));
     }
 
     #[test]
@@ -576,7 +711,7 @@ mod tests {
         config.ecs_service = Some("bastion-service".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("ecsCluster")));
+        assert!(result.messages().iter().any(|e| e.contains("ecsCluster")));
     }
 
     #[test]
@@ -593,7 +728,7 @@ mod tests {
         config.databases = Some(vec!["db1".to_string(), "".to_string()]);
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("databases[1]")));
+        assert!(result.messages().iter().any(|e| e.contains("databases[1]")));
     }
 
     #[test]
@@ -602,7 +737,7 @@ mod tests {
         config.databases = Some(vec!["db1".to_string(), "db1".to_string()]);
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("duplicate")));
+        assert!(result.messages().iter().any(|e| e.contains("duplicate")));
     }
 
     #[test]
@@ -611,7 +746,7 @@ mod tests {
         config.databases = Some(vec!["db;drop".to_string()]);
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("databases[0]")));
+        assert!(result.messages().iter().any(|e| e.contains("databases[0]")));
     }
 
     #[test]
@@ -620,10 +755,10 @@ mod tests {
         // database, secretPrefix, rdsType, rdsPattern are all empty
         let result = validate_project_config(&config);
         assert!(result.valid, "errors: {:?}", result.errors);
-        assert!(!result.errors.iter().any(|e| e.contains("database")));
-        assert!(!result.errors.iter().any(|e| e.contains("secretPrefix")));
-        assert!(!result.errors.iter().any(|e| e.contains("rdsType")));
-        assert!(!result.errors.iter().any(|e| e.contains("rdsPattern")));
+        assert!(!result.messages().iter().any(|e| e.contains("database")));
+        assert!(!result.messages().iter().any(|e| e.contains("secretPrefix")));
+        assert!(!result.messages().iter().any(|e| e.contains("rdsType")));
+        assert!(!result.messages().iter().any(|e| e.contains("rdsPattern")));
     }
 
     // --- Custom Secret Path tests ---
@@ -644,7 +779,7 @@ mod tests {
         config.secret_path = Some(String::new());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretPath")));
+        assert!(result.messages().iter().any(|e| e.contains("secretPath")));
     }
 
     #[test]
@@ -653,7 +788,7 @@ mod tests {
         config.secret_path = Some("bad;secret".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretPath")));
+        assert!(result.messages().iter().any(|e| e.contains("secretPath")));
     }
 
     #[test]
@@ -670,7 +805,7 @@ mod tests {
         config.secret_username_field = Some(String::new());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretUsernameField")));
+        assert!(result.messages().iter().any(|e| e.contains("secretUsernameField")));
     }
 
     #[test]
@@ -679,7 +814,7 @@ mod tests {
         config.secret_password_field = Some(String::new());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretPasswordField")));
+        assert!(result.messages().iter().any(|e| e.contains("secretPasswordField")));
     }
 
     #[test]
@@ -688,7 +823,7 @@ mod tests {
         config.secret_username_field = Some("user;name".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretUsernameField")));
+        assert!(result.messages().iter().any(|e| e.contains("secretUsernameField")));
     }
 
     // --- IAM Auth tests ---
@@ -711,7 +846,7 @@ mod tests {
         config.secret_prefix = String::new();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("iamUsername")));
+        assert!(result.messages().iter().any(|e| e.contains("iamUsername")));
     }
 
     #[test]
@@ -720,7 +855,7 @@ mod tests {
         config.auth_type = "invalid".to_string();
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("authType")));
+        assert!(result.messages().iter().any(|e| e.contains("authType")));
     }
 
     #[test]
@@ -731,7 +866,47 @@ mod tests {
         config.secret_path = None;
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("secretPrefix")));
+        assert!(result.messages().iter().any(|e| e.contains("secretPrefix")));
+    }
+
+    #[test]
+    fn test_automatic_without_secret_but_iam_username_is_valid() {
+        let mut config = valid_config();
+        config.auth_type = "secrets".to_string();
+        config.secret_prefix = String::new();
+        config.secret_path = None;
+        config.iam_username = Some("app_user".to_string());
+        let result = validate_project_config(&config);
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_automatic_without_secret_or_iam_username_names_both_fields() {
+        let mut config = valid_config();
+        config.auth_type = "secrets".to_string();
+        config.secret_prefix = String::new();
+        config.secret_path = None;
+        config.iam_username = Some(String::new());
+        let result = validate_project_config(&config);
+        assert!(!result.valid);
+        let msg = result
+            .messages()
+            .into_iter()
+            .find(|e| e.contains("secretPrefix"))
+            .expect("secretPrefix error");
+        assert!(msg.contains("iamUsername"), "{msg}");
+    }
+
+    #[test]
+    fn test_password_only_without_secret_is_invalid_even_with_iam_username() {
+        let mut config = valid_config();
+        config.secret_prefix = String::new();
+        config.secret_path = None;
+        config.iam_username = Some("app_user".to_string());
+        config.password_only = Some(true);
+        let result = validate_project_config(&config);
+        assert!(!result.valid);
+        assert!(result.messages().iter().any(|e| e.contains("secretPrefix")));
     }
 
     #[test]
@@ -752,7 +927,7 @@ mod tests {
         config.secret_prefix = String::new();
         let result = validate_project_config(&config);
         assert!(result.valid, "errors: {:?}", result.errors);
-        assert!(!result.errors.iter().any(|e| e.contains("secretPrefix")));
+        assert!(!result.messages().iter().any(|e| e.contains("secretPrefix")));
     }
 
     // --- SSH tests ---
@@ -789,6 +964,8 @@ mod tests {
             multiplexed: None,
             ssh_username: Some("ubuntu".to_string()),
             ssh_key_path: Some("~/.ssh/id_rsa".to_string()),
+            environments: None,
+            password_only: None,
         }
     }
 
@@ -812,7 +989,7 @@ mod tests {
         config.ssh_username = Some("user;rm -rf /".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("sshUsername")));
+        assert!(result.messages().iter().any(|e| e.contains("sshUsername")));
     }
 
     #[test]
@@ -821,7 +998,7 @@ mod tests {
         config.ssh_key_path = Some("/path/to/key;bad".to_string());
         let result = validate_project_config(&config);
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("sshKeyPath")));
+        assert!(result.messages().iter().any(|e| e.contains("sshKeyPath")));
     }
 
     #[test]
@@ -832,5 +1009,112 @@ mod tests {
             let result = validate_project_config(&config);
             assert!(result.valid, "expected valid for path: {}", path);
         }
+    }
+
+    fn env(name: &str, account: &str, port: &str) -> crate::config::projects::Environment {
+        crate::config::projects::Environment {
+            name: name.to_string(),
+            account_id: account.to_string(),
+            port: port.to_string(),
+            rds_pattern: None,
+            region: None,
+            target_pattern: None,
+            ecs_cluster: None,
+            ecs_service: None,
+            bastion_pattern: None,
+        }
+    }
+
+    fn account_config(envs: Vec<crate::config::projects::Environment>) -> ProjectConfig {
+        let mut c = valid_config();
+        c.env_port_mapping.clear();
+        c.profile_filter = Some("__connection-app-3.8__".to_string());
+        c.environments = Some(envs);
+        c
+    }
+
+    fn fields(r: &ValidationResult) -> Vec<&str> {
+        r.errors.iter().map(|e| e.field.as_str()).collect()
+    }
+
+    #[test]
+    fn bad_account_id_points_at_field() {
+        let c = account_config(vec![env("dev", "07381380752", "5460")]);
+        let r = validate_project_config(&c);
+        assert!(!r.valid);
+        assert_eq!(fields(&r), vec!["environments[0].accountId"]);
+    }
+
+    #[test]
+    fn duplicate_env_names_and_ports_within_project() {
+        let c = account_config(vec![
+            env("dev", "073813807520", "5460"),
+            env("dev", "073813807521", "5460"),
+        ]);
+        let r = validate_project_config(&c);
+        assert_eq!(
+            fields(&r),
+            vec!["environments[1].name", "environments[1].port"]
+        );
+    }
+
+    #[test]
+    fn same_port_in_two_projects_is_valid() {
+        let a = account_config(vec![env("dev", "073813807520", "5460")]);
+        let b = account_config(vec![env("dev", "073813807521", "5460")]);
+        assert!(validate_project_config(&a).valid);
+        assert!(validate_project_config(&b).valid);
+    }
+
+    #[test]
+    fn password_only_with_iam_is_invalid() {
+        let mut c = account_config(vec![env("dev", "073813807520", "5460")]);
+        c.auth_type = "iam".to_string();
+        c.iam_username = Some("u".to_string());
+        c.password_only = Some(true);
+        let r = validate_project_config(&c);
+        assert_eq!(fields(&r), vec!["passwordOnly"]);
+        c.password_only = Some(false);
+        assert!(validate_project_config(&c).valid);
+    }
+
+    #[test]
+    fn env_name_with_space_is_rejected() {
+        let c = account_config(vec![env("my env", "073813807520", "5460")]);
+        let r = validate_project_config(&c);
+        assert_eq!(fields(&r), vec!["environments[0].name"]);
+    }
+
+    #[test]
+    fn existing_rules_carry_field_names() {
+        let mut c = valid_config();
+        c.region = String::new();
+        let r = validate_project_config(&c);
+        assert_eq!(fields(&r), vec!["region"]);
+        assert_eq!(r.messages(), vec!["region: Missing required field: region"]);
+    }
+
+    #[test]
+    fn non_legacy_project_skips_env_port_mapping() {
+        let mut c = account_config(vec![env("dev", "073813807520", "5460")]);
+        c.env_port_mapping.insert("x".to_string(), "bad".to_string());
+        assert!(validate_project_config(&c).valid);
+    }
+
+    #[test]
+    fn environment_overrides_use_project_patterns() {
+        let mut e = env("dev", "073813807520", "5460");
+        e.rds_pattern = Some("bad;pat".to_string());
+        e.region = Some("nope".to_string());
+        e.bastion_pattern = Some("a b".to_string());
+        let r = validate_project_config(&account_config(vec![e]));
+        assert_eq!(
+            fields(&r),
+            vec![
+                "environments[0].rdsPattern",
+                "environments[0].region",
+                "environments[0].bastionPattern"
+            ]
+        );
     }
 }
