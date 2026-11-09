@@ -499,10 +499,13 @@ mod tests {
                 ecs_cluster: None,
                 ecs_service: None,
                 bastion_pattern: None,
+                ssm_document: None,
+                profile: None,
             },
             legacy: false,
             profile: candidates.first().map(|c| c.to_string()),
             candidates: candidates.iter().map(|c| c.to_string()).collect(),
+            pinned: false,
         }
     }
 

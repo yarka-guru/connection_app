@@ -186,6 +186,8 @@ pub fn apply_migration(
                     ecs_cluster: None,
                     ecs_service: None,
                     bastion_pattern: None,
+                    ssm_document: None,
+                    profile: None,
                 })
                 .collect(),
         );
@@ -335,6 +337,8 @@ mod tests {
             ecs_cluster: None,
             ecs_service: None,
             bastion_pattern: None,
+            ssm_document: None,
+            profile: None,
         }]);
         let mut all = HashMap::from([
             ("zeta".to_string(), project(Some("covered"), &[])),

@@ -32,6 +32,14 @@ pub struct Environment {
     pub ecs_service: Option<String>,
     #[serde(rename = "bastionPattern", default, skip_serializing_if = "Option::is_none")]
     pub bastion_pattern: Option<String>,
+    /// Session document pinned to one destination (only `localPortNumber` is passed).
+    #[serde(rename = "ssmDocument", default, skip_serializing_if = "Option::is_none")]
+    pub ssm_document: Option<String>,
+    /// AWS profile this environment uses when it reaches the account; wins over
+    /// the account-wide choice, so two projects on one account can use
+    /// different roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// How database credentials are obtained.
@@ -69,6 +77,11 @@ pub struct ProjectConfig {
     pub default_port: String,
     #[serde(rename = "bastionPattern", default)]
     pub bastion_pattern: Option<String>,
+    /// SSM session document pinned to one destination, used instead of
+    /// AWS-StartPortForwardingSessionToRemoteHost for bastion tunnels. The
+    /// document fixes host and port itself; only `localPortNumber` is passed.
+    #[serde(rename = "ssmDocument", default, skip_serializing_if = "Option::is_none")]
+    pub ssm_document: Option<String>,
 
     // Connection type: "rds" (default) or "service"
     #[serde(rename = "connectionType", default = "default_connection_type")]
@@ -153,6 +166,9 @@ impl ProjectConfig {
         }
         if let Some(v) = &env.bastion_pattern {
             c.bastion_pattern = Some(v.clone());
+        }
+        if let Some(v) = &env.ssm_document {
+            c.ssm_document = Some(v.clone());
         }
         c
     }
@@ -370,6 +386,7 @@ mod tests {
             env_port_mapping: HashMap::new(),
             default_port: "5432".to_string(),
             bastion_pattern,
+            ssm_document: None,
             connection_type: "rds".to_string(),
             service_type: None,
             remote_port: None,
@@ -401,6 +418,8 @@ mod tests {
             ecs_cluster: None,
             ecs_service: None,
             bastion_pattern: None,
+            ssm_document: None,
+            profile: None,
         }
     }
 
@@ -455,6 +474,30 @@ mod tests {
         assert_eq!(r.rds_pattern, "covered-db-2");
         assert_eq!(r.region, "us-west-1");
         assert_eq!(r.bastion_pattern.as_deref(), Some("bast"));
+    }
+
+    #[test]
+    fn for_environment_overrides_ssm_document() {
+        let mut c = test_config(None);
+        c.ssm_document = Some("project-doc".into());
+        let mut e = env("dev", "073813807522", "15433");
+        assert_eq!(c.for_environment(&e).ssm_document.as_deref(), Some("project-doc"));
+        e.ssm_document = Some("covered-db-dev-port-forward".into());
+        assert_eq!(
+            c.for_environment(&e).ssm_document.as_deref(),
+            Some("covered-db-dev-port-forward")
+        );
+    }
+
+    #[test]
+    fn ssm_document_round_trips_and_is_omitted_when_unset() {
+        let mut e = env("dev", "073813807522", "15433");
+        assert!(!serde_json::to_string(&e).unwrap().contains("ssmDocument"));
+        e.ssm_document = Some("covered-db-dev-port-forward".into());
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"ssmDocument\":\"covered-db-dev-port-forward\""));
+        let back: Environment = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, e);
     }
 
     #[test]

@@ -398,6 +398,8 @@ mod tests {
             ecs_cluster: None,
             ecs_service: None,
             bastion_pattern: None,
+            ssm_document: None,
+            profile: None,
         }]);
         c
     }

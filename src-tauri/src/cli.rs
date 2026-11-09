@@ -24,7 +24,7 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use connection_app_lib::aws::operations::{
     find_bastion_instance, find_ec2_instance, find_ecs_task_ip,
-    start_direct_port_forwarding_session, start_session,
+    start_direct_port_forwarding_session, start_remote_port_forwarding_session,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -429,12 +429,13 @@ async fn run_rds_connect(
 
     // Start SSM session
     eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session...");
-    let session_response = start_session(
+    let session_response = start_remote_port_forwarding_session(
         clients,
         &instance_id,
         &rds_endpoint,
         &rds_port,
         local_port,
+        project_config.ssm_document.as_deref(),
     )
     .await
     .map_err(|e| format!("Failed to start SSM session: {}", e))?;
@@ -578,7 +579,14 @@ async fn run_service_connect(
                 .await
                 .map_err(|e| format!("Failed to find EC2 instance: {}", e))?;
             eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session via bastion...");
-            start_session(clients, &bastion_id, &private_ip, &remote_port, local_port)
+            start_remote_port_forwarding_session(
+                clients,
+                &bastion_id,
+                &private_ip,
+                &remote_port,
+                local_port,
+                project_config.ssm_document.as_deref(),
+            )
                 .await
                 .map_err(|e| format!("Failed to start SSM session: {}", e))?
         }
@@ -599,7 +607,14 @@ async fn run_service_connect(
                 .await
                 .map_err(|e| format!("Failed to find ECS task: {}", e))?;
             eprintln!("  \u{1F6E0}\u{FE0F}  Starting SSM session via bastion to ECS task {}...", task_ip);
-            start_session(clients, &bastion_id, &task_ip, &remote_port, local_port)
+            start_remote_port_forwarding_session(
+                clients,
+                &bastion_id,
+                &task_ip,
+                &remote_port,
+                local_port,
+                project_config.ssm_document.as_deref(),
+            )
                 .await
                 .map_err(|e| format!("Failed to start SSM session: {}", e))?
         }
@@ -1043,10 +1058,13 @@ mod tests {
                 ecs_cluster: None,
                 ecs_service: None,
                 bastion_pattern: None,
+                ssm_document: None,
+                profile: None,
             },
             legacy: false,
             profile: profile.map(String::from),
             candidates: candidates.iter().map(|c| c.to_string()).collect(),
+            pinned: false,
         }
     }
 
