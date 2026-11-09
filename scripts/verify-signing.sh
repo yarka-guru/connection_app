@@ -208,9 +208,53 @@ check_p12() {
   security delete-keychain "$kc" >/dev/null 2>&1
 }
 
+# The Mac App Store build must not contain the updater. Guideline 2.4.5(iv)
+# forbids an app installing its own code, and Apple scans binaries — hiding the
+# button is not enough, the plugin has to be absent.
+check_mas_binary() {
+  local app="$1"
+  echo "MAS app bundle:"
+
+  if [ ! -d "$app" ]; then fail "no such app bundle: $app"; return; fi
+
+  local bin="$app/Contents/MacOS/connection-app"
+  if [ ! -f "$bin" ]; then fail "no executable at $bin"; return; fi
+
+  # grep -a on the raw binary, deliberately not `strings`. On macOS `strings -`
+  # emits ~836k lines against ~26k without the flag and splits tokens across
+  # them, so `strings - | grep tauri_plugin_updater` reports a false PASS on a
+  # binary that plainly contains it. That is exactly the failure this script
+  # exists to prevent, so the check reads the bytes directly.
+  if grep -qa "tauri_plugin_updater" "$bin"; then
+    fail "the updater plugin is compiled into this binary"
+    fail "  build with: --no-default-features --features gui"
+  else
+    pass "updater plugin absent from the binary"
+  fi
+
+  if [ -f "$app/Contents/embedded.provisionprofile" ]; then
+    pass "provisioning profile embedded"
+  else
+    fail "no Contents/embedded.provisionprofile — App Store upload will be rejected"
+  fi
+
+  if codesign -d --entitlements - "$app" 2>/dev/null | grep -q "app-sandbox"; then
+    pass "sandbox enabled"
+  else
+    fail "app-sandbox missing — mandatory for the Mac App Store"
+  fi
+}
+
 case "${1:-}" in
   --entitlements) check_entitlements ;;
   --workflow)     check_workflow ;;
+  --mas-binary)
+    if [ $# -ne 2 ]; then
+      echo "usage: $0 --mas-binary <path/to/App.app>" >&2
+      exit 2
+    fi
+    check_mas_binary "$2"
+    ;;
   --artifacts)
     if [ $# -ne 3 ]; then
       echo "usage: $0 --artifacts <path/to/App.app> <path/to/Disk.dmg>" >&2

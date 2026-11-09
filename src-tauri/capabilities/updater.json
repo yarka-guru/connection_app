@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "Self-update permission. Deleted by scripts/build-mas.sh before a Mac App Store build: Tauri scans this directory regardless of cargo features, and a permission naming a plugin that is not registered aborts the build.",
+  "windows": ["main"],
+  "permissions": ["updater:default"]
+}
