@@ -10,6 +10,23 @@ static SHELL_SAFE_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._!/-]+$").unwrap());
 static EC2_FILTER_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._!/*?-]+$").unwrap());
+/// SSM document name (3-128 of a-zA-Z0-9_.-) or document ARN.
+static SSM_DOCUMENT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([a-zA-Z0-9_.-]{3,128}|arn:aws[a-z-]*:ssm:[a-z0-9-]+:\d{12}:document/[a-zA-Z0-9_.-]{3,128})$")
+        .unwrap()
+});
+const SSM_DOCUMENT_MESSAGE: &str =
+    "ssmDocument must be an SSM document name (3-128 letters, digits, _ . -) or a document ARN";
+
+/// AWS profile name as written in `[profile <name>]`.
+static PROFILE_NAME_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._@+=,!/-]{1,128}$").unwrap());
+
+/// True when `value` is an acceptable `ssmDocument`.
+pub fn is_valid_ssm_document(value: &str) -> bool {
+    SSM_DOCUMENT_PATTERN.is_match(value)
+}
+
 static SSH_USERNAME_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._-]+$").unwrap());
 static SSH_KEY_PATH_PATTERN: LazyLock<Regex> =
@@ -141,6 +158,22 @@ fn validate_environments(
             && !REGION_PATTERN.is_match(v)
         {
             err(errors, &f("region"), format!("Invalid region format: {}", v));
+        }
+        if let Some(v) = env.profile.as_deref()
+            && !v.is_empty()
+            && !PROFILE_NAME_PATTERN.is_match(v)
+        {
+            err(
+                errors,
+                &f("profile"),
+                "profile must be an AWS profile name (letters, digits and . _ @ + = , ! / -)",
+            );
+        }
+        if let Some(v) = env.ssm_document.as_deref()
+            && !v.is_empty()
+            && !is_valid_ssm_document(v)
+        {
+            err(errors, &f("ssmDocument"), SSM_DOCUMENT_MESSAGE);
         }
         for (key, v) in [
             ("targetPattern", env.target_pattern.as_deref()),
@@ -452,6 +485,13 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationResult {
         }
     }
 
+    if let Some(ref document) = config.ssm_document
+        && !document.is_empty()
+        && !is_valid_ssm_document(document)
+    {
+        err(&mut errors, "ssmDocument", SSM_DOCUMENT_MESSAGE);
+    }
+
     // Validate region
     if !config.region.is_empty() && !REGION_PATTERN.is_match(&config.region) {
         err(&mut errors, "region", format!("Invalid region format: {}", config.region));
@@ -509,6 +549,7 @@ mod tests {
             env_port_mapping,
             default_port: "5432".to_string(),
             bastion_pattern: None,
+            ssm_document: None,
             connection_type: "rds".to_string(),
             service_type: None,
             remote_port: None,
@@ -646,6 +687,7 @@ mod tests {
             env_port_mapping,
             default_port: "5900".to_string(),
             bastion_pattern: None,
+            ssm_document: None,
             connection_type: "service".to_string(),
             service_type: Some("vnc".to_string()),
             remote_port: Some(5900),
@@ -949,6 +991,7 @@ mod tests {
             env_port_mapping,
             default_port: "2222".to_string(),
             bastion_pattern: None,
+            ssm_document: None,
             connection_type: "service".to_string(),
             service_type: Some("ssh".to_string()),
             remote_port: Some(22),
@@ -1022,6 +1065,8 @@ mod tests {
             ecs_cluster: None,
             ecs_service: None,
             bastion_pattern: None,
+            ssm_document: None,
+            profile: None,
         }
     }
 
@@ -1116,5 +1161,48 @@ mod tests {
                 "environments[0].bastionPattern"
             ]
         );
+    }
+
+    #[test]
+    fn ssm_document_names_and_arns_are_accepted() {
+        let mut c = valid_config();
+        for ok in [
+            "covered-db-dev-port-forward",
+            "AWS-StartPortForwardingSessionToRemoteHost",
+            "arn:aws:ssm:us-west-1:073813807522:document/covered-db-dev-port-forward",
+        ] {
+            c.ssm_document = Some(ok.to_string());
+            assert!(validate_project_config(&c).valid, "{ok}");
+        }
+        c.ssm_document = Some(String::new());
+        assert!(validate_project_config(&c).valid);
+    }
+
+    #[test]
+    fn ssm_document_rejects_unsafe_values() {
+        let mut c = valid_config();
+        for bad in ["ab", "doc name", "doc;rm", &"a".repeat(129)] {
+            c.ssm_document = Some(bad.to_string());
+            let r = validate_project_config(&c);
+            assert_eq!(fields(&r), vec!["ssmDocument"], "{bad}");
+        }
+    }
+
+    #[test]
+    fn environment_ssm_document_is_validated() {
+        let mut e = env("dev", "073813807520", "5460");
+        e.ssm_document = Some("bad doc".to_string());
+        let r = validate_project_config(&account_config(vec![e]));
+        assert_eq!(fields(&r), vec!["environments[0].ssmDocument"]);
+    }
+
+    #[test]
+    fn environment_profile_is_validated() {
+        let mut e = env("dev", "073813807520", "5460");
+        e.profile = Some("gb-dev-db".to_string());
+        assert!(validate_project_config(&account_config(vec![e.clone()])).valid);
+        e.profile = Some("gb dev;db".to_string());
+        let r = validate_project_config(&account_config(vec![e]));
+        assert_eq!(fields(&r), vec!["environments[0].profile"]);
     }
 }

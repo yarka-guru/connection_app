@@ -3,15 +3,23 @@
 // environment (name, AWS account, local port) with optional overrides.
 const ACCOUNT_ID = /^\d{12}$/
 
+// Pins this environment to one of the account's profiles; empty follows the
+// account-wide choice (the "pick profile" menu below).
+const PROFILE_OVERRIDE = { key: 'profile', label: 'AWS profile', placeholder: "account's chosen profile" }
+
 const RDS_OVERRIDES = [
   { key: 'rdsPattern', label: 'RDS pattern', placeholder: "project's RDS pattern" },
   { key: 'region', label: 'Region', placeholder: "project's region" },
+  { key: 'bastionPattern', label: 'Bastion pattern', placeholder: "project's pattern" },
+  { key: 'ssmDocument', label: 'SSM document', placeholder: "project's document" },
+  PROFILE_OVERRIDE,
 ]
 const SERVICE_OVERRIDES = [
   { key: 'targetPattern', label: 'EC2 name pattern', placeholder: "project's pattern" },
   { key: 'ecsCluster', label: 'ECS cluster', placeholder: "project's cluster" },
   { key: 'ecsService', label: 'ECS service', placeholder: "project's service" },
   { key: 'bastionPattern', label: 'Bastion pattern', placeholder: "project's pattern" },
+  PROFILE_OVERRIDE,
 ]
 
 let {
@@ -204,6 +212,8 @@ function copyFrom(event) {
             {/if}
           {:else if candidates.length === 1}
             <span class="status-text">via {candidates[0]}</span>
+          {:else if env.profile?.trim() && candidates.includes(env.profile.trim())}
+            <span class="status-text">via {env.profile.trim()} (pinned)</span>
           {:else}
             <label class="status-text" for="{uid}-pick-{i}">pick profile</label>
             <select

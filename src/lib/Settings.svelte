@@ -75,6 +75,7 @@ let projectRdsType = $state('cluster')
 let projectEngine = $state('postgres')
 let projectRdsPattern = $state('')
 let projectBastionPattern = $state('')
+let projectSsmDocument = $state('')
 let projectDefaultPort = $state('5432')
 let projectEnvironments = $state([])
 let projectSecretPath = $state('')
@@ -119,7 +120,7 @@ const chosenProfiles = $derived.by(() => {
   const chosen = {}
   for (const p of overview.projects) {
     for (const env of p.environments) {
-      if (env.profile && env.candidates.length > 1) chosen[env.environment.accountId] = env.profile
+      if (env.profile && !env.pinned && env.candidates.length > 1) chosen[env.environment.accountId] = env.profile
     }
   }
   return chosen
@@ -420,6 +421,7 @@ function openProjectForm(mode, key = '', source = null, entry = null) {
   projectEngine = config.engine || 'postgres'
   projectRdsPattern = config.rdsPattern || ''
   projectBastionPattern = config.bastionPattern || ''
+  projectSsmDocument = config.ssmDocument || ''
   projectDefaultPort = config.defaultPort ? String(config.defaultPort) : '5432'
   projectEnvironments = (config.environments || []).map((e) => ({ ...e, port: e.port == null ? '' : String(e.port) }))
   projectSecretPath = config.secretPath || ''
@@ -470,7 +472,7 @@ function updateDatabase(index, value) {
   projectDatabases = projectDatabases.map((d, i) => i === index ? value : d)
 }
 
-const OVERRIDE_KEYS = ['rdsPattern', 'region', 'targetPattern', 'ecsCluster', 'ecsService', 'bastionPattern']
+const OVERRIDE_KEYS = ['rdsPattern', 'region', 'targetPattern', 'ecsCluster', 'ecsService', 'bastionPattern', 'ssmDocument', 'profile']
 
 function optional(value) {
   return value.trim() || null
@@ -528,6 +530,7 @@ function buildConfig() {
     // Absent means on; keep an explicit true as it was written
     multiplexed: projectMultiplexed ? (base.multiplexed === true ? true : null) : false,
     bastionPattern: optional(projectBastionPattern),
+    ssmDocument: rds ? optional(projectSsmDocument) : (base.ssmDocument ?? null),
     // Legacy profile matching: fixed for new projects, kept as stored otherwise
     profileFilter: isNew ? HIDE_FROM_LEGACY_FILTER : (base.profileFilter ?? null),
     envPortMapping: isNew ? {} : (base.envPortMapping ?? {}),
@@ -601,6 +604,7 @@ const visibleFields = $derived.by(() => {
     if (projectServiceType === 'ssh') add('sshUsername', 'sshKeyPath')
   }
   if (projectConnectionType === 'rds' || projectTargetType !== 'ec2-direct') add('bastionPattern')
+  if (projectConnectionType === 'rds') add('ssmDocument')
   return fields
 })
 
@@ -626,7 +630,7 @@ function hasErrorIn(fields) {
 const GENERAL_FIELDS = ['key', 'name', 'region', 'defaultPort', 'connectionType']
 const DATABASE_FIELDS = ['database', 'databases', 'authType', 'passwordOnly', 'iamUsername', 'secretPrefix', 'rdsType', 'engine', 'rdsPattern']
 const SERVICE_FIELDS = ['serviceType', 'remotePort', 'targetType', 'targetPattern', 'ecsCluster', 'ecsService', 'sshUsername', 'sshKeyPath']
-const ADVANCED_FIELDS = ['secretPath', 'secretUsernameField', 'secretPasswordField', 'bastionPattern']
+const ADVANCED_FIELDS = ['secretPath', 'secretUsernameField', 'secretPasswordField', 'bastionPattern', 'ssmDocument']
 
 // A section with an error stays open so the error is visible
 const environmentsOpen = $derived(sectionEnvironments || hasEnvironmentsError)
@@ -1563,6 +1567,15 @@ onDestroy(() => {
                     <input id="project-bastion-pattern" type="text" bind:value={projectBastionPattern} placeholder="*bastion* (default)" />
                     <span class="field-hint">EC2 Name tag filter for bastion instances (supports * wildcards)</span>
                     {@render fieldErrorText('bastionPattern')}
+                  </div>
+                {/if}
+
+                {#if projectConnectionType === 'rds'}
+                  <div class="form-group">
+                    <label for="project-ssm-document">SSM Document</label>
+                    <input id="project-ssm-document" type="text" bind:value={projectSsmDocument} placeholder="AWS-StartPortForwardingSessionToRemoteHost (default)" />
+                    <span class="field-hint">A session document pinned to the database (host and port fixed in the document). Only the local port is passed. Set it when your role may use only that document.</span>
+                    {@render fieldErrorText('ssmDocument')}
                   </div>
                 {/if}
 

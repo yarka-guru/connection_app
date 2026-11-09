@@ -398,6 +398,82 @@ pub async fn find_bastion_instance(
     )))
 }
 
+/// True for the error codes AWS returns when the caller lacks permission.
+fn is_access_denied(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation")
+    )
+}
+
+/// DB instances to match `rds_pattern` against. Listing every instance needs
+/// `rds:DescribeDBInstances` on `db:*`; a role scoped to named instances is
+/// refused that, so on AccessDenied the pattern is described as an exact
+/// identifier instead.
+async fn describe_db_instances_for(
+    clients: &AwsClients,
+    rds_pattern: &str,
+) -> Result<Vec<aws_sdk_rds::types::DbInstance>, AppError> {
+    use aws_sdk_rds::error::ProvideErrorMetadata;
+    match clients.rds.describe_db_instances().send().await {
+        Ok(response) => Ok(response.db_instances().to_vec()),
+        Err(e) if is_access_denied(e.code()) => {
+            log::info!(
+                "Listing DB instances denied; describing {} as an exact identifier",
+                rds_pattern
+            );
+            clients
+                .rds
+                .describe_db_instances()
+                .db_instance_identifier(rds_pattern)
+                .send()
+                .await
+                .map(|response| response.db_instances().to_vec())
+                .map_err(|e| {
+                    AppError::Aws(format!(
+                        "Listing DB instances is not allowed, and describing \"{}\" as an exact identifier failed: {}. With a role scoped to named instances, set rdsPattern to the exact DB instance identifier.",
+                        rds_pattern,
+                        e.into_service_error()
+                    ))
+                })
+        }
+        Err(e) => Err(AppError::Aws(format!("Failed to describe DB instances: {}", e))),
+    }
+}
+
+/// DB clusters to match `rds_pattern` against, with the same exact-identifier
+/// fallback as `describe_db_instances_for`.
+async fn describe_db_clusters_for(
+    clients: &AwsClients,
+    rds_pattern: &str,
+) -> Result<Vec<aws_sdk_rds::types::DbCluster>, AppError> {
+    use aws_sdk_rds::error::ProvideErrorMetadata;
+    match clients.rds.describe_db_clusters().send().await {
+        Ok(response) => Ok(response.db_clusters().to_vec()),
+        Err(e) if is_access_denied(e.code()) => {
+            log::info!(
+                "Listing DB clusters denied; describing {} as an exact identifier",
+                rds_pattern
+            );
+            clients
+                .rds
+                .describe_db_clusters()
+                .db_cluster_identifier(rds_pattern)
+                .send()
+                .await
+                .map(|response| response.db_clusters().to_vec())
+                .map_err(|e| {
+                    AppError::Aws(format!(
+                        "Listing DB clusters is not allowed, and describing \"{}\" as an exact identifier failed: {}. With a role scoped to named clusters, set rdsPattern to the exact DB cluster identifier.",
+                        rds_pattern,
+                        e.into_service_error()
+                    ))
+                })
+        }
+        Err(e) => Err(AppError::Aws(format!("Failed to describe DB clusters: {}", e))),
+    }
+}
+
 /// Get the RDS endpoint (cluster or instance based on rdsType).
 pub async fn get_rds_endpoint(
     clients: &AwsClients,
@@ -418,15 +494,10 @@ pub async fn get_rds_target(
 ) -> Result<Option<RdsTarget>, AppError> {
     match rds_type {
         "cluster" => {
-            let response = clients
-                .rds
-                .describe_db_clusters()
-                .send()
-                .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {}", e)))?;
+            let clusters = describe_db_clusters_for(clients, rds_pattern).await?;
 
             Ok(first_matching_target(
-                response.db_clusters().iter().map(|cluster| {
+                clusters.iter().map(|cluster| {
                     (
                         cluster.db_cluster_identifier().unwrap_or_default(),
                         cluster.status().unwrap_or_default(),
@@ -437,15 +508,10 @@ pub async fn get_rds_target(
             ))
         }
         "instance" => {
-            let response = clients
-                .rds
-                .describe_db_instances()
-                .send()
-                .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {}", e)))?;
+            let instances = describe_db_instances_for(clients, rds_pattern).await?;
 
             Ok(first_matching_target(
-                response.db_instances().iter().map(|instance| {
+                instances.iter().map(|instance| {
                     (
                         instance.db_instance_identifier().unwrap_or_default(),
                         instance.db_instance_status().unwrap_or_default(),
@@ -468,14 +534,9 @@ pub async fn get_rds_port(
 ) -> Result<String, AppError> {
     match rds_type {
         "cluster" => {
-            let response = clients
-                .rds
-                .describe_db_clusters()
-                .send()
-                .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB clusters: {}", e)))?;
+            let clusters = describe_db_clusters_for(clients, rds_pattern).await?;
 
-            for cluster in response.db_clusters() {
+            for cluster in &clusters {
                 let status = cluster.status().unwrap_or_default();
                 let identifier = cluster.db_cluster_identifier().unwrap_or_default();
 
@@ -490,14 +551,9 @@ pub async fn get_rds_port(
             Ok(fallback_port.to_string())
         }
         "instance" => {
-            let response = clients
-                .rds
-                .describe_db_instances()
-                .send()
-                .await
-                .map_err(|e| AppError::Aws(format!("Failed to describe DB instances: {}", e)))?;
+            let instances = describe_db_instances_for(clients, rds_pattern).await?;
 
-            for instance in response.db_instances() {
+            for instance in &instances {
                 let status = instance.db_instance_status().unwrap_or_default();
                 let identifier = instance.db_instance_identifier().unwrap_or_default();
 
@@ -558,26 +614,58 @@ pub async fn wait_for_ssm_agent_ready(
     Ok(false)
 }
 
+/// The SSM document and parameters of a bastion port-forwarding session.
+///
+/// Without a pinned document it is AWS-StartPortForwardingSessionToRemoteHost
+/// with the caller's host and port. A pinned document fixes host and port
+/// itself, so only `localPortNumber` is passed: a role that may use only that
+/// document is refused any other destination.
+pub fn remote_session_request(
+    pinned_document: Option<&str>,
+    remote_host: &str,
+    remote_port: &str,
+    local_port: &str,
+) -> (String, Vec<(&'static str, String)>) {
+    match pinned_document.filter(|d| !d.trim().is_empty()) {
+        Some(document) => (
+            document.trim().to_string(),
+            vec![("localPortNumber", local_port.to_string())],
+        ),
+        None => (
+            "AWS-StartPortForwardingSessionToRemoteHost".to_string(),
+            vec![
+                ("host", remote_host.to_string()),
+                ("portNumber", remote_port.to_string()),
+                ("localPortNumber", local_port.to_string()),
+            ],
+        ),
+    }
+}
+
 /// Start an SSM port forwarding session to a remote host (through a bastion).
-/// Uses AWS-StartPortForwardingSessionToRemoteHost document.
+/// Uses `pinned_document` when set, otherwise
+/// AWS-StartPortForwardingSessionToRemoteHost (see `remote_session_request`).
 pub async fn start_remote_port_forwarding_session(
     clients: &AwsClients,
     bastion_instance_id: &str,
     remote_host: &str,
     remote_port: &str,
     local_port: &str,
+    pinned_document: Option<&str>,
 ) -> Result<aws_sdk_ssm::operation::start_session::StartSessionOutput, AppError> {
-    let response = clients
+    let (document, parameters) =
+        remote_session_request(pinned_document, remote_host, remote_port, local_port);
+    let mut request = clients
         .ssm
         .start_session()
         .target(bastion_instance_id)
-        .document_name("AWS-StartPortForwardingSessionToRemoteHost")
-        .parameters("host", vec![remote_host.to_string()])
-        .parameters("portNumber", vec![remote_port.to_string()])
-        .parameters("localPortNumber", vec![local_port.to_string()])
-        .send()
-        .await
-        .map_err(|e| AppError::Aws(format!("Failed to start SSM session: {}", e)))?;
+        .document_name(&document);
+    for (name, value) in parameters {
+        request = request.parameters(name, vec![value]);
+    }
+    let response = request.send().await.map_err(|e| {
+        AppError::Aws(format!("Failed to start SSM session with document {}: {}", document, e))
+    })?;
 
     Ok(response)
 }
@@ -590,7 +678,7 @@ pub async fn start_session(
     remote_port: &str,
     local_port: &str,
 ) -> Result<aws_sdk_ssm::operation::start_session::StartSessionOutput, AppError> {
-    start_remote_port_forwarding_session(clients, instance_id, rds_endpoint, remote_port, local_port)
+    start_remote_port_forwarding_session(clients, instance_id, rds_endpoint, remote_port, local_port, None)
         .await
 }
 
@@ -887,5 +975,47 @@ mod tests {
         let target = first_matching_target(instances, "covered-db").unwrap();
         assert_eq!(target.identifier, "covered-db-ro");
         assert!(target.endpoint.starts_with("covered-db-ro."));
+    }
+
+    #[test]
+    fn without_a_pinned_document_the_remote_host_document_gets_host_and_port() {
+        let (document, params) =
+            remote_session_request(None, "db.example.com", "5433", "15433");
+        assert_eq!(document, "AWS-StartPortForwardingSessionToRemoteHost");
+        assert_eq!(
+            params,
+            vec![
+                ("host", "db.example.com".to_string()),
+                ("portNumber", "5433".to_string()),
+                ("localPortNumber", "15433".to_string()),
+            ]
+        );
+        // An empty value is the same as unset.
+        assert_eq!(
+            remote_session_request(Some("  "), "h", "1", "2").0,
+            "AWS-StartPortForwardingSessionToRemoteHost"
+        );
+    }
+
+    #[test]
+    fn a_pinned_document_gets_only_the_local_port() {
+        let (document, params) = remote_session_request(
+            Some("covered-db-dev-port-forward"),
+            "db.example.com",
+            "5433",
+            "15433",
+        );
+        assert_eq!(document, "covered-db-dev-port-forward");
+        assert_eq!(params, vec![("localPortNumber", "15433".to_string())]);
+    }
+
+    #[test]
+    fn access_denied_codes() {
+        for code in ["AccessDenied", "AccessDeniedException", "UnauthorizedOperation"] {
+            assert!(is_access_denied(Some(code)), "{code}");
+        }
+        for code in [None, Some("DBInstanceNotFound"), Some("Throttling")] {
+            assert!(!is_access_denied(code), "{code:?}");
+        }
     }
 }

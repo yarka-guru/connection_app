@@ -249,8 +249,26 @@ works for everyone whatever their profiles are called.
 | `name` | Unique within the project, shell-safe | `"prod"` |
 | `accountId` | 12-digit AWS account ID, stored as a string | `"073813807522"` |
 | `port` | Local port, digits only, unique within the project | `"5460"` |
-| `rdsPattern`, `region` | Optional overrides for this environment | `null` |
-| `targetPattern`, `ecsCluster`, `ecsService`, `bastionPattern` | Optional overrides for service projects | `null` |
+| `rdsPattern`, `region`, `bastionPattern` | Optional overrides for this environment | `null` |
+| `targetPattern`, `ecsCluster`, `ecsService` | Optional overrides for service projects | `null` |
+| `ssmDocument` | Optional session document pinned to one destination, see below | `null` |
+| `profile` | Optional AWS profile for this environment; wins over the account-wide choice when it is one of the account's profiles, ignored otherwise | `null` |
+
+**Pinned session documents.** By default a bastion tunnel uses
+`AWS-StartPortForwardingSessionToRemoteHost`, which lets the caller choose the
+destination host and port. A role that may only use a document with the host
+and port fixed in it (for example `covered-db-dev-port-forward`) is refused
+that one. Set `ssmDocument` (on the project or on an environment) to the
+document name or ARN: the app then passes only `localPortNumber`. Such roles
+are usually also scoped to named DB instances and may not list them; when
+listing is denied the app describes `rdsPattern` as an exact identifier, so
+set `rdsPattern` to the instance (or cluster) identifier.
+
+**Two roles on one account.** Profiles are chosen per account, so two projects
+on the same account use the same profile. To give one of them another role
+(say a database-only role next to an administrator one), set that
+environment's `profile`. Profile names are personal: leave `profile` out of a
+`projects.json` you share.
 
 The app finds the profile for an account in `~/.aws/config` (`sso_account_id`,
 or the account in `role_arn`). For a profile whose config does not name its

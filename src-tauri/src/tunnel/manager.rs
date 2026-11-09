@@ -843,6 +843,7 @@ impl TunnelManager {
             remote_host: rds_endpoint,
             remote_port: rds_port,
             multiplexed: project_config.multiplexed.unwrap_or(true),
+            ssm_document: project_config.ssm_document.clone(),
         };
 
         Ok((connection_info, target, proxy_settings))
@@ -940,6 +941,7 @@ impl TunnelManager {
                     remote_host: ip.clone(),
                     remote_port: remote_port.to_string(),
                     multiplexed: project_config.multiplexed.unwrap_or(true),
+                    ssm_document: project_config.ssm_document.clone(),
                 };
                 (target, Some(bastion_id), Some(ip))
             }
@@ -992,6 +994,7 @@ impl TunnelManager {
                     remote_host: task_ip.clone(),
                     remote_port: remote_port.to_string(),
                     multiplexed: project_config.multiplexed.unwrap_or(true),
+                    ssm_document: project_config.ssm_document.clone(),
                 };
                 (target, Some(bastion_id), Some(task_ip))
             }
@@ -1161,6 +1164,8 @@ enum TunnelTarget {
         remote_host: String,
         remote_port: String,
         multiplexed: bool,
+        /// Pinned SSM document (`ssmDocument`); None uses the AWS remote-host one.
+        ssm_document: Option<String>,
     },
     /// Direct port forwarding to an EC2 instance (SSM agent on the instance itself).
     DirectInstance {
@@ -1331,7 +1336,7 @@ async fn rediscover_target(
     current: &TunnelTarget,
 ) -> Result<TunnelTarget, AppError> {
     match current {
-        TunnelTarget::RemoteHost { remote_port, multiplexed, .. } => {
+        TunnelTarget::RemoteHost { remote_port, multiplexed, ssm_document, .. } => {
             // Re-find bastion (no preference on reconnect — use whatever is available)
             emit_status_event(app_handle, "Finding bastion instance...", Some(connection_id));
             let bastion_id =
@@ -1373,6 +1378,7 @@ async fn rediscover_target(
                 remote_host,
                 remote_port: remote_port.clone(),
                 multiplexed: *multiplexed,
+                ssm_document: ssm_document.clone(),
             })
         }
         TunnelTarget::DirectInstance { remote_port, multiplexed, .. } => {
@@ -1420,7 +1426,7 @@ async fn start_port_forwarding_with_retry(
         match result {
             Ok(()) => return Ok(()),
             Err(PortForwardError::TargetNotConnected) if retry_count < PORT_FORWARDING_MAX_RETRIES => {
-                if let TunnelTarget::RemoteHost { ref remote_host, ref remote_port, multiplexed, .. } = current_target {
+                if let TunnelTarget::RemoteHost { ref remote_host, ref remote_port, multiplexed, ref ssm_document, .. } = current_target {
                     // TargetNotConnected means the SSM target isn't currently reachable —
                     // typically a stale/cached bastion ID pointing at a replaced instance, or
                     // the SSM agent briefly not connected. Re-discover the current running
@@ -1439,6 +1445,7 @@ async fn start_port_forwarding_with_retry(
                         remote_host: remote_host.clone(),
                         remote_port: remote_port.clone(),
                         multiplexed,
+                        ssm_document: ssm_document.clone(),
                     };
                 }
 
@@ -1473,9 +1480,9 @@ async fn execute_port_forwarding(
 ) -> Result<(), PortForwardError> {
     // Start SSM session based on target type
     let session_response = match target {
-        TunnelTarget::RemoteHost { bastion_id, remote_host, remote_port, .. } => {
+        TunnelTarget::RemoteHost { bastion_id, remote_host, remote_port, ssm_document, .. } => {
             operations::start_remote_port_forwarding_session(
-                clients, bastion_id, remote_host, remote_port, local_port,
+                clients, bastion_id, remote_host, remote_port, local_port, ssm_document.as_deref(),
             )
             .await
         }

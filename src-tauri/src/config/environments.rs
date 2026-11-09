@@ -15,6 +15,9 @@ pub struct ResolvedEnvironment {
     pub legacy: bool,
     pub profile: Option<String>,
     pub candidates: Vec<String>,
+    /// True when `profile` comes from the environment's own `profile` field
+    /// rather than the account-wide choice.
+    pub pinned: bool,
 }
 
 /// Resolve a project's environments to profiles.
@@ -49,10 +52,13 @@ pub fn resolve_environments(
                         ecs_cluster: None,
                         ecs_service: None,
                         bastion_pattern: None,
+                        ssm_document: None,
+                        profile: None,
                     },
                     legacy: true,
                     profile: Some(profile.clone()),
                     candidates: vec![profile],
+                    pinned: false,
                 }
             })
             .collect();
@@ -68,15 +74,28 @@ pub fn resolve_environments(
                 .filter(|p| p.account_id.as_deref() == Some(env.account_id.as_str()))
                 .map(|p| p.profile.clone())
                 .collect();
-            let profile = get_account_profile(prefs, &env.account_id)
-                .filter(|r| candidates.iter().any(|c| c == r))
-                .map(str::to_string)
-                .or_else(|| candidates.first().cloned());
+            // The environment's own profile, when it reaches the account, wins
+            // over the account-wide choice; otherwise the old order applies.
+            let is_candidate = |r: &str| candidates.iter().any(|c| c == r);
+            let pinned_profile = env
+                .profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty() && is_candidate(p))
+                .map(str::to_string);
+            let pinned = pinned_profile.is_some();
+            let profile = pinned_profile.or_else(|| {
+                get_account_profile(prefs, &env.account_id)
+                    .filter(|r| is_candidate(r))
+                    .map(str::to_string)
+                    .or_else(|| candidates.first().cloned())
+            });
             ResolvedEnvironment {
                 environment: env.clone(),
                 legacy: false,
                 profile,
                 candidates,
+                pinned,
             }
         })
         .collect()
@@ -208,6 +227,37 @@ mod tests {
         set_account_profile(&mut prefs, ACCT, SSO);
         let r = resolve(&one_env(ACCT), &profiles, &prefs);
         assert_eq!(r[0].profile.as_deref(), Some(SSO));
+    }
+
+    #[test]
+    fn environment_profile_wins_over_the_account_choice() {
+        // Two projects on one account: one keeps the admin profile, the other
+        // pins the database role, and the account-wide choice moves neither.
+        let profiles = [pa("covered-dev", Some(ACCT)), pa("gb-dev-db", Some(ACCT))];
+        let pinned = env_project(json!([
+            { "name": "dev", "accountId": ACCT, "port": "15433", "profile": "gb-dev-db" }
+        ]));
+        let mut prefs = Preferences::default();
+        let r = resolve(&pinned, &profiles, &prefs);
+        assert_eq!(r[0].profile.as_deref(), Some("gb-dev-db"));
+        assert!(r[0].pinned);
+
+        set_account_profile(&mut prefs, ACCT, "covered-dev");
+        assert_eq!(resolve(&pinned, &profiles, &prefs)[0].profile.as_deref(), Some("gb-dev-db"));
+        let other = resolve(&one_env(ACCT), &profiles, &prefs);
+        assert_eq!(other[0].profile.as_deref(), Some("covered-dev"));
+        assert!(!other[0].pinned);
+    }
+
+    #[test]
+    fn environment_profile_for_another_account_is_ignored() {
+        let profiles = [pa("covered-dev", Some(ACCT)), pa("gb-dev-db", Some("073813807522"))];
+        let p = env_project(json!([
+            { "name": "dev", "accountId": ACCT, "port": "15433", "profile": "gb-dev-db" }
+        ]));
+        let r = resolve(&p, &profiles, &Preferences::default());
+        assert_eq!(r[0].profile.as_deref(), Some("covered-dev"));
+        assert!(!r[0].pinned);
     }
 
     #[test]

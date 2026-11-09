@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.0] - 2026-11-09
+
+### Added
+- `ssmDocument` (project or environment): a session document pinned to one
+  destination, used instead of `AWS-StartPortForwardingSessionToRemoteHost`
+  for bastion tunnels, with only `localPortNumber` passed. Needed for roles
+  that may start sessions only with such a document. Settings → Advanced and
+  the environment overrides have a field for it.
+- `profile` (environment): pins the AWS profile of one environment, over the
+  account-wide choice, so two projects on one account can use different roles.
+
+### Changed
+- When listing RDS instances or clusters is denied (a role scoped to named
+  instances), `rdsPattern` is described as an exact identifier instead of
+  failing the connect.
+- The environment overrides of database projects include `bastionPattern`.
+
 ## [3.8.0] - 2026-10-30
 
 ### Added
