@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.9.0] - 2026-11-09
 
 ### Added
 - `ssmDocument` (project or environment): a session document pinned to one
