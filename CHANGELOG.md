@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.9.2] - 2026-11-18
 
 ### Fixed
 - Connecting failed with "Could not determine the AWS account: dispatch
