@@ -515,3 +515,45 @@ pub async fn ensure_sso_session(
     )
     .await
 }
+
+/// True when AWS SSO turned down the cached access token although it has not
+/// expired by its own clock: the user signed out of the access portal, or the
+/// session was revoked. Only a new sign-in helps then.
+pub fn is_sso_token_rejected(message: &str) -> bool {
+    message.contains("UnauthorizedException")
+}
+
+/// The account `profile` signs in to, with clients for it. When AWS SSO
+/// rejects the cached token, sign in again once and retry: the token cache
+/// alone cannot tell a revoked token from a good one.
+pub async fn caller_account_with_sso_retry(
+    profile: &str,
+    region: &str,
+    handler: &dyn SsoEventHandler,
+    connection_id: Option<&str>,
+) -> Result<(crate::aws::credentials::AwsClients, String), AppError> {
+    let clients = crate::aws::credentials::create_aws_clients(profile, region).await;
+    let err = match crate::aws::operations::caller_account_id(&clients).await {
+        Ok(account) => return Ok((clients, account)),
+        Err(e) => e,
+    };
+    let sso_config = match get_sso_config(profile).await {
+        Some(c) if is_sso_token_rejected(&err.to_string()) => c,
+        _ => return Err(err),
+    };
+
+    handler.on_status("AWS SSO session was revoked, signing in again...", connection_id);
+    perform_sso_login(
+        &sso_config.start_url,
+        &sso_config.region,
+        sso_config.session_name.as_deref(),
+        handler,
+        connection_id,
+    )
+    .await?;
+
+    // New clients: the old ones keep the rejected token in their identity cache.
+    let clients = crate::aws::credentials::create_aws_clients(profile, region).await;
+    let account = crate::aws::operations::caller_account_id(&clients).await?;
+    Ok((clients, account))
+}

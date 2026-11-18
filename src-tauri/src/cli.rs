@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Select};
-use connection_app_lib::aws::credentials::create_aws_clients;
 use connection_app_lib::aws::operations;
-use connection_app_lib::aws::sso::{ensure_sso_session, CliSsoHandler};
+use connection_app_lib::aws::sso::{caller_account_with_sso_retry, ensure_sso_session, CliSsoHandler};
 use connection_app_lib::config::accounts::{load_account_cache, profile_accounts, ProfileAccount};
 use connection_app_lib::config::aws_config::{read_aws_config, read_aws_profile_names};
 use connection_app_lib::config::environments::{
@@ -235,15 +234,16 @@ async fn run_connect(cli: Cli) -> Result<(), String> {
         .await
         .map_err(|e| format!("SSO login failed: {}", e))?;
 
-    // Create AWS clients
-    let clients = create_aws_clients(&profile, &project_config.region).await;
+    // Create AWS clients and check who they sign in as. This also catches
+    // an SSO token revoked before its expiry and signs in again.
+    eprintln!("  \u{1F50E} Checking AWS account...");
+    let (clients, actual) =
+        caller_account_with_sso_retry(&profile, &project_config.region, &sso_handler, None)
+            .await
+            .map_err(|e| format!("Failed to check AWS account: {}", e))?;
 
     // The profile must sign in to the environment's account
     if let Some(expected) = account_to_verify(resolved) {
-        eprintln!("  \u{1F50E} Checking AWS account...");
-        let actual = operations::caller_account_id(&clients)
-            .await
-            .map_err(|e| format!("Failed to check AWS account: {}", e))?;
         operations::ensure_account(expected, &actual, &env_name).map_err(|e| e.to_string())?;
     }
 

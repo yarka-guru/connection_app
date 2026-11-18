@@ -1,7 +1,7 @@
-use crate::aws::credentials::{build_aws_config, create_aws_clients, AwsClients};
+use crate::aws::credentials::{build_aws_config, AwsClients};
 use crate::aws::iam_auth;
 use crate::aws::operations;
-use crate::aws::sso::{ensure_sso_session, TauriSsoHandler};
+use crate::aws::sso::{caller_account_with_sso_retry, ensure_sso_session, TauriSsoHandler};
 use crate::config::accounts;
 use crate::config::aws_config::read_aws_config;
 use crate::config::environments::{
@@ -420,13 +420,19 @@ impl TunnelManager {
         };
         ensure_sso_session(profile, &sso_handler, Some(&connection_id)).await?;
 
-        // Create AWS clients
-        let clients = create_aws_clients(profile, &project_config.region).await;
+        // Create AWS clients and check who they sign in as. This also catches
+        // an SSO token revoked before its expiry and signs in again.
+        self.emit_status("Checking AWS account...", Some(&connection_id));
+        let (clients, actual) = caller_account_with_sso_retry(
+            profile,
+            &project_config.region,
+            &sso_handler,
+            Some(&connection_id),
+        )
+        .await?;
 
         // The profile must sign in to the environment's account
         if let Some(expected) = account_to_verify(&resolved) {
-            self.emit_status("Checking AWS account...", Some(&connection_id));
-            let actual = operations::caller_account_id(&clients).await?;
             operations::ensure_account(expected, &actual, &resolved.environment.name)?;
         }
 
