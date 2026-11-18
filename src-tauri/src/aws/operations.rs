@@ -148,7 +148,7 @@ pub async fn check_credentials_valid(clients: &AwsClients) -> CredentialCheck {
         },
         Ok(Err(e)) => CredentialCheck {
             valid: false,
-            error: Some(e.to_string()),
+            error: Some(explain_sdk_error(&e)),
         },
         Err(_) => CredentialCheck {
             valid: false,
@@ -168,11 +168,46 @@ pub async fn caller_account_id(clients: &AwsClients) -> Result<String, AppError>
             .ok_or_else(|| AppError::Aws("GetCallerIdentity returned no account".to_string())),
         Ok(Err(e)) => Err(AppError::Aws(format!(
             "Could not determine the AWS account: {}",
-            e
+            explain_sdk_error(&e)
         ))),
         Err(_) => Err(AppError::Aws(
             "Account lookup timed out after 15 seconds".to_string(),
         )),
+    }
+}
+
+/// An SDK error's cause chain on one line, plus what to do about the common
+/// credential failures. The SDK's own Display stops at "dispatch failure"
+/// when the credentials cannot be loaded, which hides the reason.
+pub fn explain_sdk_error(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = cur {
+        let text = e.to_string();
+        if !text.is_empty() && !parts.contains(&text) {
+            parts.push(text);
+        }
+        cur = e.source();
+    }
+    let chain = parts.join(": ");
+
+    let hint = if chain.contains("ForbiddenException") {
+        Some(
+            "AWS SSO refused this profile's role. The signed-in user is not assigned \
+             sso_role_name in sso_account_id; set the role they do have (see the AWS \
+             access portal) in Settings → AWS Profiles.",
+        )
+    } else if chain.contains("UnauthorizedException") || chain.contains("expired") {
+        Some("The AWS SSO session is no longer valid. Connect again to sign in, or run `aws sso login` for this profile.")
+    } else if chain.contains("dns error") || chain.contains("timed out") || chain.contains("connection refused") {
+        Some("AWS could not be reached. Check the network, VPN or proxy.")
+    } else {
+        None
+    };
+
+    match hint {
+        Some(h) => format!("{} — {}", chain, h),
+        None => chain,
     }
 }
 
@@ -853,6 +888,34 @@ mod tests {
             ),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn explain_sdk_error_walks_the_cause_chain_and_hints_forbidden() {
+        #[derive(Debug)]
+        struct E(&'static str, Option<Box<E>>);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for E {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|e| e as _)
+            }
+        }
+        let err = E(
+            "dispatch failure",
+            Some(Box::new(E(
+                "an error occurred while loading credentials",
+                Some(Box::new(E("unhandled error (ForbiddenException)", None))),
+            ))),
+        );
+        let text = explain_sdk_error(&err);
+        assert!(text.starts_with(
+            "dispatch failure: an error occurred while loading credentials: unhandled error (ForbiddenException)"
+        ));
+        assert!(text.contains("not assigned"));
     }
 
     #[test]

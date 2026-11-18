@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.2] - 2026-11-18
+
+### Fixed
+- Connecting failed with "Could not determine the AWS account: dispatch
+  failure" after the user signed out of the AWS access portal. Signing out
+  revokes the app's SSO token before its recorded expiry, so the app took the
+  cached token as valid. When AWS SSO rejects the token the app now signs in
+  again and retries.
+- AWS errors show their cause instead of stopping at "dispatch failure", with
+  a hint for a role the user is not assigned, an expired session, or no
+  network.
+
 ## [3.9.1] - 2026-11-18
 
 ### Fixed
