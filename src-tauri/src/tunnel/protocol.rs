@@ -297,13 +297,6 @@ pub fn build_data_message(data: &[u8], sequence_number: i64) -> AgentMessage {
     )
 }
 
-/// Build a SYN flag message — sent after handshake to tell the SSM agent
-/// that the client is ready for port forwarding. The Go session-manager-plugin
-/// sends this; without it the agent may not connect to the remote host.
-pub fn build_syn_message(sequence_number: i64) -> AgentMessage {
-    AgentMessage::new(INPUT_STREAM_DATA, sequence_number, FLAG_SYN, PAYLOAD_FLAG, vec![])
-}
-
 /// Build a flag message (DisconnectToPort, TerminateSession, etc.).
 pub fn build_flag_message(flag_value: u32, sequence_number: i64, fin: bool) -> AgentMessage {
     let mut payload = vec![0u8; 4];

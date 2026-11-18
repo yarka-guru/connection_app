@@ -12,11 +12,15 @@ let {
   onConnect,
 } = $props()
 
-// Reachable projects are listed. Broken ones are always listed, disabled and
-// with the reason, even when none of their environments has a profile.
-const listedProjects = $derived(projects.filter((p) => p.reachable || !!p.broken))
-
+// Every project is listed. Broken ones are disabled with the reason; ones no
+// AWS profile reaches stay selectable so their environments show what is missing.
 const currentProject = $derived(projects.find((p) => p.key === selectedProject))
+const isUnreachable = $derived(!!currentProject && !currentProject.reachable && !currentProject.broken)
+const missingAccounts = $derived([
+  ...new Set(
+    (currentProject?.environments ?? []).map((e) => e.environment.accountId).filter(Boolean),
+  ),
+])
 const currentEnvironments = $derived(currentProject?.environments ?? [])
 const currentResolved = $derived(
   currentEnvironments.find((e) => e.environment.name === selectedEnvironment),
@@ -43,8 +47,13 @@ function shortAccount(accountId) {
   return `${accountId.slice(0, 4)}…${accountId.slice(-4)}`
 }
 
+function unreachableReason(project) {
+  if (project.reachable) return ''
+  return project.environments.length > 0 ? 'no AWS profile for its accounts' : 'no matching AWS profile'
+}
+
 function projectLabel(project) {
-  const reason = project.broken || project.problems?.[0]?.message
+  const reason = project.broken || project.problems?.[0]?.message || unreachableReason(project)
   return reason ? `${project.name} — ${reason}` : project.name
 }
 
@@ -106,7 +115,7 @@ function handleConnectClick() {
           disabled={isConnecting || isLoadingProjects}
         >
           <option value="">{isLoadingProjects ? 'Loading projects...' : 'Choose a project'}</option>
-          {#each listedProjects as project (project.key)}
+          {#each projects as project (project.key)}
             <option value={project.key} disabled={!!project.broken}>{projectLabel(project)}</option>
           {/each}
         </select>
@@ -152,6 +161,18 @@ function handleConnectClick() {
           </button>
         {/if}
       </div>
+      {#if isUnreachable}
+        <p class="field-hint">
+          {#if missingAccounts.length > 0}
+            None of your AWS profiles reaches account {missingAccounts.join(', ')}. Pick an
+            environment and create a profile for it, or, for a profile that uses access keys or
+            credential_process, click Detect account in Settings → AWS Profiles.
+          {:else}
+            No AWS profile name matches this project. Add a profile, or review the project in
+            Settings.
+          {/if}
+        </p>
+      {/if}
       {#if showProfilePicker}
         <div class="via-profile">
           <label for="via-profile" class="via-label">via profile</label>
@@ -354,6 +375,13 @@ function handleConnectClick() {
   .btn-create-profile:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .field-hint {
+    margin: 0;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: #9e9ea7;
   }
 
   .via-profile {
