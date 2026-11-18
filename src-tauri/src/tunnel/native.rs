@@ -1,5 +1,5 @@
 use crate::tunnel::protocol::{
-    build_acknowledge, build_data_message, build_flag_message, build_syn_message, AgentMessage,
+    build_acknowledge, build_data_message, build_flag_message, AgentMessage,
     CHANNEL_CLOSED, FLAG_CONNECT_TO_PORT_ERROR, FLAG_DATA, FLAG_DISCONNECT_TO_PORT,
     FLAG_TERMINATE_SESSION, INPUT_STREAM_DATA, OUTPUT_STREAM_DATA, PAYLOAD_FLAG, PAYLOAD_OUTPUT,
     STREAM_DATA_PAYLOAD_SIZE,
@@ -332,30 +332,10 @@ async fn start_basic_port_forwarding(
     // RTT tracking for retransmission timeout (Jacobson/Karels algorithm)
     let rtt_estimator = Arc::new(tokio::sync::Mutex::new(RttEstimator::new()));
 
-    // Send SYN flag — tells the SSM agent "client is ready for port forwarding".
-    // The Go session-manager-plugin sends this after handshake; without it the
-    // agent may not connect to the remote host (observed on Linux).
-    {
-        let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
-        let syn_msg = build_syn_message(syn_seq);
-        let serialized = syn_msg.serialize();
-        {
-            let mut ob = outgoing_buffer.lock().await;
-            ob.insert(
-                syn_seq,
-                OutgoingEntry {
-                    message: serialized.clone(),
-                    sent_at: std::time::Instant::now(),
-                    retransmit_count: 0,
-                },
-            );
-        }
-        let mut ws = ws_write.lock().await;
-        ws.send(Message::Binary(serialized.into()))
-            .await
-            .map_err(|e| format!("Failed to send SYN: {}", e))?;
-        log::info!("Sent SYN flag to SSM agent");
-    }
+    // No SYN flag message after the handshake: session-manager-plugin never
+    // sends one, and SSM Agent 3.3.5828.0 drops it without advancing the
+    // stream sequence, so every later message waits behind it and the
+    // tunnel carries no data.
 
     // --- Task 1: WebSocket ping keepalive + pong watchdog + SSM keepalive ---
     let ws_write_ping = ws_write.clone();
@@ -702,7 +682,6 @@ async fn start_basic_port_forwarding(
     });
 
     // --- Main loop: accept TCP connections ---
-    let mut is_first_connection = true;
     loop {
         if cancel.is_cancelled() || session_cancel.is_cancelled() {
             break;
@@ -748,38 +727,6 @@ async fn start_basic_port_forwarding(
         // Drain any stale data left in the channel from the previous TCP connection
         // (response data in-flight when the previous client disconnected).
         while tcp_data_rx.try_recv().is_ok() {}
-
-        // Re-send SYN to tell the SSM agent to reconnect to the remote port.
-        // The initial SYN was sent during setup, but after a client disconnect we
-        // send FLAG_DISCONNECT_TO_PORT which tears down the agent's remote TCP
-        // connection. Without a new SYN, the agent has nothing to forward to.
-        if !is_first_connection {
-            let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
-            let syn_msg = build_syn_message(syn_seq);
-            let serialized = syn_msg.serialize();
-            {
-                let mut ob = outgoing_buffer.lock().await;
-                ob.insert(
-                    syn_seq,
-                    OutgoingEntry {
-                        message: serialized.clone(),
-                        sent_at: std::time::Instant::now(),
-                        retransmit_count: 0,
-                    },
-                );
-            }
-            let mut ws = ws_write.lock().await;
-            if ws
-                .send(Message::Binary(serialized.into()))
-                .await
-                .is_err()
-            {
-                session_cancel.cancel();
-                break;
-            }
-            log::info!("Re-sent SYN for new TCP client connection");
-        }
-        is_first_connection = false;
 
         tcp_connected.store(true, Ordering::Relaxed);
 
@@ -1043,29 +990,10 @@ pub async fn start_multiplexed_port_forwarding(
     // Create the smux session
     let smux_session = Arc::new(SmuxSession::new(smux_frame_tx.clone(), session_cancel.clone()));
 
-    // Send SYN flag — required in both basic and mux modes to tell the agent
-    // that the client is ready for port forwarding.
-    {
-        let syn_seq = outgoing_seq.fetch_add(1, Ordering::Relaxed);
-        let syn_msg = build_syn_message(syn_seq);
-        let serialized = syn_msg.serialize();
-        {
-            let mut ob = outgoing_buffer.lock().await;
-            ob.insert(
-                syn_seq,
-                OutgoingEntry {
-                    message: serialized.clone(),
-                    sent_at: std::time::Instant::now(),
-                    retransmit_count: 0,
-                },
-            );
-        }
-        let mut ws = ws_write.lock().await;
-        ws.send(Message::Binary(serialized.into()))
-            .await
-            .map_err(|e| format!("Failed to send SYN: {}", e))?;
-        log::info!("Sent SYN flag to SSM agent (multiplexed mode)");
-    }
+    // No SYN flag message after the handshake: session-manager-plugin never
+    // sends one, and SSM Agent 3.3.5828.0 drops it without advancing the
+    // stream sequence, so every later message waits behind it and the
+    // tunnel carries no data.
 
     // --- Task 1: WebSocket ping keepalive + pong watchdog ---
     let ws_write_ping = ws_write.clone();
