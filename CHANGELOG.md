@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Projects that none of your AWS profiles reaches are listed on the main
+  screen instead of being hidden, labelled "no AWS profile for its
+  accounts". Selecting one shows the account IDs it needs and points to
+  Create profile and Detect account.
+
 ## [3.9.0] - 2026-11-09
 
 ### Added

@@ -458,8 +458,8 @@ async function refreshProjects() {
     errorMessage = `Failed to refresh projects: ${err}`
     return
   }
-  // Keep the selection while it still exists
-  const project = projects.find((p) => p.key === selectedProject && p.reachable)
+  // Keep the selection while it still exists and is not broken
+  const project = projects.find((p) => p.key === selectedProject && !p.broken)
   if (!project) {
     selectedProject = ''
     selectedEnvironment = ''
