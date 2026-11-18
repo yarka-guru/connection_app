@@ -2,9 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.9.1] - 2026-11-18
 
 ### Fixed
+- Tunnels opened but carried no data on SSM Agent 3.3.5828.0 (database
+  sign-in check "check timed out", clients hang). After the handshake the
+  app sent an empty SYN flag message, which session-manager-plugin never
+  sends; this agent drops it without advancing the stream sequence, so every
+  later message waited behind it. The message is no longer sent.
 - Projects that none of your AWS profiles reaches are listed on the main
   screen instead of being hidden, labelled "no AWS profile for its
   accounts". Selecting one shows the account IDs it needs and points to
