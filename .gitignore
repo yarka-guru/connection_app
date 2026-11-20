@@ -31,3 +31,6 @@ Thumbs.db
 
 # Database dumps (may contain sensitive data — never commit)
 *.dump
+
+# Mac App Store package, produced by scripts/build-mas.sh
+ConnectionApp.pkg
