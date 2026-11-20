@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.3] - 2026-11-20
+
+### Changed
+- Dependency update. The AWS SDK crates (aws-config 1.13.2, ec2, ecs, rds,
+  secretsmanager, ssm, sso, ssooidc, sts), the Tauri notification, opener
+  and store plugins, wry, uuid and zip move to their latest releases that
+  are at least 7 days old. Build tooling: vite 8.3.8, Biome 2.6.7, Tauri
+  CLI 2.12.4.
+
 ## [3.9.2] - 2026-11-18
 
 ### Fixed

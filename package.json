@@ -1,6 +1,6 @@
 {
   "name": "connection_app",
-  "version": "3.9.2",
+  "version": "3.9.3",
   "description": "Secure tunneling through AWS SSM",
   "license": "MIT",
   "author": "Iaroslav Pyrogov",
@@ -23,12 +23,12 @@
     "@fontsource/instrument-serif": "^5.3.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.4",
+    "@biomejs/biome": "^2.6.7",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
-    "@tauri-apps/api": "^2.12.3",
-    "@tauri-apps/cli": "^2.12.2",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/cli": "^2.12.4",
     "svelte": "^5.57.3",
-    "vite": "^8.3.4"
+    "vite": "^8.3.8"
   },
   "scripts": {
     "dev:vite": "vite",
